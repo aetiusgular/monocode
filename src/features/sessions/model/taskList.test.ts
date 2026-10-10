@@ -6,6 +6,7 @@ import {
   taskListFromToolInput,
   taskListProgressLabel,
   taskListText,
+  currentTaskListItem,
 } from "./taskList";
 
 describe("task lists", () => {
@@ -62,5 +63,41 @@ describe("task lists", () => {
         { text: "Two", status: "pending" },
       ]),
     ).toBe("1 of 2");
+  });
+});
+
+describe("currentTaskListItem", () => {
+  const item = (text: string, status: string) =>
+    ({ text, status }) as Parameters<typeof currentTaskListItem>[0][number];
+
+  it("names the step in hand", () => {
+    expect(
+      currentTaskListItem([
+        item("Read", "completed"),
+        item("Plan", "pending"),
+        item("Build", "in_progress"),
+      ])?.text,
+    ).toBe("Build");
+  });
+
+  it("names the next step waiting when none is running", () => {
+    expect(
+      currentTaskListItem([
+        item("Read", "completed"),
+        item("Skip", "cancelled"),
+        item("Build", "pending"),
+        item("Ship", "pending"),
+      ])?.text,
+    ).toBe("Build");
+  });
+
+  it("names nothing once the list is done or empty", () => {
+    expect(
+      currentTaskListItem([
+        item("Read", "completed"),
+        item("Skip", "cancelled"),
+      ]),
+    ).toBeNull();
+    expect(currentTaskListItem([])).toBeNull();
   });
 });

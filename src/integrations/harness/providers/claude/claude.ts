@@ -1,4 +1,8 @@
 import { TurnNotReadyError } from "../../core/types";
+import type {
+  RewindLastTurnInput,
+  RewindLastTurnResult,
+} from "../../core/types";
 import { nativeModelId } from "../../../../features/sessions/model/models";
 import { sameProviderAccountId } from "../../../../features/providers/model/providerAccounts";
 import type {
@@ -71,6 +75,7 @@ import {
   type ClaudeCliSettings,
   type ClaudeControlRequest,
 } from "./claudeProtocol";
+import { existingDirs } from "../../core/existingDirs";
 import { isAgentToolName } from "../../core/preview";
 import { joinStreamText, snapshotRemainder } from "../../core/streamText";
 import {
@@ -129,6 +134,15 @@ type BackgroundTask = {
 type Live = {
   cwd: string;
   claudeSessionId: string;
+  /**
+   * A new conversation that has not been sent a prompt yet. The first prompt
+   * has nothing before it to cut back to.
+   */
+  fresh: boolean;
+  /** The process has gone. */
+  exited: boolean;
+  /** Started cut back to an earlier entry, and not sent a prompt since. */
+  cutPending: boolean;
   providerAccountId?: string;
   runtimeMode: RuntimeMode;
   planning: boolean;
@@ -181,6 +195,11 @@ type Resume = {
   sessionId: string;
   cwd: string;
   providerAccountId?: string;
+  /**
+   * False for a conversation that was started and has not been sent a prompt:
+   * Claude Code has nothing saved under its id yet, so it cannot be resumed.
+   */
+  prompted?: boolean;
 };
 
 const INIT_TIMEOUT_MS = 8_000;
@@ -204,6 +223,35 @@ const tasksByThread = new Map<
 /** Task-list block key for TaskCreate/TaskUpdate items. */
 const CLAUDE_TASKS_KEY = "claude-tasks";
 const cancelledThreads = new Set<string>();
+/**
+ * The newest entry of each thread's Claude conversation, as far as this run of
+ * the app has seen it: the uuid Claude gave the last message or tool result on
+ * the main chain. A prompt sent now follows that entry, so it is where the
+ * conversation is cut to take the prompt back. It outlives a Live, since a
+ * restart for a new model or folder resumes the same conversation.
+ */
+const lastEntryByThread = new Map<
+  string,
+  {
+    providerSessionId: string;
+    uuid: string;
+    /**
+     * A prompt has been sent after this entry and nothing has come back yet.
+     * A second prompt sent now follows the first, whose uuid is not known.
+     */
+    claimed: boolean;
+  }
+>();
+/** A cut asked for by an edit, for the next start of that conversation. */
+const rewindByThread = new Map<
+  string,
+  { providerSessionId: string; at: string }
+>();
+/**
+ * The boundary of a conversation's first prompt. There is no entry before it
+ * to cut back to, so taking it back starts a new conversation.
+ */
+export const CLAUDE_FIRST_TURN = "claude-first-turn";
 
 let resolveClaudeBinaryImpl: () => Promise<{ path: string }> =
   resolveClaudeBinary;
@@ -377,7 +425,118 @@ export async function stopClaudeSession(sessionId: string): Promise<void> {
 export async function forgetClaudeSession(sessionId: string): Promise<void> {
   resumeByThread.delete(sessionId);
   tasksByThread.delete(sessionId);
+  lastEntryByThread.delete(sessionId);
+  rewindByThread.delete(sessionId);
   await stopClaudeSession(sessionId);
+}
+
+/**
+ * Takes the last prompt back out of Claude's conversation, so an edited one
+ * can be sent in its place. Claude Code cannot drop a turn from a running
+ * process. It can start again from an earlier point of the same conversation
+ * (`--resume` with `--resume-session-at`), so this stops the process and
+ * starts one cut back to the entry the prompt followed. `providerTurnId` is
+ * that entry, recorded when the prompt was sent.
+ *
+ * Files the turn changed are left as they are. Claude's later entries stay in
+ * its session file as an abandoned branch.
+ */
+export async function rewindClaudeLastTurn(
+  input: RewindLastTurnInput,
+): Promise<RewindLastTurnResult> {
+  const threadId = input.sessionId;
+  const boundary = input.providerTurnId?.trim();
+  if (!boundary) {
+    throw new Error(
+      "This message cannot be edited: its place in the Claude conversation is not known",
+    );
+  }
+  if (liveByThread.get(threadId)?.activeTurn) {
+    throw new Error("Stop the current turn before editing the last message");
+  }
+  const firstTurn = boundary === CLAUDE_FIRST_TURN;
+  // What to put back if Claude Code will not start from the cut: the app
+  // keeps its transcript then, and the conversation has to match it.
+  const before = {
+    resume: resumeByThread.get(threadId),
+    tasks: tasksByThread.get(threadId),
+    lastEntry: lastEntryByThread.get(threadId),
+  };
+  if (!firstTurn && !before.resume) {
+    throw new Error(
+      "This message cannot be edited: there is no Claude conversation to go back in",
+    );
+  }
+  const restore = async () => {
+    await stopClaudeSession(threadId);
+    rewindByThread.delete(threadId);
+    setOrDelete(resumeByThread, threadId, before.resume);
+    setOrDelete(tasksByThread, threadId, before.tasks);
+    setOrDelete(lastEntryByThread, threadId, before.lastEntry);
+  };
+
+  await stopClaudeSession(threadId);
+  if (firstTurn) {
+    // Nothing came before the prompt: the edit opens a new conversation.
+    resumeByThread.delete(threadId);
+    tasksByThread.delete(threadId);
+    lastEntryByThread.delete(threadId);
+    rewindByThread.delete(threadId);
+  } else if (before.resume) {
+    rewindByThread.set(threadId, {
+      providerSessionId: before.resume.sessionId,
+      at: boundary,
+    });
+  }
+
+  let live: Live;
+  try {
+    live = await ensureLive(input);
+  } catch (error) {
+    cancelledThreads.delete(threadId);
+    await restore();
+    throw error;
+  }
+  cancelledThreads.delete(threadId);
+  // Claude Code loads the conversation before it answers anything, and exits
+  // when it cannot find the entry to cut back to. Starting does not wait on
+  // either, so look before telling the app the prompt is gone.
+  if (live.exited || liveByThread.get(threadId) !== live) {
+    await restore();
+    throw new Error("Claude Code could not go back to before this message");
+  }
+  if (!live.initialized) {
+    await restore();
+    throw new Error(
+      "Claude Code did not start in time to edit this message. Try again",
+    );
+  }
+  if (!firstTurn && !live.cutPending) {
+    // The conversation could not be resumed here at all, in another folder
+    // or under another account, so there was nothing to cut.
+    await restore();
+    throw new Error(
+      "This message cannot be edited: its Claude conversation cannot be resumed here",
+    );
+  }
+  if (!firstTurn) {
+    // The edited prompt follows the same entry the old one did.
+    lastEntryByThread.set(threadId, {
+      providerSessionId: live.claudeSessionId,
+      uuid: boundary,
+      claimed: false,
+    });
+  }
+  return { submitted: false };
+}
+
+function setOrDelete<V>(
+  map: Map<string, V>,
+  key: string,
+  value: V | undefined,
+) {
+  if (value === undefined) map.delete(key);
+  else map.set(key, value);
 }
 
 export function bindClaudeSession(
@@ -446,11 +605,13 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   const resume = resumeByThread.get(input.sessionId);
   const canResume =
     resume != null &&
+    resume.prompted !== false &&
     resume.cwd === input.cwd &&
     sameProviderAccountId(resume.providerAccountId, input.providerAccountId);
   if (
     resume &&
-    (resume.cwd !== input.cwd ||
+    (resume.prompted === false ||
+      resume.cwd !== input.cwd ||
       !sameProviderAccountId(resume.providerAccountId, input.providerAccountId))
   ) {
     resumeByThread.delete(input.sessionId);
@@ -468,15 +629,37 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     providerSessionId: claudeSessionId,
     tasks: claudeTasks,
   });
+  // A cut stays asked for until a prompt has been sent on the cut
+  // conversation. Until then Claude's file still ends where it did, and a
+  // plain resume would bring the prompt back.
+  const rewind = rewindByThread.get(input.sessionId);
+  const resumeAt =
+    canResume && rewind?.providerSessionId === resume?.sessionId
+      ? rewind?.at
+      : undefined;
+  if (!resumeAt) rewindByThread.delete(input.sessionId);
   const launch = launchOptions(
     input,
     canResume ? resume?.sessionId : undefined,
     claudeSessionId,
+    // Claude Code checks each folder at startup; one that is gone stays off
+    // the command line instead of failing the launch.
+    await existingDirs(input.extraDirs),
+    resumeAt,
   );
+  if (
+    lastEntryByThread.get(input.sessionId)?.providerSessionId !==
+    claudeSessionId
+  ) {
+    lastEntryByThread.delete(input.sessionId);
+  }
 
   const live: Live = {
     cwd: input.cwd,
     claudeSessionId,
+    fresh: !canResume,
+    exited: false,
+    cutPending: !!resumeAt,
     providerAccountId: input.providerAccountId,
     runtimeMode: input.runtimeMode,
     planning,
@@ -525,6 +708,15 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     (code) => {
       liveByThread.delete(input.sessionId);
       const current = liveRef.current;
+      if (current) {
+        current.exited = true;
+        // A cut Claude Code would not start from must not be asked for again
+        // on every later start. One it did start from, and then died before
+        // a prompt was sent, is still owed.
+        if (current.cutPending && !current.initialized) {
+          rewindByThread.delete(input.sessionId);
+        }
+      }
       if (!current?.muteUpdates) {
         (current?.onEvent ?? input.onEvent)({ type: "session.ended", code });
       }
@@ -552,6 +744,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     sessionId: claudeSessionId,
     cwd: input.cwd,
     providerAccountId: input.providerAccountId,
+    ...(canResume ? {} : { prompted: false }),
   });
 
   try {
@@ -602,8 +795,23 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
   live.activeTurn = true;
   settlePendingTurn(live);
 
+  // Where this prompt joins the conversation, so it can be taken back later.
+  // A compaction is not a prompt of the user's: there is no message in the
+  // transcript for its boundary to land on.
+  const boundary = live.manualCompaction
+    ? undefined
+    : promptBoundary(input.sessionId, live);
+  if (boundary)
+    live.onEvent({ type: "turn.started", providerTurnId: boundary });
+
   try {
     await writeJson(input.sessionId, message);
+    // The prompt now follows the cut in Claude's own file.
+    if (live.cutPending) {
+      live.cutPending = false;
+      rewindByThread.delete(input.sessionId);
+    }
+    notePromptSent(input.sessionId, live);
     input.onAccepted?.();
     settlePendingTurn(live);
     await turnPromise;
@@ -661,6 +869,11 @@ function handleLine(sessionId: string, live: Live, line: string): void {
     );
     return;
   }
+
+  // Before the mute: what Claude writes while a stop settles is still part of
+  // its conversation, and the next prompt follows it.
+  noteChainEntry(sessionId, live, rec);
+  noteCompaction(sessionId, rec);
 
   if (live.muteUpdates) return;
 
@@ -1763,20 +1976,87 @@ function settingsKeyFor(input: HarnessSessionInput): string {
     context: input.modelSettings?.context,
     runtimeMode: input.runtimeMode,
     hooks: loadClaudeHooks(),
+    extraDirs: input.extraDirs,
+    disabledMcpServers: input.disabledMcpServers,
   })}`;
+}
+
+/**
+ * Records a message or tool result on the conversation's main chain. A
+ * subagent's entries sit on a side chain, and stream events are not entries.
+ */
+function noteChainEntry(
+  threadId: string,
+  live: Live,
+  rec: Record<string, unknown>,
+): void {
+  const type = stringField(rec, "type");
+  if (type !== "assistant" && type !== "user") return;
+  const parent = rec.parent_tool_use_id;
+  if (typeof parent === "string" && parent.length > 0) return;
+  const uuid = stringField(rec, "uuid");
+  if (!uuid) return;
+  lastEntryByThread.set(threadId, {
+    providerSessionId: stringField(rec, "session_id") ?? live.claudeSessionId,
+    uuid,
+    claimed: false,
+  });
+}
+
+/**
+ * After a compaction Claude's conversation starts over from a summary. The
+ * entries seen before it are no longer places it can be cut back to.
+ */
+function noteCompaction(threadId: string, rec: Record<string, unknown>): void {
+  if (stringField(rec, "type") !== "system") return;
+  if (stringField(rec, "subtype") !== "compact_boundary") return;
+  lastEntryByThread.delete(threadId);
+}
+
+/** A prompt is now in Claude's conversation, after the last entry seen. */
+function notePromptSent(threadId: string, live: Live): void {
+  const resume = resumeByThread.get(threadId);
+  if (resume?.prompted === false && resume.sessionId === live.claudeSessionId) {
+    const { prompted: _prompted, ...rest } = resume;
+    resumeByThread.set(threadId, rest);
+  }
+  const last = lastEntryByThread.get(threadId);
+  if (last) last.claimed = true;
+}
+
+/**
+ * The entry a prompt sent now will follow, or the first-turn mark for a new
+ * conversation. Undefined when this run of the app has not seen where a
+ * resumed conversation ends: its next prompt cannot be taken back.
+ */
+function promptBoundary(threadId: string, live: Live): string | undefined {
+  const last = lastEntryByThread.get(threadId);
+  const first = live.fresh;
+  live.fresh = false;
+  if (last?.providerSessionId === live.claudeSessionId) {
+    // Two prompts in a row with nothing between them: the second follows the
+    // first, not the entry before both.
+    return last.claimed ? undefined : last.uuid;
+  }
+  return first && !last ? CLAUDE_FIRST_TURN : undefined;
 }
 
 function launchOptions(
   input: HarnessSessionInput,
   resume: string | undefined,
   sessionId: string,
+  addDirs: string[],
+  resumeSessionAt?: string,
 ): {
   model?: string;
   effort?: string;
   permissionMode?: ReturnType<typeof runtimeModeToPermission>;
   resume?: string;
+  resumeSessionAt?: string;
   sessionId?: string;
   settings?: ClaudeCliSettings;
+  addDirs?: string[];
+  disabledMcpServers?: string[];
 } {
   const native = nativeModelId(input.model);
   const effortRaw = input.modelSettings?.effort;
@@ -1802,8 +2082,11 @@ function launchOptions(
         ? "plan"
         : runtimeModeToPermission(input.runtimeMode),
     resume,
+    ...(resume && resumeSessionAt ? { resumeSessionAt } : {}),
     sessionId: resume ? undefined : sessionId,
     settings: Object.keys(settings).length > 0 ? settings : undefined,
+    addDirs,
+    disabledMcpServers: input.disabledMcpServers,
   };
 }
 
@@ -1813,4 +2096,6 @@ export function __claudeTestReset(): void {
   resumeByThread.clear();
   tasksByThread.clear();
   cancelledThreads.clear();
+  lastEntryByThread.clear();
+  rewindByThread.clear();
 }

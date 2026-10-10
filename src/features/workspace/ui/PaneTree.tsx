@@ -94,6 +94,8 @@ type Shared = {
     settings: Record<string, string>,
   ) => void;
   onRuntimeModeChange: (sessionId: string, mode: RuntimeMode) => void;
+  onExtraDirsChange?: (sessionId: string, dirs: string[]) => void;
+  onDisabledMcpServersChange?: (sessionId: string, names: string[]) => void;
   onSubmit: (
     sessionId: string,
     text: string,
@@ -234,6 +236,8 @@ function PaneTreeComponent({
   onModelChange,
   onModelSettingsChange,
   onRuntimeModeChange,
+  onExtraDirsChange,
+  onDisabledMcpServersChange,
   onSaveDraft,
   onRemoveDraft,
   onSubmit,
@@ -524,6 +528,8 @@ function PaneTreeComponent({
                   onModelChange={onModelChange}
                   onModelSettingsChange={onModelSettingsChange}
                   onRuntimeModeChange={onRuntimeModeChange}
+                  onExtraDirsChange={onExtraDirsChange}
+                  onDisabledMcpServersChange={onDisabledMcpServersChange}
                   onSaveDraft={onSaveDraft}
                   onRemoveDraft={onRemoveDraft}
                   onSubmit={onSubmit}

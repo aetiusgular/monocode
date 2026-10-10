@@ -86,6 +86,7 @@ export function applyHarnessEvent(
         kind: event.kind,
         status: event.status,
         detail: event.detail,
+        ...(event.append ? { append: true } : {}),
         preview: event.preview,
         streaming: event.status !== "completed" && event.status !== "failed",
         agentModel: event.agentModel,
@@ -945,6 +946,8 @@ function upsertTool(
     kind?: string;
     status?: string;
     detail?: string;
+    /** Add `detail` to the output so far instead of replacing it. */
+    append?: boolean;
     preview?: ToolPreview;
     streaming: boolean;
     agentModel?: string;
@@ -981,7 +984,9 @@ function upsertTool(
     });
   }
   const prev = session.blocks[index];
-  const detail = capToolDetail(patch.detail) ?? prev.tool?.detail;
+  const detail = patch.append
+    ? appendToolOutput(prev.tool?.detail, patch.detail)
+    : (capToolDetail(patch.detail) ?? prev.tool?.detail);
   const preview = fillPreview(
     mergeToolPreview(patch.preview, prev.tool?.preview),
     detail,
@@ -1045,6 +1050,21 @@ function capToolDetail(value: string | undefined): string | undefined {
   if (!text) return undefined;
   if (text.length <= MAX_TOOL_DETAIL_CHARS) return text;
   return `${text.slice(0, MAX_TOOL_DETAIL_CHARS)}\n…`;
+}
+
+/**
+ * A running call's output so far with its next piece added. Unlike a settled
+ * result, which keeps its head, a live log keeps its tail: the latest lines
+ * are the ones worth watching.
+ */
+function appendToolOutput(
+  soFar: string | undefined,
+  next: string | undefined,
+): string | undefined {
+  const text = `${soFar ?? ""}${next ?? ""}`;
+  if (!text.trim()) return soFar;
+  if (text.length <= MAX_TOOL_DETAIL_CHARS) return text;
+  return `…\n${text.slice(-MAX_TOOL_DETAIL_CHARS)}`;
 }
 
 function samePreview(a?: ToolPreview, b?: ToolPreview): boolean {

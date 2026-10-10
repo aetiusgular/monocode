@@ -193,11 +193,15 @@ export {
   canRunHarnessTextPrompt,
   runHarnessTextPrompt,
   stopHarnessTextPrompts,
+  canListHarnessMcpServers,
+  listHarnessMcpServers,
 } from "./core/registry";
 export type {
   ApprovalDecision,
   CompactContextInput,
   HarnessEvent,
+  HarnessMcpServer,
+  ListMcpServersInput,
   SteerTurnInput,
 } from "./core/types";
 export { TurnNotReadyError } from "./core/types";

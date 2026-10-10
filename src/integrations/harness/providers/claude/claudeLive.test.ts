@@ -16,6 +16,11 @@ const writeChild = vi.fn(async (_id: string, line: string) => {
   sent.push(line);
 });
 
+const existingDirs = vi.hoisted(() =>
+  vi.fn(async (dirs?: readonly string[]) => [...(dirs ?? [])]),
+);
+vi.mock("../../core/existingDirs", () => ({ existingDirs }));
+
 vi.mock("../../core/child", () => ({
   resolveClaudeBinary: async () => ({ path: "/fake/claude" }),
   spawnChild: async (_id: string, _path: string, args: string[]) => {
@@ -41,8 +46,10 @@ const {
   respondClaudeApproval,
   respondClaudeQuestion,
   restoreClaudeTaskLists,
+  rewindClaudeLastTurn,
   sendClaudeTurn,
   stopClaudeSession,
+  CLAUDE_FIRST_TURN,
   __claudeTestReset,
 } = await import("./claude");
 import type { HarnessEvent } from "../../core/types";
@@ -905,6 +912,159 @@ describe("claude model switching", () => {
     );
     emit({ type: "result", subtype: "success", session_id: "sess_1" });
     await second;
+  });
+});
+
+describe("claude extra folders", () => {
+  it("restarts with --add-dir when a folder is added between turns, resuming the conversation", async () => {
+    const first = await startTurn("s1");
+    expect(spawned[0]).not.toContain("--add-dir");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await first.turn;
+
+    const userCount = parse().filter(
+      (message) => message.type === "user",
+    ).length;
+    const send = () =>
+      sendClaudeTurn({
+        sessionId: "s1",
+        cwd: "/repo",
+        model: "claude:claude-sonnet-5",
+        modelSettings: {},
+        runtimeMode: "supervised",
+        extraDirs: ["/work/docs"],
+        text: "now update the docs",
+        attachments: [],
+        onEvent: () => undefined,
+      });
+    const second = send();
+
+    await waitFor(() => spawned.length === 2, "replacement Claude process");
+    expect(spawned[1]).toEqual(
+      expect.arrayContaining(["--add-dir", "/work/docs", "--resume", "sess_1"]),
+    );
+    expect(spawned[1]).not.toContain("--session-id");
+
+    emit({ type: "system", subtype: "init", session_id: "sess_1" });
+    await waitFor(
+      () =>
+        parse().filter((message) => message.type === "user").length > userCount,
+      "follow-up prompt",
+    );
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await second;
+
+    // The same folders keep the process: no restart on every later turn.
+    const third = send();
+    await waitFor(
+      () =>
+        parse().filter((message) => message.type === "user").length >
+        userCount + 1,
+      "third prompt",
+    );
+    expect(spawned).toHaveLength(2);
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await third;
+  });
+});
+
+describe("claude connector switches", () => {
+  it("restarts with a deny rule when a connector is switched off between turns, resuming the conversation", async () => {
+    const first = await startTurn("s1");
+    expect(spawned[0]).not.toContain("--disallowedTools");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await first.turn;
+
+    const userCount = parse().filter(
+      (message) => message.type === "user",
+    ).length;
+    const send = (disabledMcpServers: string[]) =>
+      sendClaudeTurn({
+        sessionId: "s1",
+        cwd: "/repo",
+        model: "claude:claude-sonnet-5",
+        modelSettings: {},
+        runtimeMode: "supervised",
+        disabledMcpServers,
+        text: "carry on",
+        attachments: [],
+        onEvent: () => undefined,
+      });
+    const second = send(["github"]);
+
+    await waitFor(() => spawned.length === 2, "replacement Claude process");
+    const flag = spawned[1].indexOf("--disallowedTools");
+    expect(spawned[1].slice(flag, flag + 2)).toEqual([
+      "--disallowedTools",
+      "mcp__github",
+    ]);
+    expect(spawned[1]).toEqual(expect.arrayContaining(["--resume", "sess_1"]));
+    expect(spawned[1]).not.toContain("--session-id");
+
+    emit({ type: "system", subtype: "init", session_id: "sess_1" });
+    await waitFor(
+      () =>
+        parse().filter((message) => message.type === "user").length > userCount,
+      "follow-up prompt",
+    );
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await second;
+
+    // Switching it back on restarts once more, without the rule.
+    const third = send([]);
+    await waitFor(() => spawned.length === 3, "second replacement");
+    expect(spawned[2]).not.toContain("--disallowedTools");
+    expect(spawned[2]).toEqual(expect.arrayContaining(["--resume", "sess_1"]));
+    emit({ type: "system", subtype: "init", session_id: "sess_1" });
+    await waitFor(
+      () =>
+        parse().filter((message) => message.type === "user").length >
+        userCount + 1,
+      "third prompt",
+    );
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await third;
+  });
+});
+
+describe("claude extra folders that no longer exist", () => {
+  it("leaves a missing folder off the command line", async () => {
+    existingDirs.mockImplementationOnce(async (dirs) =>
+      (dirs ?? []).filter((dir) => dir !== "/work/gone"),
+    );
+    const turn = sendClaudeTurn({
+      sessionId: "s1",
+      cwd: "/repo",
+      model: "claude:claude-sonnet-5",
+      modelSettings: {},
+      runtimeMode: "supervised",
+      extraDirs: ["/work/docs", "/work/gone"],
+      text: "update the docs",
+      attachments: [],
+      onEvent: () => undefined,
+    });
+    await waitFor(() => spawned.length === 1, "Claude process");
+    const dirs = spawned[0].flatMap((arg, index) =>
+      arg === "--add-dir" ? [spawned[0][index + 1]] : [],
+    );
+    expect(dirs).toEqual(["/work/docs"]);
+
+    await waitFor(
+      () =>
+        parse().some((m) => {
+          const request = m.request as Record<string, unknown> | undefined;
+          return request?.subtype === "initialize";
+        }),
+      "initialize",
+    );
+    emit({ type: "system", subtype: "init", session_id: "sess_1" });
+    emit({
+      type: "control_response",
+      response: { subtype: "success", request_id: "monocode_1" },
+    });
+    await waitFor(() => parse().some((m) => m.type === "user"), "user prompt");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await turn;
   });
 });
 
@@ -1973,5 +2133,455 @@ describe("claude manual compaction", () => {
       text: "Compacted context",
     });
     expect(events.some((event) => event.type === "message.delta")).toBe(false);
+  });
+});
+
+describe("claude edit and resend", () => {
+  const base = {
+    sessionId: "s1",
+    cwd: "/repo",
+    model: "claude:claude-sonnet-5",
+    modelSettings: {},
+    runtimeMode: "supervised" as RuntimeMode,
+    attachments: [],
+  };
+  const boundaries = (events: HarnessEvent[]) =>
+    events.flatMap((event) =>
+      event.type === "turn.started" ? [event.providerTurnId] : [],
+    );
+  const userCount = () =>
+    parse().filter((message) => message.type === "user").length;
+
+  /** A reply on the main chain, as Claude Code stamps it. */
+  function reply(uuid: string, text = "done") {
+    emit({
+      type: "assistant",
+      session_id: "sess_1",
+      uuid,
+      parent_tool_use_id: null,
+      message: { content: [{ type: "text", text }] },
+    });
+  }
+
+  /** Sends another prompt on the process already running. */
+  async function nextTurn(text: string) {
+    const events: HarnessEvent[] = [];
+    const before = userCount();
+    const turn = sendClaudeTurn({
+      ...base,
+      text,
+      onEvent: (event) => events.push(event),
+    });
+    await waitFor(() => userCount() > before, `prompt "${text}"`);
+    return { events, turn };
+  }
+
+  /** Takes the last prompt back, answering the replacement process's start. */
+  async function rewind(providerTurnId: string | undefined) {
+    const events: HarnessEvent[] = [];
+    const starts = spawned.length;
+    const done = rewindClaudeLastTurn({
+      ...base,
+      ...(providerTurnId ? { providerTurnId } : {}),
+      onEvent: (event) => events.push(event),
+    });
+    done.catch(() => undefined);
+    return { events, done, starts };
+  }
+
+  it("marks a conversation's first prompt, then each prompt with the entry before it", async () => {
+    const first = await startTurn("s1");
+    expect(boundaries(first.events)).toEqual([CLAUDE_FIRST_TURN]);
+    reply("uuid-reply-1");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await first.turn;
+
+    const second = await nextTurn("and the tests?");
+    expect(boundaries(second.events)).toEqual(["uuid-reply-1"]);
+    // A tool result is an entry too, and the newest one is the boundary.
+    emit({
+      type: "user",
+      session_id: "sess_1",
+      uuid: "uuid-tool-result",
+      parent_tool_use_id: null,
+      message: { content: [{ type: "tool_result", tool_use_id: "t1" }] },
+    });
+    reply("uuid-reply-2");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await second.turn;
+
+    const third = await nextTurn("ship it");
+    expect(boundaries(third.events)).toEqual(["uuid-reply-2"]);
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await third.turn;
+  });
+
+  it("does not take a subagent's entries or stream events for the main chain", async () => {
+    const first = await startTurn("s1");
+    reply("uuid-reply-1");
+    emit({
+      type: "assistant",
+      session_id: "sess_child",
+      uuid: "uuid-subagent",
+      parent_tool_use_id: "toolu_agent",
+      message: { content: [{ type: "text", text: "child" }] },
+    });
+    emit({
+      type: "stream_event",
+      session_id: "sess_1",
+      uuid: "uuid-stream",
+      event: { type: "message_stop" },
+    });
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await first.turn;
+
+    const second = await nextTurn("again");
+    expect(boundaries(second.events)).toEqual(["uuid-reply-1"]);
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await second.turn;
+  });
+
+  it("gives a prompt no boundary when the conversation was resumed unseen", async () => {
+    // After an app restart: the conversation is known, its last entry is not.
+    bindClaudeSession("s1", "legacy-session", "/repo");
+    const { events, turn } = await startTurn("s1");
+    expect(spawned[0]).toEqual(
+      expect.arrayContaining(["--resume", "legacy-session"]),
+    );
+    expect(boundaries(events)).toEqual([]);
+    emit({ type: "result", subtype: "success", session_id: "legacy-session" });
+    await turn;
+  });
+
+  it("gives the second prompt no boundary when the first left no entry", async () => {
+    const first = await startTurn("s1");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await first.turn;
+    // Taking this one back as a first turn would drop the prompt before it.
+    const second = await nextTurn("again");
+    expect(boundaries(second.events)).toEqual([]);
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await second.turn;
+  });
+
+  it("restarts the conversation cut back to before the prompt, then resumes it whole", async () => {
+    const first = await startTurn("s1");
+    reply("uuid-reply-1");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await first.turn;
+    const second = await nextTurn("delete the old tests");
+    reply("uuid-reply-2");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await second.turn;
+
+    const { done, starts } = await rewind("uuid-reply-1");
+    await waitFor(() => spawned.length === starts + 1, "replacement process");
+    const args = spawned[starts];
+    expect(args).toEqual(expect.arrayContaining(["--resume", "sess_1"]));
+    expect(args[args.indexOf("--resume-session-at") + 1]).toBe("uuid-reply-1");
+    expect(args).not.toContain("--session-id");
+    emit({ type: "system", subtype: "init", session_id: "sess_1" });
+    await expect(done).resolves.toEqual({ submitted: false });
+
+    // The edited prompt goes to the process the rewind started, and follows
+    // the same entry the prompt it replaces did.
+    const edited = await nextTurn("delete only the flaky tests");
+    expect(spawned).toHaveLength(starts + 1);
+    expect(boundaries(edited.events)).toEqual(["uuid-reply-1"]);
+    reply("uuid-reply-3");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await edited.turn;
+
+    // A later restart resumes wherever the conversation has got to.
+    const before = userCount();
+    const later = sendClaudeTurn({
+      ...base,
+      model: "claude:opus-5",
+      text: "and now?",
+      onEvent: () => undefined,
+    });
+    await waitFor(() => spawned.length === starts + 2, "restart for the model");
+    expect(spawned[starts + 1]).toEqual(
+      expect.arrayContaining(["--resume", "sess_1"]),
+    );
+    expect(spawned[starts + 1]).not.toContain("--resume-session-at");
+    emit({ type: "system", subtype: "init", session_id: "sess_1" });
+    await waitFor(() => userCount() > before, "later prompt");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await later;
+  });
+
+  it("keeps the cut when the edited prompt needs a different process", async () => {
+    const first = await startTurn("s1");
+    reply("uuid-reply-1");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await first.turn;
+    const second = await nextTurn("delete the old tests");
+    reply("uuid-reply-2");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await second.turn;
+
+    const { done, starts } = await rewind("uuid-reply-1");
+    await waitFor(() => spawned.length === starts + 1, "replacement process");
+    emit({ type: "system", subtype: "init", session_id: "sess_1" });
+    await done;
+
+    // The edit is sent with another model, which restarts Claude Code again.
+    // A plain resume here would bring the old prompt back.
+    const before = userCount();
+    const edited = sendClaudeTurn({
+      ...base,
+      model: "claude:opus-5",
+      text: "delete only the flaky tests",
+      onEvent: () => undefined,
+    });
+    await waitFor(() => spawned.length === starts + 2, "restart for the model");
+    const args = spawned[starts + 1];
+    expect(args).toEqual(expect.arrayContaining(["--resume", "sess_1"]));
+    expect(args[args.indexOf("--resume-session-at") + 1]).toBe("uuid-reply-1");
+    emit({ type: "system", subtype: "init", session_id: "sess_1" });
+    await waitFor(() => userCount() > before, "edited prompt");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await edited;
+  });
+
+  it("starts a new conversation when the first prompt is taken back", async () => {
+    const first = await startTurn("s1");
+    reply("uuid-reply-1");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await first.turn;
+
+    const { done, starts } = await rewind(CLAUDE_FIRST_TURN);
+    await waitFor(() => spawned.length === starts + 1, "new process");
+    expect(spawned[starts]).not.toContain("--resume");
+    expect(spawned[starts]).not.toContain("--resume-session-at");
+    expect(spawned[starts]).toContain("--session-id");
+    emit({ type: "system", subtype: "init", session_id: "sess_2" });
+    await done;
+
+    const edited = await nextTurn("explore the tests instead");
+    expect(boundaries(edited.events)).toEqual([CLAUDE_FIRST_TURN]);
+    emit({ type: "result", subtype: "success", session_id: "sess_2" });
+    await edited.turn;
+  });
+
+  it("fails, and forgets the cut, when Claude Code cannot find the entry", async () => {
+    const first = await startTurn("s1");
+    reply("uuid-reply-1");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await first.turn;
+
+    const { done, starts } = await rewind("uuid-not-in-the-file");
+    await waitFor(() => spawned.length === starts + 1, "replacement process");
+    // No message found with that uuid: Claude Code prints so and exits.
+    onExit?.(1);
+    await expect(done).rejects.toThrow(
+      "Claude Code could not go back to before this message",
+    );
+
+    // The next prompt resumes the conversation as it stands.
+    const before = userCount();
+    const next = sendClaudeTurn({
+      ...base,
+      text: "never mind",
+      onEvent: () => undefined,
+    });
+    await waitFor(() => spawned.length === starts + 2, "plain resume");
+    expect(spawned[starts + 1]).toEqual(
+      expect.arrayContaining(["--resume", "sess_1"]),
+    );
+    expect(spawned[starts + 1]).not.toContain("--resume-session-at");
+    emit({ type: "system", subtype: "init", session_id: "sess_1" });
+    await waitFor(() => userCount() > before, "next prompt");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await next;
+  });
+
+  it("refuses while a turn is running, and without a boundary", async () => {
+    const first = await startTurn("s1");
+    await expect(
+      rewindClaudeLastTurn({
+        ...base,
+        providerTurnId: "uuid-reply-1",
+        onEvent: () => undefined,
+      }),
+    ).rejects.toThrow("Stop the current turn before editing the last message");
+    expect(spawned).toHaveLength(1);
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await first.turn;
+
+    await expect(
+      rewindClaudeLastTurn({ ...base, onEvent: () => undefined }),
+    ).rejects.toThrow("This message cannot be edited");
+    expect(spawned).toHaveLength(1);
+  });
+
+  it("keeps the boundary of a turn that was stopped part way", async () => {
+    const first = await startTurn("s1");
+    reply("uuid-reply-1");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await first.turn;
+
+    const second = await nextTurn("refactor everything");
+    reply("uuid-partial");
+    await cancelClaudeTurn("s1");
+    // What Claude writes while the stop settles is still in its conversation.
+    reply("uuid-after-stop");
+    await second.turn;
+
+    // A prompt sent now follows that last entry, not the one the app last
+    // showed.
+    const third = await nextTurn("just the tests then");
+    expect(boundaries(third.events)).toEqual(["uuid-after-stop"]);
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await third.turn;
+
+    // And the stopped prompt's own boundary is still the entry before it.
+    expect(boundaries(second.events)).toEqual(["uuid-reply-1"]);
+  });
+
+  it("gives the second of two prompts in a row no boundary", async () => {
+    const first = await startTurn("s1");
+    reply("uuid-reply-1");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await first.turn;
+
+    // Stopped before Claude wrote anything back.
+    const second = await nextTurn("refactor everything");
+    expect(boundaries(second.events)).toEqual(["uuid-reply-1"]);
+    await cancelClaudeTurn("s1");
+    await second.turn;
+
+    // Cutting back to uuid-reply-1 for this one would drop the prompt before
+    // it as well, which the transcript keeps.
+    const third = await nextTurn("refactor only the tests");
+    expect(boundaries(third.events)).toEqual([]);
+    reply("uuid-reply-3");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await third.turn;
+
+    const fourth = await nextTurn("thanks");
+    expect(boundaries(fourth.events)).toEqual(["uuid-reply-3"]);
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await fourth.turn;
+  });
+
+  it("gives a compaction no boundary, and forgets the entries before it", async () => {
+    const first = await startTurn("s1");
+    reply("uuid-reply-1");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await first.turn;
+
+    const events: HarnessEvent[] = [];
+    const before = userCount();
+    const compact = compactClaudeContext({
+      ...base,
+      onEvent: (event) => events.push(event),
+    });
+    await waitFor(() => userCount() > before, "compact command");
+    emit({ type: "system", subtype: "compact_boundary", session_id: "sess_1" });
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await compact;
+    // Nothing for the app to stamp onto the prompt before the compaction.
+    expect(boundaries(events)).toEqual([]);
+
+    // The summary Claude now starts from has no entry seen yet.
+    const next = await nextTurn("carry on");
+    expect(boundaries(next.events)).toEqual([]);
+    reply("uuid-reply-2");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await next.turn;
+
+    const after = await nextTurn("and then?");
+    expect(boundaries(after.events)).toEqual(["uuid-reply-2"]);
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await after.turn;
+  });
+
+  it("does not resume a new conversation that was never sent a prompt", async () => {
+    const first = await startTurn("s1");
+    reply("uuid-reply-1");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await first.turn;
+
+    const { done, starts } = await rewind(CLAUDE_FIRST_TURN);
+    await waitFor(() => spawned.length === starts + 1, "new process");
+    emit({
+      type: "control_response",
+      response: { subtype: "success", request_id: "monocode_1" },
+    });
+    await done;
+
+    // The edit is sent in plan mode, which restarts Claude Code. There is
+    // nothing saved under the new conversation's id to resume.
+    const before = userCount();
+    const edited = sendClaudeTurn({
+      ...base,
+      intent: "plan",
+      text: "plan the tests instead",
+      onEvent: () => undefined,
+    });
+    await waitFor(() => spawned.length === starts + 2, "restart for plan mode");
+    expect(spawned[starts + 1]).not.toContain("--resume");
+    expect(spawned[starts + 1]).toContain("--session-id");
+    emit({ type: "system", subtype: "init", session_id: "sess_3" });
+    await waitFor(() => userCount() > before, "edited prompt");
+    emit({ type: "result", subtype: "success", session_id: "sess_3" });
+    await edited;
+  });
+
+  it("puts the conversation back when a first-turn edit cannot start", async () => {
+    const first = await startTurn("s1");
+    reply("uuid-reply-1");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await first.turn;
+
+    const { done, starts } = await rewind(CLAUDE_FIRST_TURN);
+    await waitFor(() => spawned.length === starts + 1, "new process");
+    onExit?.(1);
+    await expect(done).rejects.toThrow(
+      "Claude Code could not go back to before this message",
+    );
+
+    // The app kept the prompt and its reply, so Claude must still have them.
+    const next = await (async () => {
+      const events: HarnessEvent[] = [];
+      const before = userCount();
+      const turn = sendClaudeTurn({
+        ...base,
+        text: "never mind",
+        onEvent: (event) => events.push(event),
+      });
+      await waitFor(() => spawned.length === starts + 2, "plain resume");
+      emit({ type: "system", subtype: "init", session_id: "sess_1" });
+      await waitFor(() => userCount() > before, "next prompt");
+      return { events, turn };
+    })();
+    expect(spawned[starts + 1]).toEqual(
+      expect.arrayContaining(["--resume", "sess_1"]),
+    );
+    expect(boundaries(next.events)).toEqual(["uuid-reply-1"]);
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await next.turn;
+  });
+
+  it("cuts back from a boundary saved before the app restarted", async () => {
+    bindClaudeSession("s1", "saved-session", "/repo");
+    const { done, starts } = await rewind("uuid-saved");
+    await waitFor(() => spawned.length === starts + 1, "cut process");
+    const args = spawned[starts];
+    expect(args).toEqual(expect.arrayContaining(["--resume", "saved-session"]));
+    expect(args[args.indexOf("--resume-session-at") + 1]).toBe("uuid-saved");
+    emit({ type: "system", subtype: "init", session_id: "saved-session" });
+    await expect(done).resolves.toEqual({ submitted: false });
+  });
+
+  it("refuses when the conversation cannot be resumed in this folder", async () => {
+    bindClaudeSession("s1", "saved-session", "/another/repo");
+    const { done, starts } = await rewind("uuid-saved");
+    await waitFor(() => spawned.length === starts + 1, "process");
+    expect(spawned[starts]).not.toContain("--resume-session-at");
+    emit({ type: "system", subtype: "init", session_id: "sess_9" });
+    await expect(done).rejects.toThrow("cannot be resumed here");
   });
 });

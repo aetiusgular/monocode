@@ -685,6 +685,11 @@ import {
   resolveLinkedWorkItem,
 } from "../features/sessions/model/sessionWorkItem";
 import {
+  sessionToolsInput,
+  withDisabledMcpServers,
+  withExtraDirs,
+} from "../features/session-tools/model/harnessInput";
+import {
   completeLinkedWorkItemUpdateCard,
   failLinkedWorkItemUpdateCard,
   pendingLinkedWorkItemUpdateCard,
@@ -6577,6 +6582,26 @@ function Workspace({
     [],
   );
 
+  // Both handlers below also write the ref. A harness event flush rebuilds
+  // state from it, and can land before React renders this update: the folder
+  // picker answers from a promise, and a turn may be streaming meanwhile.
+  const onExtraDirsChange = useCallback((sessionId: string, dirs: string[]) => {
+    const update = (s: Session) =>
+      s.id === sessionId ? withExtraDirs(s, dirs) : s;
+    sessionsRef.current = sessionsRef.current.map(update);
+    setSessions((prev) => prev.map(update));
+  }, []);
+
+  const onDisabledMcpServersChange = useCallback(
+    (sessionId: string, names: string[]) => {
+      const update = (s: Session) =>
+        s.id === sessionId ? withDisabledMcpServers(s, names) : s;
+      sessionsRef.current = sessionsRef.current.map(update);
+      setSessions((prev) => prev.map(update));
+    },
+    [],
+  );
+
   const onSaveDraft = useCallback(
     (
       sessionId: string,
@@ -7296,7 +7321,7 @@ function Workspace({
                 rawCommand || options?.ciRepair ? s.handoffCard : undefined,
             };
             if (editedResend) {
-              next = editedResend.replace(next);
+              next = { ...editedResend.replace(next), resendingEdited: false };
             }
             if (approvedPlan && intent === "build") {
               next = {
@@ -7464,7 +7489,9 @@ function Workspace({
       if (editedResend && canRewindHarnessLastTurn(current.harness)) {
         editedResends.start(sessionId);
         const locked = sessionsRef.current.map((session) =>
-          session.id === sessionId ? { ...session, busy: true } : session,
+          session.id === sessionId
+            ? { ...session, busy: true, resendingEdited: true }
+            : session,
         );
         sessionsRef.current = locked;
         syncDockBadge(locked);
@@ -7585,6 +7612,12 @@ function Workspace({
                 model: pendingSwitch.fromModel,
                 modelSettings: pendingSwitch.fromSettings,
                 providerAccountId: pendingSwitch.fromProviderAccountId,
+                // The session now names the incoming harness; the tools go
+                // to the outgoing one, as its earlier turns had them.
+                ...sessionToolsInput(
+                  { ...current, harness: pendingSwitch.from },
+                  workCwd,
+                ),
                 userRequest: text,
               });
             } catch {
@@ -7748,9 +7781,13 @@ function Workspace({
                 runtimeMode: current.runtimeMode,
                 ephemeral: current.ephemeral === true,
                 codexStore: mono ? "mono" : undefined,
+                // The same launch settings the edited turn is sent with, so
+                // the harness does not have to restart between the two.
+                intent: intent === "orchestrate" ? "plan" : intent,
                 controlsAgents:
                   operatorAccess ||
                   orchestrator.run(sessionId)?.status === "active",
+                ...sessionToolsInput(current, workCwd),
                 ...(editedProviderTurnId
                   ? { providerTurnId: editedProviderTurnId }
                   : {}),
@@ -7809,6 +7846,7 @@ function Workspace({
                 operatorAccess ||
                 orchestrator.run(sessionId)?.status === "active",
               appAccess: operatorAccess,
+              ...sessionToolsInput(current, workCwd),
               text,
               attachments: turnAttachments,
               ...(editedResend ? { onAccepted: acceptEditedResend } : {}),
@@ -8080,7 +8118,22 @@ function Workspace({
         })
         .finally(() => {
           editedResend?.reject();
-          if (editedResend) editedResends.finish(sessionId);
+          if (editedResend) {
+            editedResends.finish(sessionId);
+            // A resend that failed before the harness took it never committed.
+            setSessions((prev) =>
+              prev.some(
+                (session) =>
+                  session.id === sessionId && session.resendingEdited,
+              )
+                ? prev.map((session) =>
+                    session.id === sessionId
+                      ? { ...session, resendingEdited: false }
+                      : session,
+                  )
+                : prev,
+            );
+          }
           options?.onSettled?.(
             turnGen.current.get(sessionId) !== gen
               ? { status: "cancelled", text: controlText }
@@ -9890,6 +9943,7 @@ function Workspace({
               isMonoSession(sessionId) ||
               operatorEnabledInThread(current.blocks) ||
               orchestrator.run(sessionId)?.status === "active",
+            ...sessionToolsInput(current, workCwd),
             onEvent: (event) => {
               if (turnGen.current.get(sessionId) !== gen) return;
               enqueueHarnessEvent(sessionId, event);
@@ -12281,6 +12335,8 @@ function Workspace({
     onModelChange,
     onModelSettingsChange,
     onRuntimeModeChange,
+    onExtraDirsChange,
+    onDisabledMcpServersChange,
     onSaveDraft,
     onRemoveDraft,
     onSubmit,

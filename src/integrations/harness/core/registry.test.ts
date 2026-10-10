@@ -8,11 +8,13 @@ import {
   HARNESS_IDLE_PARK_MS,
   bindHarnessSession,
   canCompactHarnessContext,
+  canListHarnessMcpServers,
   canRunHarnessTextPrompt,
   runHarnessTextPrompt,
   canRewindHarnessLastTurn,
   compactHarnessContext,
   isLiveHarness,
+  listHarnessMcpServers,
   listHarnesses,
   refreshHarnessCatalogs,
   registerHarness,
@@ -255,6 +257,31 @@ describe("harness registry", () => {
       omp: true,
       fx: false,
     });
+  });
+
+  it("asks only Codex itself for a session's MCP servers", async () => {
+    registerBuiltinHarnesses();
+    const ids: HarnessId[] = ["claude", "codex", "cursor", "opencode", "fx"];
+    expect(
+      Object.fromEntries(ids.map((id) => [id, canListHarnessMcpServers(id)])),
+    ).toEqual({
+      claude: false,
+      codex: true,
+      cursor: false,
+      opencode: false,
+      fx: false,
+    });
+
+    const servers = [{ name: "github", enabled: true, command: "gh-mcp" }];
+    const listMcpServers = vi.fn(async () => servers);
+    registerHarness(stub("codex", { listMcpServers }));
+    registerHarness(stub("claude"));
+    const input = { cwd: "/repo", providerAccountId: "work", refresh: true };
+    expect(await listHarnessMcpServers("codex", input)).toBe(servers);
+    expect(listMcpServers).toHaveBeenCalledWith(input);
+    await expect(listHarnessMcpServers("claude", input)).rejects.toThrow(
+      "claude does not report its MCP servers",
+    );
   });
 
   it("registers Antigravity as a live fx-tier harness", () => {

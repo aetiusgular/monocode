@@ -50,8 +50,47 @@ export function refreshCodexCatalog(): Promise<void> {
 export async function discoverCodexModels(
   workingDirectory?: string,
 ): Promise<AgentModel[]> {
-  const { path } = await resolveCodexBinary();
   const cwd = workingDirectory ?? (await homeDir());
+  return withCodexProbe(
+    {
+      cwd,
+      timeoutMs: DISCOVERY_TIMEOUT_MS,
+      timeoutMessage: "Codex model discovery timed out",
+    },
+    async (rpc) => {
+      const account = await rpc
+        .request<{
+          account?: unknown;
+          requiresOpenaiAuth?: boolean;
+        }>("account/read", {}, REQUEST_TIMEOUT_MS)
+        .catch(() => null);
+
+      if (account && !account.account && account.requiresOpenaiAuth) {
+        throw new Error(
+          "Codex CLI is not authenticated. Run `codex login` and try again.",
+        );
+      }
+
+      return await listAllModels(rpc);
+    },
+  );
+}
+
+/**
+ * Runs `work` against a short-lived Codex app-server, then stops it. The
+ * app-server is the configured Codex binary; with a provider account it runs
+ * in that account's Codex home, as a session of that account does.
+ */
+export async function withCodexProbe<T>(
+  options: {
+    cwd: string;
+    providerAccountId?: string;
+    timeoutMs: number;
+    timeoutMessage: string;
+  },
+  work: (rpc: JsonRpcClient) => Promise<T>,
+): Promise<T> {
+  const { path } = await resolveCodexBinary();
   const probeId = `${PROBE_ID}-${crypto.randomUUID()}`;
   const rpc = new JsonRpcClient(
     probeId,
@@ -76,9 +115,19 @@ export async function discoverCodexModels(
   );
 
   try {
-    await spawnChild(probeId, path, ["app-server"], cwd, undefined, "codex");
+    await spawnChild(
+      probeId,
+      path,
+      ["app-server"],
+      options.cwd,
+      options.providerAccountId
+        ? { provider: "codex", id: options.providerAccountId }
+        : undefined,
+      "codex",
+    );
     return await withTimeout(
-      DISCOVERY_TIMEOUT_MS,
+      options.timeoutMs,
+      options.timeoutMessage,
       async () => {
         await rpc.request(
           "initialize",
@@ -93,21 +142,7 @@ export async function discoverCodexModels(
           REQUEST_TIMEOUT_MS,
         );
         await rpc.notify("initialized", undefined);
-
-        const account = await rpc
-          .request<{
-            account?: unknown;
-            requiresOpenaiAuth?: boolean;
-          }>("account/read", {}, REQUEST_TIMEOUT_MS)
-          .catch(() => null);
-
-        if (account && !account.account && account.requiresOpenaiAuth) {
-          throw new Error(
-            "Codex CLI is not authenticated. Run `codex login` and try again.",
-          );
-        }
-
-        return await listAllModels(rpc);
+        return await work(rpc);
       },
       () => {
         void stop();
@@ -285,6 +320,7 @@ function uniqueByNative(models: AgentModel[]): AgentModel[] {
 
 async function withTimeout<T>(
   ms: number,
+  message: string,
   work: () => Promise<T>,
   onTimeout: () => void,
 ): Promise<T> {
@@ -296,7 +332,7 @@ async function withTimeout<T>(
       new Promise<T>((_, reject) => {
         timer = setTimeout(() => {
           onTimeout();
-          reject(new Error("Codex model discovery timed out"));
+          reject(new Error(message));
         }, ms);
       }),
     ]);

@@ -9,6 +9,8 @@ import {
   askUserQuestionAllowInput,
   buildClaudeSpawnArgs,
   buildClaudeUserMessage,
+  claudeMcpServerDenyRule,
+  claudeSettingsKey,
   contextFromResult,
   contextUsedFromAssistant,
   extractExitPlanModePlan,
@@ -139,6 +141,20 @@ describe("buildClaudeSpawnArgs", () => {
     expect(JSON.parse(settings)).toMatchObject({ disableAllHooks: true });
   });
 
+  it("asks Claude Code for its task tools in sessions, not in helper calls", () => {
+    // Newer models get no TaskCreate or TodoWrite unless the CLI is asked,
+    // and the Tasks card is drawn from those calls.
+    const session = buildClaudeSpawnArgs({ model: "claude-sonnet-5-5" });
+    expect(JSON.parse(session[session.indexOf("--settings") + 1]).env).toEqual({
+      CLAUDE_CODE_ENABLE_TODO_TOOLS: "1",
+    });
+
+    const helper = buildClaudeSpawnArgs({ isolated: true, maxTurns: 1 });
+    expect(
+      JSON.parse(helper[helper.indexOf("--settings") + 1]).env,
+    ).toBeUndefined();
+  });
+
   it("skips permissions and MCP for isolated text sessions", () => {
     const args = buildClaudeSpawnArgs({
       isolated: true,
@@ -170,6 +186,164 @@ describe("buildClaudeSpawnArgs", () => {
       permissionMode: "bypassPermissions",
     });
     expect(args).toContain("--allow-dangerously-skip-permissions");
+  });
+
+  it("passes each extra folder with its own --add-dir", () => {
+    const args = buildClaudeSpawnArgs({
+      model: "claude-sonnet-5",
+      resume: "sess-1",
+      addDirs: ["/work/docs", "/work/shared assets"],
+    });
+    const flags = args.flatMap((arg, index) =>
+      arg === "--add-dir" ? [args[index + 1]] : [],
+    );
+    expect(flags).toEqual(["/work/docs", "/work/shared assets"]);
+    // The flag is variadic: a flag must follow it, never a bare argument.
+    expect(args[args.lastIndexOf("--add-dir") + 2]).toBe("--resume");
+  });
+
+  it("cuts a resumed conversation back to an entry when asked", () => {
+    const args = buildClaudeSpawnArgs({
+      resume: "sess-1",
+      resumeSessionAt: "uuid-kept",
+    });
+    expect(args[args.indexOf("--resume") + 1]).toBe("sess-1");
+    expect(args[args.indexOf("--resume-session-at") + 1]).toBe("uuid-kept");
+  });
+
+  it("does not cut back without a conversation to resume", () => {
+    expect(
+      buildClaudeSpawnArgs({ sessionId: "new", resumeSessionAt: "uuid-kept" }),
+    ).not.toContain("--resume-session-at");
+    expect(buildClaudeSpawnArgs({ resume: "sess-1" })).not.toContain(
+      "--resume-session-at",
+    );
+  });
+
+  it("adds no --add-dir without extra folders", () => {
+    expect(buildClaudeSpawnArgs({ model: "claude-sonnet-5" })).not.toContain(
+      "--add-dir",
+    );
+    expect(buildClaudeSpawnArgs({ addDirs: [] })).not.toContain("--add-dir");
+  });
+
+  /** The arguments that belong to one variadic flag, up to the next flag. */
+  function flagValues(args: string[], flag: string): string[] {
+    const start = args.indexOf(flag);
+    if (start < 0) return [];
+    const rest = args.slice(start + 1);
+    const end = rest.findIndex((arg) => arg.startsWith("--"));
+    return end < 0 ? rest : rest.slice(0, end);
+  }
+
+  it("denies every tool of each switched-off MCP server, and no other", () => {
+    const args = buildClaudeSpawnArgs({
+      model: "claude-sonnet-5",
+      sessionId: "sess-1",
+      disabledMcpServers: ["github", "linear"],
+    });
+    expect(args.filter((arg) => arg === "--disallowedTools")).toHaveLength(1);
+    expect(flagValues(args, "--disallowedTools")).toEqual([
+      "mcp__github",
+      "mcp__linear",
+    ]);
+    // Variadic: the rules end at the next flag.
+    expect(args[args.indexOf("--disallowedTools") + 3]).toBe("--session-id");
+  });
+
+  it("merges MCP server rules with other deny rules instead of replacing them", () => {
+    const args = buildClaudeSpawnArgs({
+      disallowedTools: ["WebSearch", "Bash(rm *)", "mcp__github"],
+      disabledMcpServers: ["github", "linear"],
+    });
+    expect(flagValues(args, "--disallowedTools")).toEqual([
+      "WebSearch",
+      "Bash(rm *)",
+      "mcp__github",
+      "mcp__linear",
+    ]);
+  });
+
+  it("keeps existing deny rules when no MCP server is switched off", () => {
+    expect(
+      flagValues(
+        buildClaudeSpawnArgs({ disallowedTools: ["WebSearch"] }),
+        "--disallowedTools",
+      ),
+    ).toEqual(["WebSearch"]);
+  });
+
+  it("adds no --disallowedTools when nothing is denied", () => {
+    expect(buildClaudeSpawnArgs({ model: "claude-sonnet-5" })).not.toContain(
+      "--disallowedTools",
+    );
+    expect(
+      buildClaudeSpawnArgs({ disabledMcpServers: [], disallowedTools: [] }),
+    ).not.toContain("--disallowedTools");
+    expect(buildClaudeSpawnArgs({ disabledMcpServers: ["  "] })).not.toContain(
+      "--disallowedTools",
+    );
+  });
+
+  it("leaves --settings as it was when servers are switched off", () => {
+    const args = buildClaudeSpawnArgs({
+      settings: { fastMode: true },
+      disabledMcpServers: ["github"],
+    });
+    expect(JSON.parse(args[args.indexOf("--settings") + 1])).toEqual({
+      fastMode: true,
+      env: { CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" },
+    });
+  });
+});
+
+describe("claudeMcpServerDenyRule", () => {
+  it("names the server the way Claude Code names its tools", () => {
+    expect(claudeMcpServerDenyRule("github")).toBe("mcp__github");
+    expect(claudeMcpServerDenyRule("my-server_2")).toBe("mcp__my-server_2");
+    expect(claudeMcpServerDenyRule("claude.ai Gmail")).toBe(
+      "mcp__claude_ai_Gmail",
+    );
+    expect(claudeMcpServerDenyRule("docs(v2)")).toBe("mcp__docs_v2_");
+  });
+});
+
+describe("claudeSettingsKey", () => {
+  const base = { model: "claude-sonnet-5", runtimeMode: "supervised" } as const;
+
+  it("changes when the extra folders change, so the process restarts", () => {
+    const none = claudeSettingsKey(base);
+    const one = claudeSettingsKey({ ...base, extraDirs: ["/work/docs"] });
+    const two = claudeSettingsKey({
+      ...base,
+      extraDirs: ["/work/docs", "/work/design"],
+    });
+    expect(one).not.toBe(none);
+    expect(two).not.toBe(one);
+    expect(claudeSettingsKey({ ...base, extraDirs: ["/work/docs"] })).toBe(one);
+  });
+
+  it("is unchanged by an empty folder list", () => {
+    expect(claudeSettingsKey({ ...base, extraDirs: [] })).toBe(
+      claudeSettingsKey(base),
+    );
+  });
+
+  it("changes when a connector is switched, whatever the order of the list", () => {
+    const none = claudeSettingsKey(base);
+    const one = claudeSettingsKey({ ...base, disabledMcpServers: ["github"] });
+    const two = claudeSettingsKey({
+      ...base,
+      disabledMcpServers: ["github", "linear"],
+    });
+    expect(one).not.toBe(none);
+    expect(two).not.toBe(one);
+    expect(
+      claudeSettingsKey({ ...base, disabledMcpServers: ["linear", "github"] }),
+    ).toBe(two);
+    expect(claudeSettingsKey({ ...base, disabledMcpServers: [] })).toBe(none);
+    // A folder and a server of the same name are different settings.
+    expect(claudeSettingsKey({ ...base, extraDirs: ["github"] })).not.toBe(one);
   });
 });
 

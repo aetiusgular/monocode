@@ -9,6 +9,8 @@ import { codexCommandPresentation } from "../../../integrations/harness/provider
 import { recoverCursorSubagents } from "../../../integrations/harness/providers/cursor/cursorSubagents";
 import { persistableAttachment } from "../model/attachments";
 import type { ContextUsage } from "../model/contextUsage";
+import { sanitizeDisabledMcpServers } from "../../session-tools/model/connectors";
+import { sanitizeExtraDirs } from "../../session-tools/model/extraDirs";
 import {
   isRemoteProjectPath,
   normalizeProjectPath,
@@ -34,6 +36,7 @@ import type {
   HandoffStatus,
   InterjectionMeta,
   LinkedWorkItem,
+  PersistedSessionTools,
   RuntimeMode,
   SecondOpinionMeta,
   Session,
@@ -327,20 +330,45 @@ export function sanitizeLinkedWorkItem(
   };
 }
 
+/**
+ * Composer tools a session carries across restarts. `session_upsert` keeps a
+ * fixed set of columns and drops any other session field, but it stores each
+ * block's JSON as given, so these ride on the first user block the same way
+ * `orchestrationLeadId` does. Mono transcripts are stored block by block
+ * through another command and do not carry them.
+ */
+function persistedSessionTools(
+  source: Partial<Record<keyof PersistedSessionTools, unknown>> | undefined,
+): PersistedSessionTools | undefined {
+  const extraDirs = sanitizeExtraDirs(source?.extraDirs);
+  const disabledMcpServers = sanitizeDisabledMcpServers(
+    source?.disabledMcpServers,
+  );
+  if (!extraDirs && !disabledMcpServers) return undefined;
+  return {
+    ...(extraDirs ? { extraDirs } : {}),
+    ...(disabledMcpServers ? { disabledMcpServers } : {}),
+  };
+}
+
 export function sanitizeSessionForPersist(
   session: Session,
 ): SessionUpsertPayload {
   const firstUser = session.blocks.findIndex((block) => block.role === "user");
+  const sessionTools = persistedSessionTools(session);
   return {
     ...persistableMeta(session),
     blocks: session.blocks
-      .map((block, index) =>
-        sanitizeBlock(
+      .map((block, index) => {
+        const saved = sanitizeBlock(
           index === firstUser && session.orchestrationLeadId
             ? { ...block, orchestrationLeadId: session.orchestrationLeadId }
             : block,
-        ),
-      )
+        );
+        return saved && index === firstUser && sessionTools
+          ? { ...saved, sessionTools }
+          : saved;
+      })
       .filter((block): block is Block => block != null),
   };
 }
@@ -475,7 +503,8 @@ export function persistFingerprint(session: Session): string {
     }
     return token;
   });
-  return `${JSON.stringify(persistableMeta(session, false))}|${queue.length ? (session.queueStatus ?? "active") : ""}:${queue.join(",")}|${session.orchestrationLeadId ?? ""}|${session.blocks
+  const sessionTools = persistedSessionTools(session);
+  return `${JSON.stringify(persistableMeta(session, false))}|${queue.length ? (session.queueStatus ?? "active") : ""}:${queue.join(",")}|${session.orchestrationLeadId ?? ""}|${sessionTools ? JSON.stringify(sessionTools) : ""}|${session.blocks
     .map(blockToken)
     .join(",")}`;
 }
@@ -1410,6 +1439,12 @@ function recordToSession(record: SessionRecord): Session {
         .map((block) => sanitizeBlock(block, { hydrate: true }))
         .filter((block): block is Block => block != null)
     : [];
+  // `sanitizeBlock` leaves the carrier behind, so read it from the stored rows.
+  const sessionTools = persistedSessionTools(
+    Array.isArray(record.blocks)
+      ? record.blocks.find((block) => block?.role === "user")?.sessionTools
+      : undefined,
+  );
   const linkedWorkItem = sanitizeLinkedWorkItem(record.linkedWorkItem);
   const queuedMessages = sanitizeQueuedMessages(record.queuedMessages);
   return {
@@ -1450,6 +1485,7 @@ function recordToSession(record: SessionRecord): Session {
     ...(record.automationId && isPersistableId(record.automationId)
       ? { automationId: record.automationId }
       : {}),
+    ...(sessionTools ?? {}),
     ...(contextFromRecord(record) ?? {}),
   };
 }

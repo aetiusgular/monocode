@@ -1,0 +1,249 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  canListHarnessMcpServers,
+  listHarnessMcpServers,
+} from "../../../integrations/harness/core/registry";
+import type { HarnessMcpServer } from "../../../integrations/harness/core/types";
+import { Plus, RefreshCw, Settings } from "../../../shared/ui/icons";
+import {
+  Popover,
+  type PopoverAnchor,
+  type PopoverDismissReason,
+} from "../../../shared/ui/Popover";
+import { HARNESS_TITLE, type HarnessId } from "../../sessions/model/session";
+import {
+  getCachedMcpSettings,
+  loadMcpSettings,
+  subscribeMcpSettings,
+  type McpSettingsSnapshot,
+} from "../../settings/model/mcpSettingsCache";
+import {
+  connectorChangePending,
+  connectorRows,
+  connectorSwitchCaveat,
+  reportedConnectorRows,
+  setMcpServerEnabled,
+} from "../model/connectors";
+import { ConnectorSwitch } from "./ConnectorSwitch";
+
+const ACTION =
+  "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px] text-content/65 hover:bg-content/10 hover:text-content";
+
+/** What the session's own harness says it has, once it has answered. */
+type Reported = { servers?: HarnessMcpServer[]; failed?: boolean };
+
+const NO_ANSWER: Reported = {};
+
+/**
+ * The last answer per harness, account and directory. The popover unmounts
+ * when it closes, and this lets it reopen on the rows it last showed instead
+ * of an empty list while the harness is asked again.
+ */
+const answers = new Map<string, HarnessMcpServer[]>();
+
+function lastAnswer(target: string): Reported {
+  const servers = answers.get(target);
+  return servers ? { servers } : NO_ANSWER;
+}
+
+/**
+ * The MCP servers configured for the session's harness, each with a switch
+ * for this chat. Switching one off never edits the harness's configuration.
+ *
+ * Codex is asked for its servers itself: a session's Codex can be a wrapper
+ * binary or a provider account with its own home, which the app's discovery
+ * does not read. Discovery stands in only when Codex cannot be asked.
+ */
+export function ConnectorsPopover({
+  anchor,
+  harness,
+  cwd,
+  providerAccountId,
+  disabled,
+  atTurnStart,
+  onChange,
+  onManage,
+  onDismiss,
+}: {
+  anchor: PopoverAnchor;
+  harness: HarnessId;
+  /** Directory the session works in; MCP discovery runs there too. */
+  cwd: string;
+  /** Provider account the session runs under. */
+  providerAccountId?: string;
+  /** Server names switched off for this chat. */
+  disabled: string[];
+  /** `disabled` as the running turn started, or null while idle. */
+  atTurnStart: readonly string[] | null;
+  onChange: (disabled: string[]) => void;
+  /** Open Settings → MCP. */
+  onManage: () => void;
+  onDismiss: (reason: PopoverDismissReason) => void;
+}) {
+  const reports = canListHarnessMcpServers(harness);
+  const target = `${harness}\n${providerAccountId ?? ""}\n${cwd}`;
+  const [reported, setReported] = useState<Reported>(() => lastAnswer(target));
+  const [asking, setAsking] = useState(reports);
+  const request = useRef(0);
+  const ask = useCallback(
+    (refresh: boolean) => {
+      const current = ++request.current;
+      setAsking(true);
+      const settle = (servers?: HarnessMcpServer[]) => {
+        if (servers) answers.set(target, servers);
+        else answers.delete(target);
+        if (request.current !== current) return;
+        setReported(servers ? { servers } : { failed: true });
+        setAsking(false);
+      };
+      listHarnessMcpServers(harness, { cwd, providerAccountId, refresh }).then(
+        settle,
+        () => settle(),
+      );
+    },
+    [cwd, harness, providerAccountId, target],
+  );
+  useEffect(() => {
+    if (!reports) return;
+    // The last answer stays up while the harness is asked again.
+    setReported(lastAnswer(target));
+    ask(false);
+    return () => {
+      request.current += 1;
+    };
+  }, [ask, reports, target]);
+
+  const answer = reports ? reported : NO_ANSWER;
+  const discovers = !reports || answer.failed === true;
+  const [snapshot, setSnapshot] = useState<McpSettingsSnapshot | undefined>(
+    () => getCachedMcpSettings(cwd),
+  );
+  useEffect(() => {
+    if (!discovers) return;
+    setSnapshot(getCachedMcpSettings(cwd));
+    const stop = subscribeMcpSettings(cwd, setSnapshot);
+    void loadMcpSettings(cwd, false, { claudeHealth: harness === "claude" });
+    return stop;
+  }, [cwd, discovers, harness]);
+
+  const discovered = discovers ? snapshot : undefined;
+  // Until an answer arrives, every switched-off name would look unconfigured.
+  const rows = answer.servers
+    ? reportedConnectorRows(answer.servers, harness, disabled)
+    : discovered
+      ? connectorRows(discovered.servers, harness, disabled)
+      : [];
+  const checking = !answer.servers && !discovered;
+  const title = HARNESS_TITLE[harness];
+  const caveat = connectorSwitchCaveat(harness);
+  return (
+    <Popover
+      anchor={anchor}
+      side="top"
+      align="start"
+      width={280}
+      onDismiss={onDismiss}
+      // The badge toggles this popover itself.
+      ignore="[data-connectors-badge]"
+      data-composer-plus
+      role="dialog"
+      aria-label="Connectors"
+      className="p-1.5"
+    >
+      <div className="flex items-center justify-between px-2 pb-1 pt-0.5">
+        <p className="text-[10px] font-medium uppercase tracking-wide text-content/40">
+          Connectors
+        </p>
+        {reports ? (
+          <button
+            type="button"
+            title={`Ask ${title} for its MCP servers again`}
+            aria-label="Refresh connectors"
+            disabled={asking}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => ask(true)}
+            className="grid size-4 place-items-center rounded text-content/40 hover:text-content disabled:opacity-40"
+          >
+            <RefreshCw className="size-3" strokeWidth={1.75} />
+          </button>
+        ) : null}
+      </div>
+      {discovered?.error ? (
+        <p role="alert" className="px-2 py-2 text-[12px] text-red-400">
+          {discovered.error}
+        </p>
+      ) : null}
+      {answer.failed ? (
+        <p className="px-2 pb-1 text-[11px] leading-4 text-content/45">
+          Default {title} config; may not match this chat.
+        </p>
+      ) : null}
+      {rows.length > 0 ? (
+        <ul
+          aria-label={`${title} MCP servers`}
+          className="max-h-[min(232px,40vh)] overflow-y-auto overscroll-contain"
+        >
+          {rows.map((row) => (
+            <li
+              key={row.name}
+              className="flex items-center gap-2.5 rounded-lg px-2 py-1.5"
+            >
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[13px] text-content">
+                  {row.name}
+                </span>
+                <span className="block truncate text-[11px] leading-4 text-content/45">
+                  {row.detail}
+                </span>
+              </span>
+              <ConnectorSwitch
+                label={row.name}
+                on={row.enabled}
+                disabled={row.configDisabled}
+                onChange={(on) =>
+                  onChange(setMcpServerEnabled(disabled, row.name, on))
+                }
+              />
+            </li>
+          ))}
+        </ul>
+      ) : discovered?.error ? null : (
+        <p className="px-2 py-2 text-[12px] text-content/50">
+          {checking
+            ? "Checking MCP servers…"
+            : `No MCP servers configured for ${title}`}
+        </p>
+      )}
+      {connectorChangePending(disabled, atTurnStart) ? (
+        <p className="px-2 pb-0.5 pt-1 text-[11px] leading-4 text-content/45">
+          Changes apply from the next turn.
+        </p>
+      ) : null}
+      {caveat && rows.some((row) => !row.enabled && !row.configDisabled) ? (
+        <p className="px-2 pb-0.5 pt-1 text-[11px] leading-4 text-content/45">
+          {caveat}
+        </p>
+      ) : null}
+      <div className="mt-1 border-t border-content/10 pt-1">
+        <button
+          type="button"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={onManage}
+          className={ACTION}
+        >
+          <Plus className="size-3.5 shrink-0" />
+          Add connector
+        </button>
+        <button
+          type="button"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={onManage}
+          className={ACTION}
+        >
+          <Settings className="size-3.5 shrink-0" />
+          Manage connectors
+        </button>
+      </div>
+    </Popover>
+  );
+}

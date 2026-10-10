@@ -655,6 +655,36 @@ describe("hydrateWorkspaceSnapshot", () => {
     });
   });
 
+  it("keeps an unsent tab's extra folders and connector switches across a restart", () => {
+    const session: Session = {
+      ...newSession("claude", "/tmp/a"),
+      id: "blank",
+      extraDirs: ["/work/docs", "/work/design"],
+      disabledMcpServers: ["github"],
+    };
+    const tab = newTab(session.id);
+    const saved = JSON.parse(
+      JSON.stringify(
+        collectWorkspaceSnapshot(
+          [tab],
+          [session],
+          tab.id,
+          session.cwd,
+          new Map(),
+        ),
+      ),
+    );
+    saved.sessions[0].extraDirs.push("relative", 7, "/work/docs/");
+    saved.sessions[0].disabledMcpServers.push("", 7, "github");
+    const restored = hydrateWorkspaceSnapshot(
+      parseWorkspaceSnapshot(saved)!,
+      new Map(),
+      new Set(),
+    )?.sessions[0];
+    expect(restored?.extraDirs).toEqual(["/work/docs", "/work/design"]);
+    expect(restored?.disabledMcpServers).toEqual(["github"]);
+  });
+
   it("keeps terminal-only tabs", () => {
     const term = newTerminalFile("/tmp/a");
     const tab = {

@@ -75,6 +75,19 @@ export type ClaudeCliSettings = {
   disableAllHooks?: boolean;
 };
 
+/**
+ * Environment every session's Claude Code runs with, passed in `--settings`.
+ *
+ * Claude Code leaves its task tools (TaskCreate, TaskUpdate and the older
+ * TodoWrite) off for its newer models unless this is set; read in the CLI at
+ * 2.1.296, where only models up to Sonnet 4.6, Opus 4.7 and Haiku 4.5 get
+ * them by default. The Tasks card and the session panel's Progress are drawn
+ * from those tools' calls, so without it both stay empty.
+ */
+export const CLAUDE_SESSION_ENV = {
+  CLAUDE_CODE_ENABLE_TODO_TOOLS: "1",
+} as const;
+
 export function asRecord(value: unknown): Record<string, unknown> | null {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     return value as Record<string, unknown>;
@@ -240,16 +253,37 @@ function normalizeImageMime(mime: string): string {
   return mime;
 }
 
+/**
+ * The deny rule covering every tool of one MCP server. Claude Code names MCP
+ * tools `mcp__<server>__<tool>`, and a bare `mcp__<server>` rule matches all
+ * of that server's tools. Tool names only hold letters, digits, `_` and `-`,
+ * so any other character in a configured server name becomes `_`.
+ */
+export function claudeMcpServerDenyRule(server: string): string {
+  return `mcp__${server.trim().replace(/[^A-Za-z0-9_-]/g, "_")}`;
+}
+
 export function buildClaudeSpawnArgs(input: {
   model?: string;
   effort?: string;
   permissionMode?: ClaudePermissionMode;
   resume?: string;
+  /**
+   * With `resume`: load the conversation only up to and including the entry
+   * with this uuid, dropping what came after it.
+   */
+  resumeSessionAt?: string;
   sessionId?: string;
   settings?: ClaudeCliSettings;
   includePartialMessages?: boolean;
   maxTurns?: number;
   isolated?: boolean;
+  /** Extra working directories, one `--add-dir` each. */
+  addDirs?: string[];
+  /** Deny rules for this process, in permission-rule syntax. */
+  disallowedTools?: string[];
+  /** MCP servers whose tools are all denied, added to `disallowedTools`. */
+  disabledMcpServers?: string[];
 }): string[] {
   const args = [
     "--output-format",
@@ -278,7 +312,10 @@ export function buildClaudeSpawnArgs(input: {
     args.push("--settings", JSON.stringify(settings));
   } else {
     args.push(`--setting-sources=${CLAUDE_SETTING_SOURCES}`);
-    args.push("--settings", JSON.stringify(settings));
+    args.push(
+      "--settings",
+      JSON.stringify({ ...settings, env: CLAUDE_SESSION_ENV }),
+    );
   }
   if (input.model) args.push("--model", input.model);
   if (input.effort) args.push("--effort", input.effort);
@@ -288,7 +325,25 @@ export function buildClaudeSpawnArgs(input: {
   if (input.permissionMode === "bypassPermissions") {
     args.push("--allow-dangerously-skip-permissions");
   }
+  // `--add-dir` is variadic, so it must be followed by another flag, never by
+  // a positional argument. Everything pushed after this point is a flag.
+  for (const dir of input.addDirs ?? []) args.push("--add-dir", dir);
+  const denied = [
+    ...new Set(
+      [
+        ...(input.disallowedTools ?? []),
+        ...(input.disabledMcpServers ?? [])
+          .filter((server) => server.trim())
+          .map(claudeMcpServerDenyRule),
+      ].filter((rule) => rule.trim()),
+    ),
+  ];
+  // One flag, one argument per rule: also variadic, so the same rule applies.
+  if (denied.length > 0) args.push("--disallowedTools", ...denied);
   if (input.resume) args.push("--resume", input.resume);
+  if (input.resume && input.resumeSessionAt) {
+    args.push("--resume-session-at", input.resumeSessionAt);
+  }
   if (input.sessionId) args.push("--session-id", input.sessionId);
   if (input.maxTurns) args.push("--max-turns", String(input.maxTurns));
   return args;
@@ -1088,6 +1143,10 @@ export function claudeSettingsKey(input: {
   context?: string;
   runtimeMode: RuntimeMode;
   hooks?: boolean;
+  /** Launch-time working directories; a change needs a fresh process. */
+  extraDirs?: string[];
+  /** Launch-time deny rules; a change needs a fresh process too. */
+  disabledMcpServers?: string[];
 }): string {
   return [
     input.model,
@@ -1097,6 +1156,12 @@ export function claudeSettingsKey(input: {
     input.context ?? "",
     input.runtimeMode,
     input.hooks === false ? "nohooks" : "hooks",
+    ...(input.extraDirs?.length
+      ? [`dirs:${JSON.stringify(input.extraDirs)}`]
+      : []),
+    ...(input.disabledMcpServers?.length
+      ? [`mcp-off:${JSON.stringify([...input.disabledMcpServers].sort())}`]
+      : []),
   ].join("|");
 }
 

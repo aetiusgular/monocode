@@ -237,5 +237,42 @@ describe("editLastTurn", () => {
       }),
     ).toBe(false);
     expect(canEditLastTurn({ ...chat([]), harness: "claude" })).toBe(false);
+    expect(canEditLastTurn({ ...base, harness: "cursor" })).toBe(false);
+  });
+
+  it("lets a Claude Code prompt be edited once its boundary is known", () => {
+    const turn = (providerTurnId?: string) => ({
+      ...chat([
+        {
+          id: "u1",
+          role: "user",
+          text: "hello",
+          ...(providerTurnId ? { providerTurnId } : {}),
+        },
+        { id: "a1", role: "assistant", text: "hi" },
+      ]),
+      harness: "claude" as const,
+    });
+    // Sent before this run of the app saw where the conversation ends.
+    expect(canEditLastTurn(turn())).toBe(false);
+    expect(canEditLastTurn(turn("uuid-before-prompt"))).toBe(true);
+    expect(canEditLastTurn(turn("claude-first-turn"))).toBe(true);
+    expect(canEditLastTurn({ ...turn("uuid-before-prompt"), busy: true })).toBe(
+      false,
+    );
+  });
+
+  it("does not offer the edit after a message joined a running Claude turn", () => {
+    const session = {
+      ...chat([
+        { id: "u1", role: "user", text: "hello", providerTurnId: "uuid-0" },
+        { id: "a1", role: "assistant", text: "working" },
+        // Steered in mid-turn: it has no boundary of its own.
+        { id: "u2", role: "user", text: "also this", sentAt: 10 },
+        { id: "a2", role: "assistant", text: "done" },
+      ]),
+      harness: "claude" as const,
+    };
+    expect(canEditLastTurn(session)).toBe(false);
   });
 });

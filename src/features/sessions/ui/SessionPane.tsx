@@ -117,6 +117,12 @@ import { markLinkedSessionUpdateSeen } from "../../inbox/model/linkedSessionSeen
 import { RemoteSession } from "../../connections/ui/RemoteSession";
 import { isRemoteProjectPath } from "../../projects/model/recents";
 import type { HostSession } from "../../connections/model/protocol";
+import {
+  SessionPanel,
+  SessionPanelToggle,
+  sessionHasPanel,
+  useSessionPanel,
+} from "../../session-panel";
 
 export type SessionPaneProps = {
   session: Session;
@@ -161,6 +167,10 @@ export type SessionPaneProps = {
     settings: Record<string, string>,
   ) => void;
   onRuntimeModeChange: (sessionId: string, mode: RuntimeMode) => void;
+  /** Absent where a session cannot take extra folders, e.g. a host session. */
+  onExtraDirsChange?: (sessionId: string, dirs: string[]) => void;
+  /** Absent where a chat cannot switch MCP servers off, e.g. a host session. */
+  onDisabledMcpServersChange?: (sessionId: string, names: string[]) => void;
   onSubmit: (
     sessionId: string,
     text: string,
@@ -312,6 +322,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onModelChange,
   onModelSettingsChange,
   onRuntimeModeChange,
+  onExtraDirsChange,
+  onDisabledMcpServersChange,
   onSaveDraft,
   onRemoveDraft,
   onSubmit,
@@ -400,6 +412,10 @@ const LocalSessionPane = memo(function LocalSessionPane({
   useSyncExternalStore(subscribeMonos, monosSnapshot);
   const mono = monoForSession(session.id);
   const agent = mono ? monoLook(mono) : undefined;
+  const sessionPanel = useSessionPanel(
+    !remoteSessionLoading && sessionHasPanel(session, !!mono),
+    session,
+  );
   // A Mono shows only its own background, never the project's or the app's.
   const projectBackground = mono
     ? monoChatBackground(mono.id)
@@ -540,6 +556,10 @@ const LocalSessionPane = memo(function LocalSessionPane({
     },
     [monoTranscript.reveal],
   );
+  const showInChat = useCallback(
+    (blockId: string) => void navigateBlock(blockId),
+    [navigateBlock],
+  );
   const jumpRequest = useSyncExternalStore(
     subscribeTranscriptJump,
     () => peekTranscriptJump(session.id),
@@ -614,6 +634,13 @@ const LocalSessionPane = memo(function LocalSessionPane({
     return () => window.removeEventListener(ADD_TO_CHAT_EVENT, onAdd);
   }, [addSelectionToChat, addToChatTarget]);
   const workCwd = sessionWorkCwd(session);
+  // Composer tools are saved with a local chat's transcript. Host sessions run
+  // elsewhere, and Monos, Inbox asks and in-memory chats are not saved that way.
+  const sessionToolsAvailable =
+    !remote &&
+    !session.inboxAsk &&
+    !session.ephemeral &&
+    !monoForSession(session.id);
   const showDeckProjectPicker = isEmpty && !looksLikeProject(session.cwd);
   // The agent's input always sits at the bottom, like a chat.
   const dockComposer =
@@ -710,6 +737,19 @@ const LocalSessionPane = memo(function LocalSessionPane({
         onModelSettingsChange(session.id, settings)
       }
       onRuntimeModeChange={(mode) => onRuntimeModeChange(session.id, mode)}
+      extraDirs={session.extraDirs}
+      onExtraDirsChange={
+        sessionToolsAvailable && onExtraDirsChange
+          ? (dirs) => onExtraDirsChange(session.id, dirs)
+          : undefined
+      }
+      disabledMcpServers={session.disabledMcpServers}
+      providerAccountId={session.providerAccountId}
+      onDisabledMcpServersChange={
+        sessionToolsAvailable && onDisabledMcpServersChange
+          ? (names) => onDisabledMcpServersChange(session.id, names)
+          : undefined
+      }
       canSaveDraft={
         (!remote || !!remoteFeatures?.draft) &&
         !session.busy &&
@@ -819,6 +859,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
           >
             {title}
           </span>
+          <SessionPanelToggle panel={sessionPanel} place="pane-header" />
           <button
             type="button"
             title={`Close Pane (${MOD}W)`}
@@ -836,7 +877,15 @@ const LocalSessionPane = memo(function LocalSessionPane({
           </button>
         </div>
       ) : null}
-      <div className="flex min-h-0 min-w-0 flex-1">
+      {inSplit ? null : (
+        // Portalled into the window's title bar, so it covers none of the chat.
+        <SessionPanelToggle
+          panel={sessionPanel}
+          place="title-bar"
+          shown={visible}
+        />
+      )}
+      <div ref={sessionPanel.paneRef} className="flex min-h-0 min-w-0 flex-1">
         <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
           <div
             ref={transcriptScope}
@@ -932,6 +981,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                         : undefined
                     }
                     busy={!!session.busy && !monoTranscript.viewingOlderPage}
+                    resendingEdited={!!session.resendingEdited}
                     visible={visible}
                     cwd={workCwd}
                     agentName={agent?.name}
@@ -997,6 +1047,12 @@ const LocalSessionPane = memo(function LocalSessionPane({
                       notesEnabled ? saveSelectionNote : undefined
                     }
                     onOpenFile={onOpenFile}
+                    documentCards={
+                      !agent &&
+                      !remote &&
+                      !session.inboxAsk &&
+                      !session.orchestrationLeadId
+                    }
                     onOpenDiff={onOpenDiff}
                     onOpenPlan={openPlan}
                     onBuildPlan={
@@ -1189,6 +1245,13 @@ const LocalSessionPane = memo(function LocalSessionPane({
             onOpenDiff={onOpenDiff}
           />
         </div>
+        <SessionPanel
+          panel={sessionPanel}
+          session={session}
+          visible={visible}
+          onOpenFile={onOpenFile}
+          onShowInChat={showInChat}
+        />
       </div>
     </div>
   );

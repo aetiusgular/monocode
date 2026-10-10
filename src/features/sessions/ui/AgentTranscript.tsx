@@ -43,11 +43,13 @@ import { ToolDiffPreview } from "./ToolDiffPreview";
 import { PlanPreview } from "./PlanPreview";
 import { OrchestrationPreview } from "../../orchestration/ui/OrchestrationPreview";
 import { TaskListPreview } from "./TaskListPreview";
+import { ToolCallDetailView } from "./ToolCallDetailView";
 import { HandoffButton, SecondOpinionButton } from "./SecondOpinionButton";
 import { SecondOpinionCard } from "./SecondOpinionCard";
 import { NoteMiniCard } from "../../notes/ui/NoteMiniCard";
 import { ArtifactCard } from "../../artifacts/ui/ArtifactCard";
 import { artifactCards } from "../../artifacts/artifacts";
+import { TurnFileCards } from "../../file-cards/ui/TurnFileCards";
 
 import { TerminalSpinner } from "./TerminalSpinner";
 import { Popover } from "../../../shared/ui/Popover";
@@ -72,6 +74,7 @@ import type { Attachment } from "../model/session";
 import { visibleUserPrompt } from "../../orchestration/model/orchestration";
 import { playCue } from "../../settings/model/sounds";
 import { legacyTaskListFromText } from "../model/taskList";
+import { runningCallLabel, toolCallDetail } from "../model/toolCallDetail";
 import { resolveModel } from "../model/models";
 import { harnessForTurn } from "../model/secondOpinion";
 import { TranscriptTurnCache } from "../model/transcriptTurnCache";
@@ -191,6 +194,11 @@ type Props = {
   onLoadEarlier?: (beforePrepend: () => void) => Promise<void>;
   onReturnToLatest?: () => void;
   busy?: boolean;
+  /**
+   * The last prompt was edited and is being sent again, so the turn still on
+   * show is about to be replaced. Its status line says so and its clock stops.
+   */
+  resendingEdited?: boolean;
   cwd?: string;
   /** Who the turns are by, in place of the model: a Mono's name. */
   agentName?: string;
@@ -225,6 +233,8 @@ type Props = {
   onSaveSelectionNote?: (text: string) => void | Promise<void>;
   onOpenFile?: (path: string) => void;
   onOpenArtifact?: (id: string) => void;
+  /** Card the documents each turn wrote. Regular local sessions only. */
+  documentCards?: boolean;
   onOpenDiff?: (path: string) => void;
   onOpenPlan?: (blockId: string) => void;
   onBuildPlan?: (blockId: string, target?: PlanBuildTarget) => void;
@@ -262,6 +272,7 @@ function AgentTranscriptComponent({
   onLoadEarlier,
   onReturnToLatest,
   busy,
+  resendingEdited = false,
   cwd,
   agentName,
   agentMascot,
@@ -288,6 +299,7 @@ function AgentTranscriptComponent({
   onSaveSelectionNote,
   onOpenFile,
   onOpenArtifact,
+  documentCards = false,
   onOpenDiff,
   onOpenPlan,
   onBuildPlan,
@@ -1091,6 +1103,8 @@ function AgentTranscriptComponent({
                 }
                 background={backgroundTasks}
                 modelName={turnModelName}
+                doing={runningCallLabel(turn, cwd)}
+                resending={resendingEdited}
               />
             ) : agentMascot && agentName ? (
               // A Mono signs its settled turns with just its mascot and name.
@@ -1415,6 +1429,14 @@ function AgentTranscriptComponent({
                   ))}
                 </div>
               ) : null}
+              {documentCards && onOpenFile ? (
+                <TurnFileCards
+                  blocks={turn}
+                  cwd={cwd}
+                  live={!settled}
+                  onOpenFile={onOpenFile}
+                />
+              ) : null}
               {/* The accessory keeps the pane's props, which go stale once parked. */}
               {isLastTurn && latestTurnAccessory && !parked
                 ? latestTurnAccessory
@@ -1593,21 +1615,40 @@ function LiveFoldTitle({
   waitingLabel,
   background,
   modelName,
+  doing,
+  resending = false,
 }: {
   startedAt?: number;
   paused: boolean;
   waitingLabel?: string;
   background?: string[];
   modelName?: string;
+  /** The call in flight, so the folded line says what is running right now. */
+  doing?: string | null;
+  /** This turn is being replaced by its edited prompt; nothing here is running. */
+  resending?: boolean;
 }) {
-  const elapsedMs = useElapsedFrom(startedAt, paused);
+  const elapsedMs = useElapsedFrom(startedAt, paused || resending);
+  if (resending) {
+    // The old turn stays up until the harness takes the new prompt, so a
+    // failed resend loses nothing. Its clock would count from the old turn.
+    return (
+      <span className="flex min-w-0" data-live-resending>
+        <Shimmer className="min-w-0 truncate font-sans text-sm" duration={1}>
+          {RESENDING_LABEL}
+        </Shimmer>
+      </span>
+    );
+  }
   // Yielding with a command still going is not the end of the turn. The clock
   // keeps running and the line says what it is waiting on.
   const text = paused
     ? (waitingLabel ?? "Waiting for approval")
     : background?.length
       ? `${formatWorkingDuration(elapsedMs, modelName)} · ${backgroundLabel(background)}`
-      : formatWorkingDuration(elapsedMs, modelName);
+      : doing
+        ? `${formatWorkingDuration(elapsedMs, modelName)} · ${doing}`
+        : formatWorkingDuration(elapsedMs, modelName);
   const shimmer = (
     <Shimmer className="min-w-0 truncate font-sans text-sm" duration={1}>
       {text}
@@ -1617,10 +1658,16 @@ function LiveFoldTitle({
     <span className="flex min-w-0" title={background.join("\n")}>
       {shimmer}
     </span>
+  ) : doing && !paused ? (
+    <span className="flex min-w-0" data-live-doing title={doing}>
+      {shimmer}
+    </span>
   ) : (
     shimmer
   );
 }
+
+const RESENDING_LABEL = "Sending the edited prompt…";
 
 function backgroundLabel(tasks: string[]): string {
   return tasks.length === 1
@@ -2126,6 +2173,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
         <TaskListPreview
           items={block.taskList.items}
           explanation={block.taskList.explanation}
+          listKey={block.taskList.key ?? block.id}
         />
       </div>
     );
@@ -2137,7 +2185,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
     if (legacyTasks) {
       return (
         <div className={embedded ? "py-1" : "px-4 py-1"}>
-          <TaskListPreview items={legacyTasks} />
+          <TaskListPreview items={legacyTasks} listKey={block.id} />
         </div>
       );
     }
@@ -4160,6 +4208,7 @@ function ActivityToolRow({
   onOpenDiff?: (path: string) => void;
 }) {
   const [errorOpen, setErrorOpen] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
   const appCall = monoCodeToolCall(block);
   if (appCall) {
     return (
@@ -4171,6 +4220,8 @@ function ActivityToolRow({
   const pending = needsApproval(block);
   const errorDetail =
     !pending && state === "rejected" ? block.tool?.detail?.trim() : undefined;
+  // What the call asked for and what came back, for a call that did not fail.
+  const detail = errorDetail ? null : toolCallDetail(block, cwd, live);
   const summary = (
     <ToolCallSummary
       label={label}
@@ -4212,6 +4263,33 @@ function ActivityToolRow({
             />
           </button>
         </div>
+      ) : detail ? (
+        <div
+          aria-label={`Tool call: ${label}`}
+          className="group flex min-w-0 items-center gap-1.5 py-1"
+        >
+          {bare ? null : <ActivityToolIcon state={state} live={live} />}
+          <div
+            className="flex min-w-0 flex-1 cursor-pointer"
+            onClick={() => setDetailOpen((value) => !value)}
+          >
+            {summary}
+          </div>
+          <ToolCallStatusIcon state={state} />
+          <button
+            type="button"
+            aria-expanded={detailOpen}
+            aria-label={`${detailOpen ? "Hide" : "Show"} details for ${label}`}
+            data-tool-call-toggle
+            onClick={() => setDetailOpen((value) => !value)}
+            className="-m-1 shrink-0 rounded p-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+          >
+            <ChevronRight
+              className={`size-3.5 text-content/35 transition-transform group-hover:text-content/70 ${detailOpen ? "rotate-90" : ""}`}
+              strokeWidth={1.75}
+            />
+          </button>
+        </div>
       ) : (
         <div
           aria-label={`Tool call: ${label}`}
@@ -4222,6 +4300,9 @@ function ActivityToolRow({
           {pending ? null : <ToolCallStatusIcon state={state} />}
         </div>
       )}
+      {detailOpen && detail ? (
+        <ToolCallDetailView detail={detail} indent={!bare} />
+      ) : null}
       {pending ? (
         <ApprovalControls block={block} onApproval={onApproval} />
       ) : null}

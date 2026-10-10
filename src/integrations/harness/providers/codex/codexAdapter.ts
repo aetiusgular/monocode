@@ -17,6 +17,7 @@ import {
   generateCodexPrContent,
 } from "./codexGit";
 import { refreshCodexCatalog } from "./codexCatalog";
+import { listCodexMcpServers } from "./codexMcpServers";
 import { generateCodexSessionTitle } from "./codexTitle";
 import {
   runCodexTextPrompt,
@@ -51,6 +52,7 @@ export const codexAdapter: HarnessAdapter = {
   warmupText: warmupCodexText,
   runTextPrompt: runCodexTextPrompt,
   stopTextPrompt: stopCodexTextPrompt,
+  listMcpServers: listCodexMcpServers,
 };
 
 let registered = false;

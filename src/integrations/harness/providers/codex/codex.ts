@@ -23,6 +23,11 @@ import {
   buildThreadStartParams,
   buildTurnStartParams,
   buildTurnSteerParams,
+  codexConfiguredMcpServers,
+  codexMcpSwitches,
+  codexMissingMcpNotice,
+  codexThreadConfig,
+  isCodexMcpConfigError,
   isRecoverableThreadResumeError,
   mapApprovalRequest,
   codexSubagentStates,
@@ -79,6 +84,10 @@ type PendingQuestion = {
   resolve: (reply: UserQuestionReply | "cancelled") => void;
 };
 
+// Reading the configuration only narrows which MCP switches are sent, so a
+// slow answer must not hold up opening the thread.
+const CONFIG_READ_TIMEOUT_MS = 10_000;
+
 // Match Codex's non-blocking question policy: a minute of grace, then a
 // minute of countdown. Interaction keeps the question open for the user.
 const QUESTION_AUTO_RESOLVE_MS = 120_000;
@@ -92,6 +101,10 @@ type Live = {
   controlsAgents: boolean;
   ephemeral: boolean;
   codexStore?: "mono";
+  /** MCP servers this thread was opened without; a change reopens it. */
+  mcpKey: string;
+  /** The switches last asked for; the same ones need no second look. */
+  mcpRequested: string;
   runtimeMode: RuntimeMode;
   planning: boolean;
   onEvent: (event: HarnessEvent) => void;
@@ -145,6 +158,8 @@ type Resume = {
 const liveByThread = new Map<string, Live>();
 const resumeByThread = new Map<string, Resume>();
 const cancelledThreads = new Set<string>();
+/** Switches each session was already told its Codex cannot act on. */
+const missingMcpNoted = new Map<string, string>();
 
 let resolveCodexBinaryImpl: () => Promise<{ path: string }> =
   resolveCodexBinary;
@@ -452,6 +467,7 @@ export async function stopCodexSession(sessionId: string): Promise<void> {
 
 export async function forgetCodexSession(sessionId: string): Promise<void> {
   resumeByThread.delete(sessionId);
+  missingMcpNoted.delete(sessionId);
   await stopCodexSession(sessionId);
 }
 
@@ -505,6 +521,11 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     input.codexStore ??
     existing?.codexStore ??
     resumeByThread.get(input.sessionId)?.codexStore;
+  const disabledMcp = [...new Set(input.disabledMcpServers ?? [])].sort();
+  const mcpRequested = disabledMcp.join("\n");
+  // The servers this session's Codex has an entry for, once it was asked;
+  // null when it could not say.
+  let mcpConfigured: Set<string> | null | undefined;
   if (
     existing &&
     existing.cwd === input.cwd &&
@@ -516,13 +537,36 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     existing.ephemeral === ephemeral &&
     existing.codexStore === codexStore
   ) {
-    existing.onEvent = input.onEvent;
-    return existing;
+    if (existing.mcpRequested === mcpRequested) {
+      existing.onEvent = input.onEvent;
+      return existing;
+    }
+    // The switches changed. Only those for servers this Codex has are ever
+    // applied, so a switch for any other name leaves the thread as it is.
+    if (disabledMcp.length > 0) {
+      mcpConfigured = await readConfiguredMcpServers(
+        existing.rpc,
+        existing.cwd,
+      );
+    }
+    const switches = codexMcpSwitches(disabledMcp, mcpConfigured ?? null);
+    if (
+      switches.key === existing.mcpKey &&
+      liveByThread.get(input.sessionId) === existing &&
+      !existing.rpc.isClosed
+    ) {
+      existing.mcpRequested = mcpRequested;
+      existing.onEvent = input.onEvent;
+      noteMissingMcpServers(input.sessionId, switches.dropped, input.onEvent);
+      return existing;
+    }
   }
   if (existing) {
     // Codex may retain the thread's sandbox network policy across turns.
     // Switch it when this session gains /operator access or loses agent
     // control, so its local CLI socket matches the current policy.
+    // MCP servers are part of the configuration a thread is opened with, so
+    // switching one of this Codex's servers reopens the thread the same way.
     if (
       existing.cwd !== input.cwd ||
       !sameProviderAccountId(
@@ -685,6 +729,47 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     let threadId: string | undefined;
     let didResume = false;
 
+    // An override for a server Codex has no entry for fails the whole
+    // configuration load, so only switch off servers this Codex knows. The
+    // app-server this one replaces ran the same Codex and was asked a moment
+    // ago; its answer still holds.
+    if (disabledMcp.length > 0 && !mcpConfigured) {
+      mcpConfigured = await readConfiguredMcpServers(rpc, input.cwd);
+    }
+    const mcpSwitches = codexMcpSwitches(disabledMcp, mcpConfigured ?? null);
+    let mcpOff = mcpSwitches.applied;
+    let mcpRejected = false;
+    const openThread = async (
+      method: "thread/start" | "thread/resume",
+      params: Record<string, unknown>,
+    ) => {
+      const request = (off: string[]) => {
+        const config = codexThreadConfig(
+          storeConfig
+            ? {
+                ...storeConfig,
+                ...(params.config as Record<string, unknown> | undefined),
+              }
+            : (params.config as Record<string, unknown> | undefined),
+          off,
+        );
+        return rpc.request<{ thread?: { id?: string } }>(method, {
+          ...params,
+          ...(config ? { config } : {}),
+        });
+      };
+      try {
+        return await request(mcpOff);
+      } catch (error) {
+        if (mcpOff.length === 0 || !isCodexMcpConfigError(error)) throw error;
+        // Codex could not load one of the switched-off entries. A chat that
+        // opens with every server on beats one that cannot open at all.
+        mcpOff = [];
+        mcpRejected = true;
+        return request([]);
+      }
+    };
+
     if (canResume && resume) {
       try {
         const params = buildThreadStartParams({
@@ -693,22 +778,12 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
           controlsAgents: input.controlsAgents,
           model,
           serviceTier,
+          extraDirs: input.extraDirs,
         });
-        const opened = await rpc.request<{ thread?: { id?: string } }>(
-          "thread/resume",
-          {
-            threadId: resume.threadId,
-            ...params,
-            ...(storeConfig
-              ? {
-                  config: {
-                    ...storeConfig,
-                    ...(params.config as Record<string, unknown> | undefined),
-                  },
-                }
-              : {}),
-          },
-        );
+        const opened = await openThread("thread/resume", {
+          threadId: resume.threadId,
+          ...params,
+        });
         threadId = opened.thread?.id ?? resume.threadId;
         didResume = true;
       } catch (error) {
@@ -728,22 +803,12 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
         controlsAgents: input.controlsAgents,
         model,
         serviceTier,
+        extraDirs: input.extraDirs,
       });
-      const opened = await rpc.request<{ thread?: { id?: string } }>(
-        "thread/start",
-        {
-          ...params,
-          ...(storeConfig
-            ? {
-                config: {
-                  ...storeConfig,
-                  ...(params.config as Record<string, unknown> | undefined),
-                },
-              }
-            : {}),
-          ...(ephemeral ? { ephemeral: true } : {}),
-        },
-      );
+      const opened = await openThread("thread/start", {
+        ...params,
+        ...(ephemeral ? { ephemeral: true } : {}),
+      });
       threadId = opened.thread?.id?.trim();
     }
 
@@ -760,6 +825,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       controlsAgents,
       ephemeral,
       codexStore,
+      mcpKey: mcpRejected ? "" : mcpSwitches.key,
+      mcpRequested,
       runtimeMode: input.runtimeMode,
       planning: input.intent === "plan",
       onEvent: input.onEvent,
@@ -800,12 +867,50 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       providerSessionId: threadId,
     });
     live.onEvent({ type: "session.started" });
+    if (mcpRejected) {
+      live.onEvent({
+        type: "status",
+        text: "Codex could not apply this chat's connector switches, so all of its MCP servers are on.",
+      });
+    } else {
+      noteMissingMcpServers(input.sessionId, mcpSwitches.dropped, live.onEvent);
+    }
     return live;
   } catch (error) {
     rpc.close(error instanceof Error ? error : new Error(String(error)));
     await stopCodexSession(input.sessionId);
     throw error;
   }
+}
+
+/** Server names in this Codex's configuration, or null when it cannot say. */
+function readConfiguredMcpServers(
+  rpc: JsonRpcClient,
+  cwd: string,
+): Promise<Set<string> | null> {
+  return rpc
+    .request("config/read", { cwd }, CONFIG_READ_TIMEOUT_MS)
+    .then(codexConfiguredMcpServers, () => null);
+}
+
+/**
+ * Says once per change which switched-off names this session's Codex has no
+ * server for. The switches stay saved with the chat, so without this the
+ * composer would count a server as off that was never there to switch.
+ */
+function noteMissingMcpServers(
+  sessionId: string,
+  missing: string[],
+  onEvent: (event: HarnessEvent) => void,
+): void {
+  const key = missing.join("\n");
+  if ((missingMcpNoted.get(sessionId) ?? "") === key) return;
+  if (!key) {
+    missingMcpNoted.delete(sessionId);
+    return;
+  }
+  missingMcpNoted.set(sessionId, key);
+  onEvent({ type: "status", text: codexMissingMcpNotice(missing) });
 }
 
 async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
@@ -823,6 +928,7 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
     effort,
     serviceTier,
     intent: input.intent,
+    extraDirs: input.extraDirs,
   });
 
   if (Array.isArray(params.input) && params.input.length === 0) {
@@ -1602,6 +1708,7 @@ export function __codexTestReset(): void {
   liveByThread.clear();
   resumeByThread.clear();
   cancelledThreads.clear();
+  missingMcpNoted.clear();
 }
 
 export function __codexTestResumeMap(): Map<string, Resume> {

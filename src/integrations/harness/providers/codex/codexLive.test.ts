@@ -438,6 +438,339 @@ describe("codex live turn sequence", () => {
     await ordinaryTurn.turn;
   });
 
+  it("hands a folder added between turns to the next turn without reopening the thread", async () => {
+    const first = await startTurn("codex-live", { runtimeMode: "auto" });
+    expect(
+      (
+        parse().find((message) => message.method === "turn/start")?.params as {
+          sandboxPolicy: Record<string, unknown>;
+        }
+      ).sandboxPolicy,
+    ).toEqual({ type: "workspaceWrite" });
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await first.turn;
+
+    const second = sendCodexTurn({
+      sessionId: "codex-live",
+      cwd: "/repo",
+      model: "codex:gpt-5.4",
+      runtimeMode: "auto",
+      extraDirs: ["/work/docs"],
+      text: "Now update the docs",
+      onEvent: () => undefined,
+    });
+    await waitFor(
+      () => parse().filter((m) => m.method === "turn/start").length === 2,
+      "second turn",
+    );
+    const next = parse().filter((m) => m.method === "turn/start")[1];
+    expect(next.params).toMatchObject({
+      sandboxPolicy: { type: "workspaceWrite", writableRoots: ["/work/docs"] },
+    });
+    expect(spawnChild).toHaveBeenCalledTimes(1);
+    expect(parse().some((m) => m.method === "thread/resume")).toBe(false);
+    reply(next.id as number, { turn: { id: "turn_2" } });
+    notify("turn/started", { turn: { id: "turn_2" } });
+    notify("turn/completed", { turn: { id: "turn_2", status: "completed" } });
+    await second;
+  });
+
+  /** Drive a turn whose thread is opened with connector switches. */
+  async function startSwitchedTurn(options: {
+    disabledMcpServers: string[];
+    /** What `config/read` answers; an Error makes the request fail. */
+    configured: Record<string, unknown> | Error;
+    threadMethod?: "thread/start" | "thread/resume";
+    /** Fail the first attempt to open the thread with this message. */
+    rejectThreadWith?: string;
+    /**
+     * The thread is already open: the running app-server is asked what it has
+     * configured, and the one that replaces it is not asked again.
+     */
+    reopens?: boolean;
+  }) {
+    const events: HarnessEvent[] = [];
+    const turn = sendCodexTurn({
+      sessionId: "codex-live",
+      cwd: "/repo",
+      model: "codex:gpt-5.4",
+      runtimeMode: "auto",
+      disabledMcpServers: options.disabledMcpServers,
+      text: "summarize the changelog",
+      onEvent: (event) => events.push(event),
+    });
+    const find = (method: string) =>
+      parse().filter((message) => message.method === method);
+    const answerConfigRead = async () => {
+      await waitFor(() => find("config/read").length > 0, "config/read");
+      const read = find("config/read")[0];
+      if (options.configured instanceof Error) {
+        onLine!(
+          JSON.stringify({
+            id: read.id,
+            error: { code: -32601, message: options.configured.message },
+          }),
+        );
+      } else {
+        reply(read.id as number, {
+          config: { mcp_servers: options.configured },
+          origins: {},
+        });
+      }
+      return read;
+    };
+    const early = options.reopens ? await answerConfigRead() : undefined;
+    await waitFor(() => find("initialize").length > 0, "initialize");
+    reply(find("initialize")[0].id as number, {});
+    const read = early ?? (await answerConfigRead());
+    const threadMethod = options.threadMethod ?? "thread/start";
+    await waitFor(() => find(threadMethod).length > 0, threadMethod);
+    if (options.rejectThreadWith) {
+      onLine!(
+        JSON.stringify({
+          id: find(threadMethod)[0].id,
+          error: { code: -32600, message: options.rejectThreadWith },
+        }),
+      );
+      await waitFor(() => find(threadMethod).length > 1, "second attempt");
+    }
+    const opened = find(threadMethod);
+    reply(opened[opened.length - 1].id as number, { thread: { id: "thr_1" } });
+    await waitFor(() => find("turn/start").length > 0, "turn/start");
+    reply(find("turn/start")[0].id as number, {
+      turn: { id: "turn_1", status: "inProgress" },
+    });
+    notify("turn/started", { turn: { id: "turn_1", status: "inProgress" } });
+    return {
+      events,
+      turn,
+      configRead: read.params,
+      threadParams: opened.map(
+        (message) => message.params as Record<string, unknown>,
+      ),
+    };
+  }
+
+  it("opens a thread without the switched-off servers Codex has configured", async () => {
+    const { turn, configRead, threadParams } = await startSwitchedTurn({
+      // The second name belongs to another provider's configuration.
+      disabledMcpServers: ["github", "claude-only"],
+      configured: {
+        github: { command: "gh-mcp" },
+        linear: { url: "https://x" },
+      },
+    });
+    expect(configRead).toEqual({ cwd: "/repo" });
+    expect(threadParams).toHaveLength(1);
+    expect(threadParams[0].config).toEqual({
+      "mcp_servers.github.enabled": false,
+    });
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await turn;
+  });
+
+  const missingNotices = (events: HarnessEvent[]) =>
+    events.flatMap((event) =>
+      event.type === "status" && event.text.includes("has no MCP server")
+        ? [event.text]
+        : [],
+    );
+
+  it("says which switched-off server this Codex does not have", async () => {
+    const { events, turn } = await startSwitchedTurn({
+      disabledMcpServers: ["github", "claude-only"],
+      configured: { github: { command: "gh-mcp" } },
+    });
+    expect(missingNotices(events)).toEqual([
+      'This chat\'s Codex has no MCP server named "claude-only", so that connector switch has no effect.',
+    ]);
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await turn;
+  });
+
+  it("sends no override when none of the switched-off servers is configured", async () => {
+    const { events, turn, threadParams } = await startSwitchedTurn({
+      disabledMcpServers: ["claude-only"],
+      configured: { github: { command: "gh-mcp" } },
+    });
+    expect(threadParams[0]).not.toHaveProperty("config");
+    expect(missingNotices(events)).toHaveLength(1);
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await turn;
+  });
+
+  it("keeps the thread open when the switched server is not one of this Codex's", async () => {
+    const first = await startTurn("codex-live", { runtimeMode: "auto" });
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await first.turn;
+
+    const find = (method: string) =>
+      parse().filter((message) => message.method === method);
+    /** Send a turn on the open thread and return what it reported. */
+    const nextTurn = async (
+      disabledMcpServers: string[],
+      beforeTurn?: () => Promise<void>,
+    ) => {
+      sent.length = 0;
+      const events: HarnessEvent[] = [];
+      const turn = sendCodexTurn({
+        sessionId: "codex-live",
+        cwd: "/repo",
+        model: "codex:gpt-5.4",
+        runtimeMode: "auto",
+        disabledMcpServers,
+        text: "next",
+        onEvent: (event) => events.push(event),
+      });
+      await beforeTurn?.();
+      await waitFor(() => find("turn/start").length > 0, "turn/start");
+      reply(find("turn/start")[0].id as number, { turn: { id: "turn_n" } });
+      notify("turn/started", { turn: { id: "turn_n" } });
+      notify("turn/completed", { turn: { id: "turn_n", status: "completed" } });
+      await turn;
+      return { events, asked: find("config/read").length };
+    };
+
+    const answerConfigRead = async () => {
+      await waitFor(() => find("config/read").length > 0, "config/read");
+      expect(find("config/read")[0].params).toEqual({ cwd: "/repo" });
+      reply(find("config/read")[0].id as number, {
+        config: { mcp_servers: { github: { command: "gh-mcp" } } },
+      });
+    };
+
+    // The running app-server says what it has; the name is not among it.
+    const second = await nextTurn(["claude-only"], answerConfigRead);
+    expect(spawnChild).toHaveBeenCalledTimes(1);
+    expect(find("thread/resume")).toHaveLength(0);
+    expect(missingNotices(second.events)).toHaveLength(1);
+
+    // The same switches: nothing is asked and nothing is said again.
+    const third = await nextTurn(["claude-only"]);
+    expect(third.asked).toBe(0);
+    expect(missingNotices(third.events)).toEqual([]);
+
+    // Another name this Codex lacks is looked up afresh, and named.
+    const fourth = await nextTurn(["claude-only", "figma"], answerConfigRead);
+    expect(missingNotices(fourth.events)).toEqual([
+      'This chat\'s Codex has no MCP servers named "claude-only", "figma", so those connector switches have no effect.',
+    ]);
+
+    // Switching both back on needs no lookup and is silent.
+    const fifth = await nextTurn([]);
+    expect(fifth.asked).toBe(0);
+    expect(missingNotices(fifth.events)).toEqual([]);
+    expect(spawnChild).toHaveBeenCalledTimes(1);
+    expect(find("thread/resume")).toHaveLength(0);
+  });
+
+  it("reopens the thread when a connector is switched between turns", async () => {
+    const first = await startTurn("codex-live", { runtimeMode: "auto" });
+    expect(parse().some((m) => m.method === "config/read")).toBe(false);
+    expect(
+      parse().find((m) => m.method === "thread/start")?.params,
+    ).not.toHaveProperty("config");
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await first.turn;
+
+    sent.length = 0;
+    const second = await startSwitchedTurn({
+      disabledMcpServers: ["github"],
+      configured: { github: { command: "gh-mcp" } },
+      threadMethod: "thread/resume",
+      reopens: true,
+    });
+    expect(spawnChild).toHaveBeenCalledTimes(2);
+    // The app-server being replaced already said what this Codex has.
+    expect(parse().filter((m) => m.method === "config/read")).toHaveLength(1);
+    expect(second.threadParams[0]).toMatchObject({
+      threadId: "thr_1",
+      config: { "mcp_servers.github.enabled": false },
+    });
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await second.turn;
+
+    // The same switches keep the thread open.
+    sent.length = 0;
+    const third = sendCodexTurn({
+      sessionId: "codex-live",
+      cwd: "/repo",
+      model: "codex:gpt-5.4",
+      runtimeMode: "auto",
+      disabledMcpServers: ["github"],
+      text: "and the release notes",
+      onEvent: () => undefined,
+    });
+    await waitFor(
+      () => parse().some((m) => m.method === "turn/start"),
+      "third turn",
+    );
+    expect(spawnChild).toHaveBeenCalledTimes(2);
+    expect(parse().some((m) => m.method === "thread/resume")).toBe(false);
+    reply(parse().find((m) => m.method === "turn/start")!.id as number, {
+      turn: { id: "turn_3" },
+    });
+    notify("turn/started", { turn: { id: "turn_3" } });
+    notify("turn/completed", { turn: { id: "turn_3", status: "completed" } });
+    await third;
+  });
+
+  it("opens the thread with every server on when Codex cannot load a switched-off entry", async () => {
+    const { events, turn, threadParams } = await startSwitchedTurn({
+      disabledMcpServers: ["github"],
+      // Without the list of configured servers the name is sent as given.
+      configured: new Error("config/read is unavailable"),
+      rejectThreadWith:
+        "failed to load configuration: invalid transport in `mcp_servers.github`",
+    });
+    expect(threadParams).toHaveLength(2);
+    expect(threadParams[0].config).toEqual({
+      "mcp_servers.github.enabled": false,
+    });
+    expect(threadParams[1]).not.toHaveProperty("config");
+    expect(
+      events.some(
+        (event) =>
+          event.type === "status" &&
+          event.text.includes("connector switches") &&
+          event.text.includes("are on"),
+      ),
+    ).toBe(true);
+    expect(events.some((event) => event.type === "session.error")).toBe(false);
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await turn;
+  });
+
+  it("still fails a thread that cannot open for another reason", async () => {
+    const events: HarnessEvent[] = [];
+    const turn = sendCodexTurn({
+      sessionId: "codex-live",
+      cwd: "/repo",
+      model: "codex:gpt-5.4",
+      runtimeMode: "auto",
+      disabledMcpServers: ["github"],
+      text: "summarize the changelog",
+      onEvent: (event) => events.push(event),
+    });
+    const find = (method: string) =>
+      parse().filter((message) => message.method === method);
+    await waitFor(() => find("initialize").length > 0, "initialize");
+    reply(find("initialize")[0].id as number, {});
+    await waitFor(() => find("config/read").length > 0, "config/read");
+    reply(find("config/read")[0].id as number, {
+      config: { mcp_servers: { github: {} } },
+    });
+    await waitFor(() => find("thread/start").length > 0, "thread/start");
+    onLine!(
+      JSON.stringify({
+        id: find("thread/start")[0].id,
+        error: { code: -32600, message: "failed to load configuration: bad" },
+      }),
+    );
+    await expect(turn).rejects.toThrow("failed to load configuration: bad");
+    expect(find("thread/start")).toHaveLength(1);
+  });
+
   it("materializes image generations before completing the turn", async () => {
     const { events, turn } = await startTurn("codex-live");
 

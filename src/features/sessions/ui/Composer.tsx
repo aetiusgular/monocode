@@ -74,7 +74,12 @@ import type {
   WorkspaceMode,
   ComposerTurnOptions,
 } from "../model/session";
-import { HARNESS_TITLE, harnessSupportsAttachments } from "../model/session";
+import {
+  HARNESS_TITLE,
+  harnessSupportsAttachments,
+  harnessSupportsConnectorSwitches,
+  harnessSupportsExtraDirs,
+} from "../model/session";
 import type {
   UserQuestionPrompt,
   UserQuestionReply,
@@ -111,6 +116,22 @@ import type { Worktree } from "../../source-control/model/worktrees";
 import { CwdPicker } from "../../projects/ui/CwdPicker";
 import { FileMentionPicker } from "./FileMentionPicker";
 import { McpServerPicker } from "./McpServerPicker";
+import {
+  addExtraDirs,
+  removeExtraDir,
+} from "../../session-tools/model/extraDirs";
+import { AddFolderMenuItem } from "../../session-tools/ui/AddFolderMenuItem";
+import { ConnectorsBadge } from "../../session-tools/ui/ConnectorsBadge";
+import { ConnectorsMenuItem } from "../../session-tools/ui/ConnectorsMenuItem";
+import { ConnectorsPopover } from "../../session-tools/ui/ConnectorsPopover";
+import { ExtraDirChips } from "../../session-tools/ui/ExtraDirChips";
+import { SessionToolsSummary } from "../../session-tools/ui/SessionToolsSummary";
+import { connectorChangePending } from "../../session-tools/model/connectors";
+import {
+  selectedProviderAccountId,
+  supportsProviderAccounts,
+} from "../../providers/model/providerAccounts";
+import { useTurnStartSnapshot } from "../../session-tools/ui/useTurnStartSnapshot";
 import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
 import { InboxMiniCard } from "../../inbox/ui/InboxMiniCard";
 import { NoteMiniCard } from "../../notes/ui/NoteMiniCard";
@@ -258,6 +279,14 @@ type Props = {
   onModelChange: (harness: HarnessId, model: string) => void;
   onModelSettingsChange?: (settings: Record<string, string>) => void;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
+  /** Extra folders the agent may work in. Shown only with a change handler. */
+  extraDirs?: string[];
+  onExtraDirsChange?: (dirs: string[]) => void;
+  /** MCP servers switched off for this chat. Shown only with a handler. */
+  disabledMcpServers?: string[];
+  onDisabledMcpServersChange?: (names: string[]) => void;
+  /** Provider account the session is bound to, when it already has one. */
+  providerAccountId?: string;
   onQuoteRequestConsumed?: (id: number) => void;
   onInboxCardDismiss?: () => void;
   onNoteCardDismiss?: () => void;
@@ -293,6 +322,8 @@ type Props = {
   onEditingLastTurnChange?: (editing: boolean) => void;
   children?: ReactNode;
 };
+
+const NO_DISABLED_MCP_SERVERS: string[] = [];
 
 function ToolButton({
   active,
@@ -381,6 +412,11 @@ export function Composer({
   onModelChange,
   onModelSettingsChange,
   onRuntimeModeChange,
+  extraDirs,
+  onExtraDirsChange,
+  disabledMcpServers = NO_DISABLED_MCP_SERVERS,
+  onDisabledMcpServersChange,
+  providerAccountId,
   onQuoteRequestConsumed,
   onInboxCardDismiss,
   onBtwCommand,
@@ -466,6 +502,7 @@ export function Composer({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [pasteError, setPasteError] = useState<string | null>(null);
   const [plusOpen, setPlusOpen] = useState(false);
+  const [connectorsOpen, setConnectorsOpen] = useState(false);
   const [planSelected, setPlanSelected] = useState(false);
   const [operatorSelected, setOperatorSelected] = useState(false);
   const [orchestrationSelected, setOrchestrationSelected] = useState(false);
@@ -583,6 +620,13 @@ export function Composer({
   const attachmentsSupported =
     (!remote || !!remoteFeatures?.attachments) &&
     harnessSupportsAttachments(harness);
+  const extraDirsSupported =
+    !remote && !!onExtraDirsChange && harnessSupportsExtraDirs(harness);
+  const connectorsSupported =
+    !remote &&
+    !!onDisabledMcpServersChange &&
+    harnessSupportsConnectorSwitches(harness);
+  const connectorsAtTurnStart = useTurnStartSnapshot(disabledMcpServers, busy);
   const skillNames = useMemo(
     () => new Set(slashItems.map((skill) => skill.invocation)),
     [slashItems],
@@ -686,6 +730,7 @@ export function Composer({
 
   useEffect(() => {
     setMcpPickerOpen(false);
+    setConnectorsOpen(false);
   }, [executionCwd, harness, sessionId]);
 
   useEffect(() => {
@@ -2004,6 +2049,16 @@ export function Composer({
             </div>
           )}
 
+          {extraDirsSupported && !compact && extraDirs?.length ? (
+            <ExtraDirChips
+              dirs={extraDirs}
+              busy={busy}
+              onRemove={(dir) =>
+                onExtraDirsChange?.(removeExtraDir(extraDirs, dir))
+              }
+            />
+          ) : null}
+
           {attachments.length > 0 ? (
             <div className="flex flex-wrap gap-1.5 px-3 pt-2">
               {attachments.map((file) => (
@@ -2122,8 +2177,11 @@ export function Composer({
             >
               <ToolButton
                 label="Add files or choose a mode"
-                active={plusOpen}
-                onClick={() => setPlusOpen((open) => !open)}
+                active={plusOpen || connectorsOpen}
+                onClick={() => {
+                  setConnectorsOpen(false);
+                  setPlusOpen((open) => !open);
+                }}
               >
                 <Plus className="size-3.5" strokeWidth={1.5} />
               </ToolButton>
@@ -2162,6 +2220,29 @@ export function Composer({
                       </span>
                     </span>
                   </button>
+                  {extraDirsSupported ? (
+                    <AddFolderMenuItem
+                      onOpen={() => setPlusOpen(false)}
+                      onPicked={(picked) => {
+                        const current = extraDirs ?? [];
+                        const next = addExtraDirs(current, picked, [
+                          cwd,
+                          executionCwd,
+                        ]);
+                        if (next !== current) onExtraDirsChange?.(next);
+                        ref.current?.focus();
+                      }}
+                    />
+                  ) : null}
+                  {connectorsSupported ? (
+                    <ConnectorsMenuItem
+                      offCount={disabledMcpServers.length}
+                      onOpen={() => {
+                        setPlusOpen(false);
+                        setConnectorsOpen(true);
+                      }}
+                    />
+                  ) : null}
                   {!remote || remoteFeatures?.plan ? (
                     <button
                       type="button"
@@ -2285,7 +2366,55 @@ export function Composer({
                   ) : null}
                 </Popover>
               ) : null}
+              {connectorsOpen && connectorsSupported ? (
+                <ConnectorsPopover
+                  anchor={plusRef}
+                  harness={harness}
+                  cwd={executionCwd}
+                  // The account the next turn runs under, as a send picks it.
+                  providerAccountId={
+                    providerAccountId ??
+                    (supportsProviderAccounts(harness)
+                      ? selectedProviderAccountId(harness, cwd)
+                      : undefined)
+                  }
+                  disabled={disabledMcpServers}
+                  atTurnStart={connectorsAtTurnStart}
+                  onChange={(names) => onDisabledMcpServersChange?.(names)}
+                  onManage={() => {
+                    setConnectorsOpen(false);
+                    window.dispatchEvent(
+                      new Event("monocode:open-mcp-settings"),
+                    );
+                  }}
+                  onDismiss={(reason) => {
+                    setConnectorsOpen(false);
+                    if (reason === "escape") ref.current?.focus();
+                  }}
+                />
+              ) : null}
             </div>
+            {compact && !remote ? (
+              <SessionToolsSummary
+                harness={harness}
+                cwd={executionCwd}
+                extraDirs={extraDirs}
+                disabledMcpServers={disabledMcpServers}
+              />
+            ) : null}
+            {!compact && connectorsSupported && disabledMcpServers.length ? (
+              <ConnectorsBadge
+                offCount={disabledMcpServers.length}
+                pending={connectorChangePending(
+                  disabledMcpServers,
+                  connectorsAtTurnStart,
+                )}
+                onClick={() => {
+                  setPlusOpen(false);
+                  setConnectorsOpen((open) => !open);
+                }}
+              />
+            ) : null}
             {!compact && operatorActive ? (
               <ModeCommandPill
                 name={OPERATOR_COMMAND.name}

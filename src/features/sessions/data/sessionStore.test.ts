@@ -29,6 +29,58 @@ it("persists sidebar visibility without making the session ephemeral", () => {
   expect(persistFingerprint(hidden)).not.toBe(persistFingerprint(session));
 });
 
+it("saves extra folders on the first user block, where the store keeps them", () => {
+  const session = newSession("claude", "/tmp");
+  session.blocks = [
+    { id: "s", role: "system", text: "Started" },
+    { id: "u1", role: "user", text: "Review" },
+    { id: "a", role: "assistant", text: "Done" },
+    { id: "u2", role: "user", text: "Again" },
+  ];
+  const plain = sanitizeSessionForPersist(session);
+  expect(plain.blocks.some((block) => block.sessionTools)).toBe(false);
+  expect(plain).not.toHaveProperty("extraDirs");
+
+  const withDirs = {
+    ...session,
+    extraDirs: ["/work/docs", "relative", "/work/docs/"],
+  };
+  const saved = sanitizeSessionForPersist(withDirs);
+  // `session_upsert` drops session fields it has no column for.
+  expect(saved).not.toHaveProperty("extraDirs");
+  expect(saved.blocks.map((block) => block.sessionTools)).toEqual([
+    undefined,
+    { extraDirs: ["/work/docs"] },
+    undefined,
+    undefined,
+  ]);
+  // The live block is left as it was.
+  expect(session.blocks[1]).not.toHaveProperty("sessionTools");
+  expect(persistFingerprint(withDirs)).not.toBe(persistFingerprint(session));
+  expect(
+    persistFingerprint({ ...withDirs, extraDirs: ["/work/docs", "/more"] }),
+  ).not.toBe(persistFingerprint(withDirs));
+});
+
+it("saves connector switches beside extra folders on the first user block", () => {
+  const session = newSession("codex", "/tmp");
+  session.blocks = [{ id: "u1", role: "user", text: "Review" }];
+  const switched = { ...session, disabledMcpServers: ["github", "", "github"] };
+  const saved = sanitizeSessionForPersist(switched);
+  expect(saved).not.toHaveProperty("disabledMcpServers");
+  expect(saved.blocks[0].sessionTools).toEqual({
+    disabledMcpServers: ["github"],
+  });
+  expect(
+    sanitizeSessionForPersist({ ...switched, extraDirs: ["/work/docs"] })
+      .blocks[0].sessionTools,
+  ).toEqual({ extraDirs: ["/work/docs"], disabledMcpServers: ["github"] });
+  expect(persistFingerprint(switched)).not.toBe(persistFingerprint(session));
+  expect(
+    persistFingerprint({ ...switched, disabledMcpServers: ["linear"] }),
+  ).not.toBe(persistFingerprint(switched));
+});
+
 it("fingerprints queued message edits, ordering, errors and pause state", () => {
   const session = newSession("codex", "/tmp");
   const first = { id: "first", text: "One", attachments: [] };

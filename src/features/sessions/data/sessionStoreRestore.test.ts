@@ -69,6 +69,57 @@ describe("restoring a session whose repair cannot be persisted", () => {
     ]);
   });
 
+  it("restores extra folders from the first user block", async () => {
+    const record = codexRecord();
+    record.blocks[0].sessionTools = {
+      extraDirs: ["/work/docs", "not-absolute"],
+    };
+    invoke.mockImplementation((cmd: string) =>
+      Promise.resolve(cmd === "session_get" ? record : null),
+    );
+    const session = await getSession("s1");
+    expect(session?.extraDirs).toEqual(["/work/docs"]);
+    // The carrier belongs to storage, not to the live transcript.
+    expect(session?.blocks[0]).not.toHaveProperty("sessionTools");
+    // The repair write that follows this load keeps them.
+    const repaired = invoke.mock.calls.find(
+      ([cmd]) => cmd === "session_upsert",
+    );
+    expect(repaired?.[1].session.blocks[0].sessionTools).toEqual({
+      extraDirs: ["/work/docs"],
+    });
+  });
+
+  it("restores no extra folders from a session saved without them", async () => {
+    invoke.mockImplementation((cmd: string) =>
+      Promise.resolve(cmd === "session_get" ? codexRecord() : null),
+    );
+    const session = await getSession("s1");
+    expect(session).not.toHaveProperty("extraDirs");
+    expect(session).not.toHaveProperty("disabledMcpServers");
+  });
+
+  it("restores connector switches from the first user block", async () => {
+    const record = codexRecord();
+    record.blocks[0].sessionTools = {
+      extraDirs: ["/work/docs"],
+      disabledMcpServers: ["github", "linear"],
+    };
+    invoke.mockImplementation((cmd: string) =>
+      Promise.resolve(cmd === "session_get" ? record : null),
+    );
+    const session = await getSession("s1");
+    expect(session?.disabledMcpServers).toEqual(["github", "linear"]);
+    expect(session?.extraDirs).toEqual(["/work/docs"]);
+    const repaired = invoke.mock.calls.find(
+      ([cmd]) => cmd === "session_upsert",
+    );
+    expect(repaired?.[1].session.blocks[0].sessionTools).toEqual({
+      extraDirs: ["/work/docs"],
+      disabledMcpServers: ["github", "linear"],
+    });
+  });
+
   it("still returns the repaired session when the write fails", async () => {
     invoke.mockImplementation((cmd: string) => {
       if (cmd === "session_get") return Promise.resolve(codexRecord());

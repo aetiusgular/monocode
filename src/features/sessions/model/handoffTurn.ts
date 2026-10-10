@@ -17,6 +17,14 @@ export async function requestOutgoingHandoff(input: {
   model: string;
   modelSettings?: Record<string, string>;
   providerAccountId?: string;
+  /**
+   * The session's composer tools, as its other turns pass them. Claude Code
+   * and Codex reopen the conversation when these differ from the turn before,
+   * which would hand the outgoing agent a different set of tools to answer
+   * with.
+   */
+  extraDirs?: string[];
+  disabledMcpServers?: string[];
   userRequest: string;
 }): Promise<string> {
   let brief = "";
@@ -32,6 +40,10 @@ export async function requestOutgoingHandoff(input: {
       modelSettings: input.modelSettings,
       providerAccountId: input.providerAccountId,
       runtimeMode: "supervised",
+      ...(input.extraDirs ? { extraDirs: input.extraDirs } : {}),
+      ...(input.disabledMcpServers
+        ? { disabledMcpServers: input.disabledMcpServers }
+        : {}),
       text: buildOutgoingHandoffPrompt(input.userRequest),
       onEvent: (event) => {
         if (event.type === "message.delta") {

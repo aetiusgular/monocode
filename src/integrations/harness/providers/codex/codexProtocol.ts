@@ -22,7 +22,7 @@ import {
 } from "../../core/preview";
 import { formatShellIntent, inferShellIntent } from "../../core/shellIntent";
 import { streamTextDelta } from "../../core/streamText";
-import type { HarnessEvent } from "../../core/types";
+import type { HarnessEvent, HarnessMcpServer } from "../../core/types";
 
 /** Codex approval / sandbox settings for thread/start and turn/start. */
 export type CodexThreadConfig = {
@@ -31,7 +31,12 @@ export type CodexThreadConfig = {
   approvalsReviewer: "user" | "auto_review";
   sandboxPolicy:
     | { type: "readOnly"; networkAccess?: boolean }
-    | { type: "workspaceWrite"; networkAccess?: boolean }
+    | {
+        type: "workspaceWrite";
+        networkAccess?: boolean;
+        /** Folders writable besides the thread's cwd. Absolute paths. */
+        writableRoots?: string[];
+      }
     | { type: "dangerFullAccess" };
 };
 
@@ -52,11 +57,35 @@ function withNetwork(
   };
 }
 
+/**
+ * Only `workspaceWrite` takes writable roots. `readOnly` can already read the
+ * whole disk and writes nowhere, and `dangerFullAccess` has no limits to lift.
+ * `turn/start` is where the roots take hold: its `sandboxPolicy` replaces the
+ * thread's policy from that turn on, so a folder added mid-session applies to
+ * the next turn without reopening the thread. `thread/start` and
+ * `thread/resume` read only the coarse `sandbox` mode.
+ */
+function withWritableRoots(
+  config: CodexThreadConfig,
+  extraDirs?: string[],
+): CodexThreadConfig {
+  if (!extraDirs?.length || config.sandboxPolicy.type !== "workspaceWrite")
+    return config;
+  return {
+    ...config,
+    sandboxPolicy: { ...config.sandboxPolicy, writableRoots: [...extraDirs] },
+  };
+}
+
 export function runtimeModeToCodexConfig(
   mode: RuntimeMode,
   controlsAgents?: boolean,
+  extraDirs?: string[],
 ): CodexThreadConfig {
-  return withNetwork(baseCodexConfig(mode), controlsAgents);
+  return withWritableRoots(
+    withNetwork(baseCodexConfig(mode), controlsAgents),
+    extraDirs,
+  );
 }
 
 function baseCodexConfig(mode: RuntimeMode): CodexThreadConfig {
@@ -100,10 +129,12 @@ export function buildThreadStartParams(input: {
   controlsAgents?: boolean;
   model?: string;
   serviceTier?: string;
+  extraDirs?: string[];
 }): Record<string, unknown> {
   const config = runtimeModeToCodexConfig(
     input.runtimeMode,
     input.controlsAgents,
+    input.extraDirs,
   );
   return {
     cwd: input.cwd,
@@ -141,10 +172,12 @@ export function buildTurnStartParams(input: {
   effort?: string;
   serviceTier?: string;
   intent?: TurnIntent;
+  extraDirs?: string[];
 }): Record<string, unknown> {
   const runtimeConfig = runtimeModeToCodexConfig(
     input.runtimeMode,
     input.controlsAgents,
+    input.extraDirs,
   );
   const config: CodexThreadConfig =
     input.intent === "plan"
@@ -211,6 +244,119 @@ function codexInput(
     }
   }
   return input;
+}
+
+/**
+ * The `config` overrides for `thread/start` and `thread/resume`, with the
+ * named MCP servers left out of that one thread.
+ *
+ * Codex applies the process's `-c` flags and then every `config` entry, in no
+ * set order, onto one layer, splitting each key on `.` and replacing whatever
+ * sits at the last segment. That layer's tables then merge with the layers
+ * below, so `mcp_servers.<name>.enabled = false` turns off one server and
+ * keeps the rest of its entry.
+ *
+ * Each name is therefore its own dotted key. A nested table under the single
+ * key `mcp_servers` would replace every `-c mcp_servers.*` flag the process
+ * was started with. The table form remains for the two cases a dotted key
+ * cannot express: a name that itself contains a dot, and a `base` that
+ * already carries an `mcp_servers` table. All names go into that table then,
+ * because a dotted key applied before it would be replaced along with the
+ * rest.
+ */
+export function codexThreadConfig(
+  base: Record<string, unknown> | undefined,
+  disabledMcpServers: readonly string[] | undefined,
+): Record<string, unknown> | undefined {
+  if (!disabledMcpServers?.length) return base;
+  const carried = asRecord(base?.mcp_servers);
+  if (carried || disabledMcpServers.some((name) => name.includes("."))) {
+    const servers = { ...carried };
+    for (const name of disabledMcpServers) {
+      servers[name] = { ...asRecord(servers[name]), enabled: false };
+    }
+    return { ...base, mcp_servers: servers };
+  }
+  const config = { ...base };
+  for (const name of disabledMcpServers) {
+    config[`mcp_servers.${name}.enabled`] = false;
+  }
+  return config;
+}
+
+/**
+ * Names under `mcp_servers` in a `config/read` result, or null when the result
+ * does not have the expected shape. An `enabled = false` override for a name
+ * Codex has no entry for creates an entry without a transport, which fails the
+ * whole configuration load, so overrides are limited to these names.
+ */
+export function codexConfiguredMcpServers(result: unknown): Set<string> | null {
+  const config = asRecord(asRecord(result)?.config);
+  if (!config) return null;
+  if (config.mcp_servers == null) return new Set();
+  const servers = asRecord(config.mcp_servers);
+  return servers ? new Set(Object.keys(servers)) : null;
+}
+
+/**
+ * The MCP servers in a `config/read` result, by name, or null when the result
+ * does not have the expected shape. `config/read` answers with the effective
+ * configuration of the Codex that was asked: its own home, the project layers
+ * for the given directory and the flags it was started with.
+ */
+export function codexMcpServerList(result: unknown): HarnessMcpServer[] | null {
+  const names = codexConfiguredMcpServers(result);
+  if (!names) return null;
+  const servers = asRecord(asRecord(asRecord(result)?.config)?.mcp_servers);
+  return [...names]
+    .sort((a, b) => a.localeCompare(b))
+    .map((name) => {
+      const entry = asRecord(servers?.[name]);
+      const command = stringField(entry, "command");
+      const url = stringField(entry, "url");
+      return {
+        name,
+        enabled: entry?.enabled !== false,
+        ...(command ? { command } : {}),
+        ...(url ? { url } : {}),
+      };
+    });
+}
+
+/**
+ * The switched-off names a thread is actually opened without, and the ones
+ * left out because this Codex has no entry for them. `configured` is null
+ * when the configuration could not be read; every name is then sent as given.
+ * `key` identifies the applied set: only a change to it reopens the thread.
+ */
+export function codexMcpSwitches(
+  requested: readonly string[] | undefined,
+  configured: ReadonlySet<string> | null,
+): { applied: string[]; dropped: string[]; key: string } {
+  const names = [...new Set(requested ?? [])].sort();
+  const applied = configured
+    ? names.filter((name) => configured.has(name))
+    : names;
+  const dropped = configured
+    ? names.filter((name) => !configured.has(name))
+    : [];
+  return { applied, dropped, key: applied.join("\n") };
+}
+
+/** Tells the user which connector switches this chat's Codex cannot act on. */
+export function codexMissingMcpNotice(names: readonly string[]): string {
+  const list = names.map((name) => `"${name}"`).join(", ");
+  return names.length === 1
+    ? `This chat's Codex has no MCP server named ${list}, so that connector switch has no effect.`
+    : `This chat's Codex has no MCP servers named ${list}, so those connector switches have no effect.`;
+}
+
+/** Codex could not load its configuration because of an MCP server entry. */
+export function isCodexMcpConfigError(error: unknown): boolean {
+  const message = (
+    error instanceof Error ? error.message : String(error)
+  ).toLowerCase();
+  return message.includes("invalid transport");
 }
 
 export function isRecoverableThreadResumeError(error: unknown): boolean {
@@ -445,6 +591,8 @@ export function mapCodexNotification(
           callId: itemId,
           kind: "execute",
           detail: delta,
+          // A delta is the next piece of the output, not the output.
+          append: true,
           status: "in_progress",
         },
       ],

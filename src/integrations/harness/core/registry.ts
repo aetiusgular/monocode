@@ -14,6 +14,8 @@ import type {
   ApprovalDecision,
   CompactContextInput,
   HarnessEvent,
+  HarnessMcpServer,
+  ListMcpServersInput,
   RewindLastTurnInput,
   RewindLastTurnResult,
   SendTurnInput,
@@ -106,6 +108,11 @@ export type HarnessAdapter = {
   runTextPrompt?(input: TextPromptInput): Promise<string>;
   /** Stop an isolated text-generation backend. */
   stopTextPrompt?(): Promise<void>;
+  /**
+   * The MCP servers a session's own harness reports, for harnesses whose
+   * session can run with a configuration the app cannot read from disk.
+   */
+  listMcpServers?(input: ListMcpServersInput): Promise<HarnessMcpServer[]>;
 };
 
 const adapters = new Map<HarnessId, HarnessAdapter>();
@@ -454,6 +461,22 @@ export async function generateHarnessBranchName(
   const adapter = getHarness(harness);
   if (!adapter?.generateBranchName) return null;
   return adapter.generateBranchName(cwd, message);
+}
+
+/** True when the harness itself can say which MCP servers a session has. */
+export function canListHarnessMcpServers(harness: HarnessId): boolean {
+  return getHarness(harness)?.listMcpServers != null;
+}
+
+export async function listHarnessMcpServers(
+  harness: HarnessId,
+  input: ListMcpServersInput,
+): Promise<HarnessMcpServer[]> {
+  const adapter = requireHarness(harness);
+  if (!adapter.listMcpServers) {
+    throw new Error(`${harness} does not report its MCP servers`);
+  }
+  return adapter.listMcpServers(input);
 }
 
 export async function warmupHarnessText(

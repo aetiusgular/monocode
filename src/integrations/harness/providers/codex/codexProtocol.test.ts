@@ -4,6 +4,12 @@ import {
   buildTurnStartParams,
   buildTurnSteerParams,
   codexCommandText,
+  codexConfiguredMcpServers,
+  codexMcpServerList,
+  codexMcpSwitches,
+  codexMissingMcpNotice,
+  codexThreadConfig,
+  isCodexMcpConfigError,
   isRecoverableThreadResumeError,
   mapApprovalRequest,
   mapCodexNotification,
@@ -101,6 +107,305 @@ describe("runtimeModeToCodexConfig", () => {
       sandbox: "danger-full-access",
       sandboxPolicy: { type: "dangerFullAccess" },
     });
+  });
+});
+
+describe("extra folders as Codex writable roots", () => {
+  const extraDirs = ["/work/docs", "/work/design"];
+
+  it("adds writable roots to both workspace-write modes", () => {
+    for (const mode of ["auto-accept-edits", "auto"] as const) {
+      expect(
+        runtimeModeToCodexConfig(mode, false, extraDirs).sandboxPolicy,
+      ).toEqual({ type: "workspaceWrite", writableRoots: extraDirs });
+      expect(
+        buildThreadStartParams({ cwd: "/repo", runtimeMode: mode, extraDirs })
+          .sandboxPolicy,
+      ).toEqual({ type: "workspaceWrite", writableRoots: extraDirs });
+      expect(
+        buildTurnStartParams({ threadId: "t", runtimeMode: mode, extraDirs })
+          .sandboxPolicy,
+      ).toEqual({ type: "workspaceWrite", writableRoots: extraDirs });
+    }
+  });
+
+  it("keeps the network flag a lead needs alongside the roots", () => {
+    expect(
+      buildTurnStartParams({
+        threadId: "t",
+        runtimeMode: "auto",
+        controlsAgents: true,
+        extraDirs,
+      }).sandboxPolicy,
+    ).toEqual({
+      type: "workspaceWrite",
+      networkAccess: true,
+      writableRoots: extraDirs,
+    });
+  });
+
+  it("leaves read-only and full-access policies alone", () => {
+    for (const mode of ["supervised", "full-access"] as const) {
+      const thread = buildThreadStartParams({
+        cwd: "/repo",
+        runtimeMode: mode,
+        extraDirs,
+      });
+      const turn = buildTurnStartParams({
+        threadId: "t",
+        runtimeMode: mode,
+        extraDirs,
+      });
+      expect(thread.sandboxPolicy).not.toHaveProperty("writableRoots");
+      expect(turn.sandboxPolicy).not.toHaveProperty("writableRoots");
+    }
+    expect(
+      buildTurnStartParams({
+        threadId: "t",
+        runtimeMode: "supervised",
+        extraDirs,
+      }).sandboxPolicy,
+    ).toEqual({ type: "readOnly" });
+  });
+
+  it("keeps a plan turn read-only whatever the access mode", () => {
+    expect(
+      buildTurnStartParams({
+        threadId: "t",
+        runtimeMode: "auto",
+        intent: "plan",
+        extraDirs,
+      }).sandboxPolicy,
+    ).toEqual({ type: "readOnly" });
+  });
+
+  it("omits the field without extra folders", () => {
+    expect(
+      buildTurnStartParams({ threadId: "t", runtimeMode: "auto" })
+        .sandboxPolicy,
+    ).toEqual({ type: "workspaceWrite" });
+    expect(
+      buildTurnStartParams({
+        threadId: "t",
+        runtimeMode: "auto",
+        extraDirs: [],
+      }).sandboxPolicy,
+    ).toEqual({ type: "workspaceWrite" });
+  });
+});
+
+describe("codexThreadConfig", () => {
+  it("switches off each named MCP server with its own dotted key", () => {
+    // A table under the one key `mcp_servers` would replace the servers the
+    // process was given with `-c mcp_servers.<name>.*` flags.
+    expect(codexThreadConfig(undefined, ["github", "linear"])).toEqual({
+      "mcp_servers.github.enabled": false,
+      "mcp_servers.linear.enabled": false,
+    });
+  });
+
+  it("keeps the other overrides the thread carries", () => {
+    const base = { sqlite_home: "/private/mono", model: "gpt-5.4" };
+    expect(codexThreadConfig(base, ["github"])).toEqual({
+      sqlite_home: "/private/mono",
+      model: "gpt-5.4",
+      "mcp_servers.github.enabled": false,
+    });
+    expect(base).toEqual({ sqlite_home: "/private/mono", model: "gpt-5.4" });
+  });
+
+  it("returns the base untouched when no server is switched off", () => {
+    const base = { sqlite_home: "/private/mono" };
+    expect(codexThreadConfig(base, [])).toBe(base);
+    expect(codexThreadConfig(base, undefined)).toBe(base);
+    expect(codexThreadConfig(undefined, [])).toBeUndefined();
+  });
+
+  it("keeps a server name with dots as one key of a table", () => {
+    // Codex splits dotted override keys, so the name must not be part of one.
+    expect(codexThreadConfig(undefined, ["docs.example.com"])).toEqual({
+      mcp_servers: { "docs.example.com": { enabled: false } },
+    });
+  });
+
+  it("puts every name in the table once one of them needs it", () => {
+    // Codex applies the entries in no set order, and the table replaces
+    // whatever a dotted key had already written under `mcp_servers`.
+    expect(
+      codexThreadConfig(undefined, ["github", "docs.example.com"]),
+    ).toEqual({
+      mcp_servers: {
+        github: { enabled: false },
+        "docs.example.com": { enabled: false },
+      },
+    });
+  });
+
+  it("merges into a server table the thread already carries", () => {
+    const base = {
+      sqlite_home: "/private/mono",
+      mcp_servers: {
+        github: { command: "gh-mcp", args: ["serve"] },
+        linear: { url: "https://mcp.linear.app" },
+      },
+    };
+    expect(codexThreadConfig(base, ["github"])).toEqual({
+      sqlite_home: "/private/mono",
+      mcp_servers: {
+        github: { command: "gh-mcp", args: ["serve"], enabled: false },
+        linear: { url: "https://mcp.linear.app" },
+      },
+    });
+    // The caller's object is not modified.
+    expect(base.mcp_servers.github).toEqual({
+      command: "gh-mcp",
+      args: ["serve"],
+    });
+  });
+});
+
+describe("codexConfiguredMcpServers", () => {
+  it("reads the server names from a config/read result", () => {
+    expect(
+      codexConfiguredMcpServers({
+        config: {
+          model: "gpt-5.4",
+          mcp_servers: { github: { command: "gh-mcp" }, linear: {} },
+        },
+        origins: {},
+      }),
+    ).toEqual(new Set(["github", "linear"]));
+  });
+
+  it("is empty when Codex has no MCP servers configured", () => {
+    expect(codexConfiguredMcpServers({ config: { model: "gpt-5.4" } })).toEqual(
+      new Set(),
+    );
+    expect(
+      codexConfiguredMcpServers({ config: { mcp_servers: null } }),
+    ).toEqual(new Set());
+  });
+
+  it("is null when the result cannot be read", () => {
+    expect(codexConfiguredMcpServers(undefined)).toBeNull();
+    expect(codexConfiguredMcpServers({})).toBeNull();
+    expect(
+      codexConfiguredMcpServers({ config: { mcp_servers: [] } }),
+    ).toBeNull();
+  });
+});
+
+describe("codexMcpServerList", () => {
+  it("lists each server with its state and transport", () => {
+    expect(
+      codexMcpServerList({
+        config: {
+          model: "gpt-5.4",
+          mcp_servers: {
+            linear: { url: "https://mcp.linear.app/mcp", enabled: true },
+            github: { command: "gh-mcp", args: ["serve"], env: null },
+            sentry: { url: "https://mcp.sentry.dev/mcp", enabled: false },
+            bare: {},
+          },
+        },
+        origins: {},
+      }),
+    ).toEqual([
+      { name: "bare", enabled: true },
+      { name: "github", enabled: true, command: "gh-mcp" },
+      { name: "linear", enabled: true, url: "https://mcp.linear.app/mcp" },
+      { name: "sentry", enabled: false, url: "https://mcp.sentry.dev/mcp" },
+    ]);
+  });
+
+  it("is empty when this Codex has no MCP servers", () => {
+    expect(codexMcpServerList({ config: { model: "gpt-5.4" } })).toEqual([]);
+    expect(codexMcpServerList({ config: { mcp_servers: null } })).toEqual([]);
+  });
+
+  it("is null when the result cannot be read", () => {
+    expect(codexMcpServerList(undefined)).toBeNull();
+    expect(codexMcpServerList({ origins: {} })).toBeNull();
+    expect(codexMcpServerList({ config: { mcp_servers: "none" } })).toBeNull();
+  });
+});
+
+describe("codexMcpSwitches", () => {
+  const configured = new Set(["github", "linear"]);
+
+  it("applies only the names this Codex has an entry for", () => {
+    expect(
+      codexMcpSwitches(["linear", "claude-only", "github"], configured),
+    ).toEqual({
+      applied: ["github", "linear"],
+      dropped: ["claude-only"],
+      key: "github\nlinear",
+    });
+  });
+
+  it("has the same key whatever names this Codex lacks", () => {
+    const key = codexMcpSwitches(["github"], configured).key;
+    expect(codexMcpSwitches(["github", "claude-only"], configured).key).toBe(
+      key,
+    );
+    expect(
+      codexMcpSwitches(["figma", "github", "github"], configured).key,
+    ).toBe(key);
+    expect(codexMcpSwitches(["claude-only"], configured).key).toBe(
+      codexMcpSwitches([], configured).key,
+    );
+    expect(codexMcpSwitches(undefined, configured)).toEqual({
+      applied: [],
+      dropped: [],
+      key: "",
+    });
+  });
+
+  it("changes key when one of this Codex's servers is switched", () => {
+    expect(codexMcpSwitches(["github"], configured).key).not.toBe(
+      codexMcpSwitches(["github", "linear"], configured).key,
+    );
+  });
+
+  it("sends every name as given when the configuration is unknown", () => {
+    expect(codexMcpSwitches(["b", "a", "b"], null)).toEqual({
+      applied: ["a", "b"],
+      dropped: [],
+      key: "a\nb",
+    });
+  });
+});
+
+describe("codexMissingMcpNotice", () => {
+  it("names the servers this Codex does not have", () => {
+    expect(codexMissingMcpNotice(["docs"])).toBe(
+      'This chat\'s Codex has no MCP server named "docs", so that connector switch has no effect.',
+    );
+    expect(codexMissingMcpNotice(["docs", "figma"])).toBe(
+      'This chat\'s Codex has no MCP servers named "docs", "figma", so those connector switches have no effect.',
+    );
+  });
+});
+
+describe("isCodexMcpConfigError", () => {
+  it("recognizes an MCP entry Codex could not load", () => {
+    expect(
+      isCodexMcpConfigError(
+        new Error(
+          "failed to load configuration: invalid transport in `mcp_servers.sentry`",
+        ),
+      ),
+    ).toBe(true);
+    expect(isCodexMcpConfigError("Invalid Transport")).toBe(true);
+  });
+
+  it("leaves other failures alone", () => {
+    expect(isCodexMcpConfigError(new Error("thread not found"))).toBe(false);
+    expect(
+      isCodexMcpConfigError(
+        new Error("failed to load configuration: bad toml"),
+      ),
+    ).toBe(false);
   });
 });
 

@@ -388,6 +388,18 @@ export type Block = {
   monoHabit?: { id: string; name: string; at: number };
   /** A card a Mono put in its chat; see `features/monos/model/monoCards`. */
   monoCard?: import("../../monos/model/monoCards").MonoCard;
+  /**
+   * Storage carrier for the session's composer tools. The session store writes
+   * it onto the first user block when saving and lifts it back onto the session
+   * when loading, so it is never present on a live block.
+   */
+  sessionTools?: PersistedSessionTools;
+};
+
+/** Session-level composer tools saved with the transcript. */
+export type PersistedSessionTools = {
+  extraDirs?: string[];
+  disabledMcpServers?: string[];
 };
 
 export type RuntimeMode =
@@ -449,6 +461,12 @@ export type Session = {
   monoTranscript?: { before: number | null; firstBlockId: string | null };
   /** True while a harness turn is in flight. */
   busy?: boolean;
+  /**
+   * The last prompt was edited and is on its way back to the harness. Until
+   * the harness takes it, the turn on show is the one about to be replaced.
+   * In-memory only.
+   */
+  resendingEdited?: boolean;
   /** The provider has accepted this turn and can take live follow-ups. */
   turnReady?: boolean;
   /**
@@ -494,6 +512,16 @@ export type Session = {
   worktreePreparing?: boolean;
   /** Select a working copy before continuing after the previous one was deleted. */
   worktreeRemoved?: boolean;
+  /**
+   * Extra folders (absolute paths) the agent may work in besides its working
+   * directory. Saved on the first user block; see `sessionStore`.
+   */
+  extraDirs?: string[];
+  /**
+   * MCP servers (by configured name) switched off for this chat only. The
+   * harness's own configuration is left alone. Saved like `extraDirs`.
+   */
+  disabledMcpServers?: string[];
   /** One-shot composer text when opening a session from Inbox. */
   composerSeed?: string;
   /** Inbox issue/PR chip shown above the composer. In-memory, one-shot. */
@@ -554,6 +582,16 @@ export const HARNESS_TITLE: Record<HarnessId, string> = {
 /** fx ACP rejects attachment prompt blocks. */
 export function harnessSupportsAttachments(id: HarnessId): boolean {
   return id !== "fx";
+}
+
+/** Harnesses MonoCode can hand extra working directories to. */
+export function harnessSupportsExtraDirs(id: HarnessId): boolean {
+  return id === "claude" || id === "codex";
+}
+
+/** Harnesses that can leave out one MCP server for a single conversation. */
+export function harnessSupportsConnectorSwitches(id: HarnessId): boolean {
+  return id === "claude" || id === "codex";
 }
 
 export function newSession(

@@ -72,6 +72,11 @@ export type HarnessEvent =
       kind?: string;
       status?: string;
       detail?: string;
+      /**
+       * `detail` is the next piece of a running call's output, to add to what
+       * the call has printed so far. Without it, `detail` replaces the last.
+       */
+      append?: boolean;
       preview?: ToolPreview;
       /** Every path affected when one structured edit changes multiple files. */
       paths?: string[];
@@ -178,6 +183,16 @@ export type HarnessSessionInput = {
   controlsAgents?: boolean;
   /** Grants this normal turn access to MonoCode's scoped app CLI. */
   appAccess?: boolean;
+  /**
+   * Extra folders (absolute paths) the agent may read and write besides `cwd`.
+   * Claude Code and Codex honor it; other harnesses ignore it.
+   */
+  extraDirs?: string[];
+  /**
+   * MCP servers, by configured name, to leave out of this conversation.
+   * Claude Code and Codex honor it; other harnesses ignore it.
+   */
+  disabledMcpServers?: string[];
   onEvent: (event: HarnessEvent) => void;
 };
 
@@ -210,4 +225,24 @@ export type RewindLastTurnInput = CompactContextInput & {
 export type RewindLastTurnResult = {
   /** True when the harness already ran the replacement turn. */
   submitted: boolean;
+};
+
+/** Which session's harness to ask about its MCP servers. */
+export type ListMcpServersInput = {
+  /** Directory the session runs in; project configuration is read from it. */
+  cwd: string;
+  providerAccountId?: string;
+  /** Ask the harness again instead of answering from a recent result. */
+  refresh?: boolean;
+};
+
+/** One MCP server as a harness's own CLI reports it. */
+export type HarnessMcpServer = {
+  name: string;
+  /** False when the harness's configuration switches the server off. */
+  enabled: boolean;
+  /** Program a stdio server runs. */
+  command?: string;
+  /** Address of an HTTP server. */
+  url?: string;
 };

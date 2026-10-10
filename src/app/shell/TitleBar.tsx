@@ -26,6 +26,7 @@ import { basename } from "../../platform/tauri/fs";
 import { looksLikeProject } from "../../features/projects/model/recents";
 import type { HarnessId } from "../../features/sessions/model/session";
 import { CwdPicker } from "../../features/projects/ui/CwdPicker";
+import { SessionPanelSlot } from "../../features/session-panel";
 import { useLockOverscroll } from "../../shared/hooks/useLockOverscroll";
 import {
   useAnimatedReorder,
@@ -1073,6 +1074,8 @@ function TitleBarComponent({
             </div>
           </div>
         )}
+
+        {mono ? null : <SessionPanelSlot />}
 
         {!IS_MAC && !IS_WIN ? (
           <div className="flex min-w-0 flex-1 items-center justify-center px-4">

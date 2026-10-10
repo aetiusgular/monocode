@@ -39,6 +39,8 @@ import {
   type RuntimeMode,
   type Session,
 } from "../../sessions/model/session";
+import { sanitizeDisabledMcpServers } from "../../session-tools/model/connectors";
+import { sanitizeExtraDirs } from "../../session-tools/model/extraDirs";
 
 export type WorkspaceSessionStub = {
   inboxAsk?: InboxAskContext;
@@ -54,6 +56,9 @@ export type WorkspaceSessionStub = {
   branch?: string;
   worktreeCwd?: string;
   worktreeRemoved?: boolean;
+  /** Kept here so a tab that has not sent a message yet does not lose them. */
+  extraDirs?: string[];
+  disabledMcpServers?: string[];
 };
 
 export type WorkspaceSnapshot = {
@@ -368,6 +373,10 @@ function sessionStub(session: Session): WorkspaceSessionStub | null {
     ...(session.branch ? { branch: session.branch } : {}),
     ...(session.worktreeCwd ? { worktreeCwd: session.worktreeCwd } : {}),
     ...(session.worktreeRemoved ? { worktreeRemoved: true } : {}),
+    ...(session.extraDirs?.length ? { extraDirs: session.extraDirs } : {}),
+    ...(session.disabledMcpServers?.length
+      ? { disabledMcpServers: session.disabledMcpServers }
+      : {}),
   };
 }
 
@@ -397,6 +406,10 @@ function sessionFromStub(stub: WorkspaceSessionStub): Session {
     ...(stub.branch ? { branch: stub.branch } : {}),
     ...(stub.worktreeCwd ? { worktreeCwd: stub.worktreeCwd } : {}),
     ...(stub.worktreeRemoved ? { worktreeRemoved: true } : {}),
+    ...(stub.extraDirs ? { extraDirs: stub.extraDirs } : {}),
+    ...(stub.disabledMcpServers
+      ? { disabledMcpServers: stub.disabledMcpServers }
+      : {}),
   };
 }
 
@@ -417,6 +430,10 @@ function sanitizeStub(raw: unknown): WorkspaceSessionStub | null {
           ),
         )
       : {};
+  const extraDirs = sanitizeExtraDirs(value.extraDirs);
+  const disabledMcpServers = sanitizeDisabledMcpServers(
+    value.disabledMcpServers,
+  );
   return {
     id: value.id,
     cwd:
@@ -445,6 +462,8 @@ function sanitizeStub(raw: unknown): WorkspaceSessionStub | null {
       ? { worktreeCwd: value.worktreeCwd.trim() }
       : {}),
     ...(value.worktreeRemoved === true ? { worktreeRemoved: true } : {}),
+    ...(extraDirs ? { extraDirs } : {}),
+    ...(disabledMcpServers ? { disabledMcpServers } : {}),
   };
 }
 

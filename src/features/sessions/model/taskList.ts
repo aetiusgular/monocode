@@ -79,6 +79,20 @@ export function legacyTaskListFromText(text: string): TaskListItem[] | null {
     : null;
 }
 
+/**
+ * The step a folded task list should name: the one in hand, or failing that
+ * the next one waiting. A list with nothing left to do names none.
+ */
+export function currentTaskListItem(
+  items: readonly TaskListItem[],
+): TaskListItem | null {
+  return (
+    items.find((item) => item.status === "in_progress") ??
+    items.find((item) => item.status === "pending") ??
+    null
+  );
+}
+
 export function taskListProgressLabel(items: TaskListItem[]): string {
   const completed = items.filter((item) => item.status === "completed").length;
   const actionable = items.filter((item) => item.status !== "cancelled").length;
