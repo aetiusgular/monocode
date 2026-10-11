@@ -33,9 +33,13 @@ import {
   buildClaudeUserMessage,
   buildControlRequest,
   buildControlResponse,
+  claudeBlockedToolMessage,
   claudeSettingsKey,
+  claudeSkillDenyRules,
+  claudeToolDenyRules,
   extractAskUserQuestionTitle,
   extractExitPlanModePlan,
+  initMcpServers,
   inputJsonDeltaFromEvent,
   isAgentTaskType,
   isClaudeUltracodeEffort,
@@ -76,6 +80,10 @@ import {
   type ClaudeControlRequest,
 } from "./claudeProtocol";
 import { existingDirs } from "../../core/existingDirs";
+import { toolRules, type ToolRules } from "../../core/toolRules";
+import { noteReportedMcpServers } from "../../../../features/session-tools/model/reportedMcpServers";
+import { keepToolResultImages } from "../../../../features/tool-images/data/toolImageStore";
+import type { ToolResultImage } from "../../../../features/tool-images/model/toolImages";
 import { isAgentToolName } from "../../core/preview";
 import { joinStreamText, snapshotRemainder } from "../../core/streamText";
 import {
@@ -83,11 +91,13 @@ import {
   questionsFromUnknown,
   type UserQuestionReply,
 } from "../../../../features/sessions/model/userQuestion";
+import { approvalTool } from "../../../../features/tool-access/model/toolAccess";
 import type {
   ApprovalDecision,
   CompactContextInput,
   HarnessEvent,
   HarnessSessionInput,
+  HarnessToolAccess,
   SendTurnInput,
   SteerTurnInput,
 } from "../../core/types";
@@ -101,6 +111,8 @@ type ApprovalOutcome = ApprovalDecision | "cancelled";
 
 type PendingApproval = {
   requestId: string;
+  /** Claude Code's name for the tool, as the per-chat rules key it. */
+  toolName: string;
   input: Record<string, unknown>;
   resolve: (decision: ApprovalOutcome) => void;
 };
@@ -147,6 +159,11 @@ type Live = {
   runtimeMode: RuntimeMode;
   planning: boolean;
   settingsKey: string;
+  /**
+   * The chat's per-tool rules. Set from each turn's input, and replaced in
+   * between by `setClaudeToolAccess` when the user changes a rule.
+   */
+  toolRules: ToolRules;
   onEvent: (event: HarnessEvent) => void;
   approvals: Map<number, PendingApproval>;
   questions: Map<number, PendingQuestion>;
@@ -353,6 +370,30 @@ export function respondClaudeApproval(
   const pending = live?.approvals.get(requestId);
   if (!pending) return;
   pending.resolve(decision);
+}
+
+/**
+ * Replace a live session's per-tool rules, so a rule the user sets while a
+ * turn runs answers the next request without waiting for the next turn. A
+ * card already on screen for a tool that is now blocked is declined. One for
+ * a tool that is now always allowed stays: the user has seen that request and
+ * answers it.
+ *
+ * A blocked tool only leaves the model's tool list when the process next
+ * starts (`--disallowedTools`). Until then this can refuse only the calls
+ * Claude Code asks about, which leaves out what the permission mode or the
+ * user's own Claude Code settings already allow.
+ */
+export function setClaudeToolAccess(
+  sessionId: string,
+  access?: HarnessToolAccess,
+): void {
+  const live = liveByThread.get(sessionId);
+  if (!live) return;
+  live.toolRules = toolRules(access);
+  for (const pending of [...live.approvals.values()]) {
+    if (live.toolRules.never.has(pending.toolName)) pending.resolve("deny");
+  }
 }
 
 export function respondClaudeQuestion(
@@ -592,6 +633,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   ) {
     existing.onEvent = input.onEvent;
     existing.runtimeMode = input.runtimeMode;
+    existing.toolRules = toolRules(input.toolAccess);
     return existing;
   }
   if (existing) {
@@ -664,6 +706,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     runtimeMode: input.runtimeMode,
     planning,
     settingsKey,
+    toolRules: toolRules(input.toolAccess),
     onEvent: input.onEvent,
     approvals: new Map(),
     questions: new Map(),
@@ -904,6 +947,12 @@ function handleLine(sessionId: string, live: Live, line: string): void {
   ) {
     markInitialized(live);
     if (stringField(rec, "subtype") === "init") noteClaudeTurnStarted(live);
+    // Includes claude.ai connectors and plugin servers, which no config file
+    // the app reads names. The connector switches list them from this.
+    const servers = initMcpServers(rec);
+    if (servers) {
+      noteReportedMcpServers(sessionId, servers);
+    }
   }
 
   if (type === "control_response") {
@@ -931,7 +980,7 @@ function handleLine(sessionId: string, live: Live, line: string): void {
     return;
   }
   if (type === "user") {
-    handleUser(live, rec);
+    handleUser(sessionId, live, rec);
     return;
   }
   if (type === "result") {
@@ -1113,9 +1162,13 @@ function closePendingAssistantMessage(live: Live): void {
   live.onEvent({ type: "message.completed" });
 }
 
-function handleUser(live: Live, rec: Record<string, unknown>): void {
+function handleUser(
+  sessionId: string,
+  live: Live,
+  rec: Record<string, unknown>,
+): void {
   if (isSubagentMessage(rec)) {
-    noteSubagentResults(live, rec);
+    noteSubagentResults(sessionId, live, rec);
     return;
   }
   for (const result of toolResultsFromUserMessage(rec)) {
@@ -1133,6 +1186,7 @@ function handleUser(live: Live, rec: Record<string, unknown>): void {
       detail: result.text || undefined,
       preview: previewFromTool(tool.name, tool.input, result.text),
     });
+    keepResultImages(sessionId, live, tool.id, result);
     if (
       !result.isError &&
       applyClaudeTaskTool(live.claudeTasks, tool.name, tool.input, result.text)
@@ -1288,6 +1342,19 @@ async function handleControlRequest(
 
   applyKnownToolInput(live, toolName, input, control.toolUseId);
 
+  // A tool blocked for this chat is refused in every mode, plan turns
+  // included, and without a card. The reason goes back as the tool's error.
+  if (live.toolRules.never.has(toolName)) {
+    await writeJson(
+      sessionId,
+      buildControlResponse(control.requestId, {
+        behavior: "deny",
+        message: claudeBlockedToolMessage(toolName),
+      }),
+    );
+    return;
+  }
+
   if (live.planning) {
     const kind = toolKindFromName(toolName);
     const decision = kind === "read" || kind === "search" ? "allow" : "deny";
@@ -1296,6 +1363,19 @@ async function handleControlRequest(
       buildControlResponse(
         control.requestId,
         toClaudePermissionResult(decision, input),
+      ),
+    );
+    return;
+  }
+
+  // "Always allow" comes after the plan branch on purpose: a plan turn stays
+  // read-only whatever the chat's rules say.
+  if (live.toolRules.always.has(toolName)) {
+    await writeJson(
+      sessionId,
+      buildControlResponse(
+        control.requestId,
+        toClaudePermissionResult("allow", input),
       ),
     );
     return;
@@ -1313,7 +1393,9 @@ async function handleControlRequest(
   }
 
   const uiId = live.nextApprovalUiId++;
-  const pending = waitApproval(live, uiId, control.requestId, input);
+  const pending = waitApproval(live, uiId, control.requestId, toolName, input);
+  // Only a request that names its tool can be remembered by a rule.
+  const tool = approvalTool(control.toolName);
   live.onEvent({
     type: "approval.requested",
     requestId: uiId,
@@ -1321,6 +1403,7 @@ async function handleControlRequest(
     kind: toolKindFromName(toolName),
     callId: control.toolUseId,
     preview: previewFromTool(toolName, input),
+    ...(tool ? { tool } : {}),
   });
   const decision = await pending;
   live.onEvent({ type: "approval.resolved", requestId: uiId, decision });
@@ -1329,7 +1412,11 @@ async function handleControlRequest(
     sessionId,
     buildControlResponse(
       control.requestId,
-      toClaudePermissionResult(decision, input),
+      // Declined because the user blocked the tool while the card was up:
+      // say so, the same as a call the rule refuses outright.
+      decision === "deny" && live.toolRules.never.has(toolName)
+        ? { behavior: "deny", message: claudeBlockedToolMessage(toolName) }
+        : toClaudePermissionResult(decision, input),
     ),
   );
 }
@@ -1360,10 +1447,11 @@ function waitApproval(
   live: Live,
   uiId: number,
   requestId: string,
+  toolName: string,
   input: Record<string, unknown>,
 ): Promise<ApprovalOutcome> {
   return new Promise<ApprovalOutcome>((resolve) => {
-    live.approvals.set(uiId, { requestId, input, resolve });
+    live.approvals.set(uiId, { requestId, toolName, input, resolve });
   }).finally(() => {
     live.approvals.delete(uiId);
   });
@@ -1656,7 +1744,11 @@ function noteSubagentNarration(live: Live, rec: Record<string, unknown>): void {
 }
 
 /** Settles the subagent's own tool rows once their results come back. */
-function noteSubagentResults(live: Live, rec: Record<string, unknown>): void {
+function noteSubagentResults(
+  sessionId: string,
+  live: Live,
+  rec: Record<string, unknown>,
+): void {
   const parent = subagentParent(live, rec);
   if (!parent) return;
   for (const result of toolResultsFromUserMessage(rec)) {
@@ -1669,7 +1761,32 @@ function noteSubagentResults(live: Live, rec: Record<string, unknown>): void {
       status: result.isError ? "failed" : "completed",
       ...(result.isError && result.text ? { detail: result.text } : {}),
     });
+    // A subagent's screenshots go on its own row in the parent transcript.
+    keepResultImages(sessionId, live, parent.id, result);
   }
+}
+
+/**
+ * Keeps the images a tool result carried so the transcript can show them.
+ * Claude has already been sent the result; this only saves a copy and tells
+ * the transcript where it is once the files are written.
+ */
+function keepResultImages(
+  sessionId: string,
+  live: Live,
+  callId: string,
+  result: { toolUseId: string; images?: ToolResultImage[] },
+): void {
+  if (!result.images?.length) return;
+  void keepToolResultImages({
+    sessionId,
+    callId,
+    sourceId: result.toolUseId,
+    images: result.images,
+    emit: (event) => live.onEvent(event),
+    // Not once the session has been stopped or handed to a new process.
+    wanted: () => liveByThread.get(sessionId) === live,
+  });
 }
 
 function isBackgroundedAgentTool(live: Live, toolUseId: string): boolean {
@@ -1978,6 +2095,9 @@ function settingsKeyFor(input: HarnessSessionInput): string {
     hooks: loadClaudeHooks(),
     extraDirs: input.extraDirs,
     disabledMcpServers: input.disabledMcpServers,
+    deniedTools: input.toolAccess?.never,
+    disabledSkills: input.disabledSkills,
+    gatewayConnectors: input.gatewayConnectors,
   })}`;
 }
 
@@ -2056,7 +2176,9 @@ function launchOptions(
   sessionId?: string;
   settings?: ClaudeCliSettings;
   addDirs?: string[];
+  disallowedTools?: string[];
   disabledMcpServers?: string[];
+  gatewayConnectors?: HarnessSessionInput["gatewayConnectors"];
 } {
   const native = nativeModelId(input.model);
   const effortRaw = input.modelSettings?.effort;
@@ -2086,7 +2208,17 @@ function launchOptions(
     sessionId: resume ? undefined : sessionId,
     settings: Object.keys(settings).length > 0 ? settings : undefined,
     addDirs,
+    // Tools blocked for the chat leave the model's tool list. "Always allow"
+    // rules are not passed as `--allowedTools`: an allow rule on the command
+    // line could let a plan turn act, and the permission handler applies
+    // them without a restart.
+    // Skills switched off for the chat are denied to the model the same way.
+    disallowedTools: [
+      ...claudeToolDenyRules(input.toolAccess?.never),
+      ...claudeSkillDenyRules(input.disabledSkills),
+    ],
     disabledMcpServers: input.disabledMcpServers,
+    gatewayConnectors: input.gatewayConnectors,
   };
 }
 

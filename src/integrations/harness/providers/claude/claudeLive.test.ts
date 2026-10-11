@@ -1027,6 +1027,58 @@ describe("claude connector switches", () => {
   });
 });
 
+describe("claude Docker gateway connectors", () => {
+  it("restarts with --mcp-config when a gateway connector is added, resuming the conversation", async () => {
+    const first = await startTurn("s1");
+    expect(spawned[0]).not.toContain("--mcp-config");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await first.turn;
+    const userCount = parse().filter(
+      (message) => message.type === "user",
+    ).length;
+
+    const gatewayConnectors = [
+      {
+        name: "notion-remote",
+        command: "/usr/local/bin/docker",
+        args: ["mcp", "gateway", "run", "--profile", "monocode_notion_remote"],
+      },
+    ];
+    const second = sendClaudeTurn({
+      sessionId: "s1",
+      cwd: "/repo",
+      model: "claude:claude-sonnet-5",
+      modelSettings: {},
+      runtimeMode: "supervised",
+      gatewayConnectors,
+      text: "carry on",
+      attachments: [],
+      onEvent: () => undefined,
+    });
+    await waitFor(() => spawned.length === 2, "replacement Claude process");
+    const flag = spawned[1].indexOf("--mcp-config");
+    expect(JSON.parse(spawned[1][flag + 1])).toEqual({
+      mcpServers: {
+        "notion-remote": {
+          type: "stdio",
+          command: "/usr/local/bin/docker",
+          args: gatewayConnectors[0].args,
+        },
+      },
+    });
+    expect(spawned[1]).not.toContain("--strict-mcp-config");
+    expect(spawned[1]).toEqual(expect.arrayContaining(["--resume", "sess_1"]));
+    emit({ type: "system", subtype: "init", session_id: "sess_1" });
+    await waitFor(
+      () =>
+        parse().filter((message) => message.type === "user").length > userCount,
+      "follow-up prompt",
+    );
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await second;
+  });
+});
+
 describe("claude extra folders that no longer exist", () => {
   it("leaves a missing folder off the command line", async () => {
     existingDirs.mockImplementationOnce(async (dirs) =>
@@ -2583,5 +2635,30 @@ describe("claude edit and resend", () => {
     expect(spawned[starts]).not.toContain("--resume-session-at");
     emit({ type: "system", subtype: "init", session_id: "sess_9" });
     await expect(done).rejects.toThrow("cannot be resumed here");
+  });
+});
+
+describe("servers Claude Code reports at turn start", () => {
+  it("are kept for the chat's connector switches", async () => {
+    const { reportedMcpServers, __resetReportedMcpServers } = await import(
+      "../../../../features/session-tools/model/reportedMcpServers"
+    );
+    __resetReportedMcpServers();
+    const { turn } = await startTurn("chat-mcp", { providerAccountId: "work" });
+    emit({
+      type: "system",
+      subtype: "init",
+      session_id: "sess_1",
+      mcp_servers: [
+        { name: "claude.ai Exa", status: "connected" },
+        { name: "MCP_DOCKER", status: "connected" },
+      ],
+    });
+    expect(reportedMcpServers("chat-mcp", "elsewhere")).toEqual([
+      { name: "claude.ai Exa", status: "connected" },
+      { name: "MCP_DOCKER", status: "connected" },
+    ]);
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await turn;
   });
 });

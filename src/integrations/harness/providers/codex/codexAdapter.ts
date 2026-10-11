@@ -8,6 +8,7 @@ import {
   respondCodexApproval,
   respondCodexQuestion,
   sendCodexTurn,
+  setCodexToolAccess,
   steerCodexTurn,
   stopCodexSession,
 } from "./codex";
@@ -41,6 +42,7 @@ export const codexAdapter: HarnessAdapter = {
   respondApproval: respondCodexApproval,
   respondQuestion: respondCodexQuestion,
   keepQuestionOpen: keepCodexQuestionOpen,
+  setToolAccess: setCodexToolAccess,
   stopSession: stopCodexSession,
   forgetSession: forgetCodexSession,
   bindSession: bindCodexSession,

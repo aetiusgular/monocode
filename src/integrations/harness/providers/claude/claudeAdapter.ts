@@ -8,6 +8,7 @@ import {
   restoreClaudeTaskLists,
   rewindClaudeLastTurn,
   sendClaudeTurn,
+  setClaudeToolAccess,
   steerClaudeTurn,
   stopClaudeSession,
 } from "./claude";
@@ -35,6 +36,7 @@ export const claudeAdapter: HarnessAdapter = {
   cancelTurn: cancelClaudeTurn,
   respondApproval: respondClaudeApproval,
   respondQuestion: respondClaudeQuestion,
+  setToolAccess: setClaudeToolAccess,
   stopSession: stopClaudeSession,
   forgetSession: forgetClaudeSession,
   bindSession: bindClaudeSession,

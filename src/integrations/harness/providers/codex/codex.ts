@@ -26,9 +26,11 @@ import {
   codexConfiguredMcpServers,
   codexMcpSwitches,
   codexMissingMcpNotice,
+  codexGatewayConfigArgs,
   codexThreadConfig,
   isCodexMcpConfigError,
   isRecoverableThreadResumeError,
+  isPlainCodexApproval,
   mapApprovalRequest,
   codexSubagentStates,
   codexSubagentThreadIds,
@@ -51,12 +53,14 @@ import {
 } from "./codexQuestions";
 import { codexMcpConfirmation } from "./codexElicitation";
 import { snapshotRemainder } from "../../core/streamText";
+import { ruleDecision, toolRules, type ToolRules } from "../../core/toolRules";
 import { prepareCodexMonoContext } from "./codexStore";
 import type {
   ApprovalDecision,
   CompactContextInput,
   HarnessEvent,
   HarnessSessionInput,
+  HarnessToolAccess,
   RewindLastTurnInput,
   RewindLastTurnResult,
   SendTurnInput,
@@ -69,6 +73,8 @@ type PendingApproval = {
   rpcId: JsonRpcId;
   threadId: string;
   kind: CodexApprovalKind;
+  /** The per-chat rule key of the request, where it has one. */
+  toolKey?: string;
   resolve: (decision: ApprovalOutcome) => void;
 };
 
@@ -105,8 +111,18 @@ type Live = {
   mcpKey: string;
   /** The switches last asked for; the same ones need no second look. */
   mcpRequested: string;
+  /**
+   * The `-c` flags that added Docker gateway connectors to this app-server.
+   * They are process flags, so a different set starts a new app-server.
+   */
+  gatewayKey: string;
   runtimeMode: RuntimeMode;
   planning: boolean;
+  /**
+   * The chat's per-tool rules. Set from each turn's input, and replaced in
+   * between by `setCodexToolAccess` when the user changes a rule.
+   */
+  toolRules: ToolRules;
   onEvent: (event: HarnessEvent) => void;
   approvals: Map<number, PendingApproval>;
   questions: Map<number, PendingQuestion>;
@@ -182,6 +198,7 @@ export async function sendCodexTurn(input: SendTurnInput): Promise<void> {
   if (cancelledThreads.delete(input.sessionId)) return;
 
   live.onEvent = input.onEvent;
+  live.toolRules = toolRules(input.toolAccess);
   live.turns = live.turns
     .catch(() => undefined)
     .then(async () => {
@@ -215,6 +232,7 @@ export async function compactCodexContext(
   if (cancelledThreads.delete(input.sessionId)) return;
 
   live.onEvent = input.onEvent;
+  live.toolRules = toolRules(input.toolAccess);
   live.turns = live.turns
     .catch(() => undefined)
     .then(async () => {
@@ -332,6 +350,30 @@ export function respondCodexApproval(
   const pending = live?.approvals.get(requestId);
   if (!pending) return;
   pending.resolve(decision);
+}
+
+/**
+ * Replace a live session's per-tool rules, so a rule the user sets while a
+ * turn runs answers the next request. A card already on screen for a tool
+ * that is now blocked is declined; one for a tool that is now always allowed
+ * stays for the user to answer.
+ *
+ * Rules only answer requests Codex sends. It does not ask in every mode, and
+ * it runs commands it considers safe without asking, so "never" declines
+ * whenever Codex asks. It does not stop Codex from running commands.
+ */
+export function setCodexToolAccess(
+  sessionId: string,
+  access?: HarnessToolAccess,
+): void {
+  const live = liveByThread.get(sessionId);
+  if (!live) return;
+  live.toolRules = toolRules(access);
+  for (const pending of [...live.approvals.values()]) {
+    if (ruleDecision(live.toolRules, pending.toolKey) === "deny") {
+      pending.resolve("deny");
+    }
+  }
 }
 
 export function respondCodexQuestion(
@@ -523,6 +565,12 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     resumeByThread.get(input.sessionId)?.codexStore;
   const disabledMcp = [...new Set(input.disabledMcpServers ?? [])].sort();
   const mcpRequested = disabledMcp.join("\n");
+  const gatewayArgs = codexGatewayConfigArgs(
+    [...(input.gatewayConnectors ?? [])].sort((a, b) =>
+      a.name.localeCompare(b.name),
+    ),
+  );
+  const gatewayKey = gatewayArgs.join("\n");
   // The servers this session's Codex has an entry for, once it was asked;
   // null when it could not say.
   let mcpConfigured: Set<string> | null | undefined;
@@ -535,7 +583,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     ) &&
     existing.controlsAgents === controlsAgents &&
     existing.ephemeral === ephemeral &&
-    existing.codexStore === codexStore
+    existing.codexStore === codexStore &&
+    existing.gatewayKey === gatewayKey
   ) {
     if (existing.mcpRequested === mcpRequested) {
       existing.onEvent = input.onEvent;
@@ -691,7 +740,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   await spawnChild(
     input.sessionId,
     path,
-    ["app-server"],
+    ["app-server", ...gatewayArgs],
     input.cwd,
     {
       provider: "codex",
@@ -827,9 +876,11 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       codexStore,
       mcpKey: mcpRejected ? "" : mcpSwitches.key,
       mcpRequested,
+      gatewayKey,
       runtimeMode: input.runtimeMode,
       planning: input.intent === "plan",
       onEvent: input.onEvent,
+      toolRules: toolRules(input.toolAccess),
       approvals: new Map(),
       questions: new Map(),
       visibleQuestionId: null,
@@ -1652,6 +1703,22 @@ async function handleServerRequest(
     return;
   }
 
+  // Per-chat rules for commands and patches. They sit below the plan branch
+  // and the sandbox escalation above, which they never answer. "Never"
+  // declines every such request. "Always" accepts only a plain one: a request
+  // that also asks for more access goes on to the mode and the user below.
+  const toolKey = mapped.event.tool?.key;
+  const rule = ruleDecision(live.toolRules, toolKey);
+  if (
+    rule === "deny" ||
+    (rule === "allow" && isPlainCodexApproval(method, params))
+  ) {
+    await live.rpc.respond(id, {
+      decision: toCodexApprovalDecision(rule, mapped.kind),
+    });
+    return;
+  }
+
   const auto = autoApproval(live.runtimeMode, mapped.kind);
   if (auto) {
     await live.rpc.respond(id, {
@@ -1660,7 +1727,7 @@ async function handleServerRequest(
     return;
   }
 
-  const pending = waitApproval(live, uiId, id, mapped.kind, threadId);
+  const pending = waitApproval(live, uiId, id, mapped.kind, threadId, toolKey);
   live.onEvent(mapped.event);
   const decision = await pending;
   live.onEvent({
@@ -1680,9 +1747,10 @@ function waitApproval(
   rpcId: JsonRpcId,
   kind: CodexApprovalKind,
   threadId: string,
+  toolKey?: string,
 ): Promise<ApprovalOutcome> {
   return new Promise<ApprovalOutcome>((resolve) => {
-    live.approvals.set(uiId, { rpcId, threadId, kind, resolve });
+    live.approvals.set(uiId, { rpcId, threadId, kind, toolKey, resolve });
   }).finally(() => {
     live.approvals.delete(uiId);
   });

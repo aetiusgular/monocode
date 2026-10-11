@@ -122,6 +122,12 @@ export type SkillCatalogContext = {
   sessionId?: string;
 };
 
+/** A turn's catalog context, with the skills its chat has switched off. */
+export type SkillTurnContext = SkillCatalogContext & {
+  /** Skill names this chat does not expand, as the session keeps them. */
+  disabledSkills?: readonly string[];
+};
+
 type CatalogRequest = {
   generation: number;
   promise: Promise<Skill[]>;
@@ -437,10 +443,13 @@ export function injectSkillPrompt(
 
 export async function applySkillsToTurn(
   text: string,
-  context: SkillCatalogContext,
+  context: SkillTurnContext,
 ): Promise<string> {
   if (hasNativeCommands(context.harness)) return text;
-  const names = skillNamesInText(text);
+  // A skill switched off for this chat is treated like one disabled in
+  // Settings, which is not in the catalog: its `/name` stays plain text.
+  const off = new Set(context.disabledSkills ?? []);
+  const names = skillNamesInText(text).filter((name) => !off.has(name));
   if (names.length === 0) return text;
   const catalog = await loadSkills(context);
   const picked: Array<FileSkill | BuiltinSkill> = [];

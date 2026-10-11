@@ -1392,9 +1392,25 @@ pub(crate) fn exec_output(
     cwd: Option<&str>,
     timeout: Duration,
 ) -> Result<std::process::Output, String> {
+    exec_output_with_stdin(command, args, cwd, timeout, None)
+}
+
+/// [`exec_output`] with `input` written to the child's stdin, which is then
+/// closed. `input` can be a secret, so nothing here logs or echoes it.
+pub(crate) fn exec_output_with_stdin(
+    command: &str,
+    args: &[String],
+    cwd: Option<&str>,
+    timeout: Duration,
+    input: Option<&[u8]>,
+) -> Result<std::process::Output, String> {
     let mut cmd = Command::new(command);
     cmd.args(args)
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     prepare_child(&mut cmd, command);
@@ -1405,7 +1421,12 @@ pub(crate) fn exec_output(
         }
     }
 
-    let child = spawn_managed(&mut cmd).map_err(|e| format!("Failed to run {command}: {e}"))?;
+    let mut child = spawn_managed(&mut cmd).map_err(|e| format!("Failed to run {command}: {e}"))?;
+    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+        // Small enough for the pipe buffer. A child that exits before reading
+        // reports its own error below; dropping the handle closes stdin.
+        let _ = stdin.write_all(input);
+    }
     let pid = child.id();
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {

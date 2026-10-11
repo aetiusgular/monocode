@@ -22,7 +22,16 @@ import {
 } from "../../core/preview";
 import { formatShellIntent, inferShellIntent } from "../../core/shellIntent";
 import { streamTextDelta } from "../../core/streamText";
-import type { HarnessEvent, HarnessMcpServer } from "../../core/types";
+import type {
+  HarnessEvent,
+  HarnessLaunchMcpServer,
+  HarnessMcpServer,
+} from "../../core/types";
+import {
+  CODEX_COMMAND_TOOL,
+  CODEX_FILE_CHANGE_TOOL,
+  toolLabel,
+} from "../../../../features/tool-access/model/toolAccess";
 
 /** Codex approval / sandbox settings for thread/start and turn/start. */
 export type CodexThreadConfig = {
@@ -282,6 +291,35 @@ export function codexThreadConfig(
     config[`mcp_servers.${name}.enabled`] = false;
   }
   return config;
+}
+
+const CODEX_MCP_NAME = /^[A-Za-z0-9_-]{1,100}$/;
+
+/**
+ * `-c` flags for `codex app-server` that add Docker gateway connectors, one
+ * stdio server each: `mcp_servers.<name>.command` and `.args`. Values are
+ * TOML, and a JSON string or array of strings is valid TOML. A name with
+ * anything but letters, digits, `-` and `_` cannot be a dotted key segment
+ * and is skipped. These are process flags, so a different set needs a new
+ * app-server.
+ */
+export function codexGatewayConfigArgs(
+  servers: readonly HarnessLaunchMcpServer[] | undefined,
+): string[] {
+  const args: string[] = [];
+  const seen = new Set<string>();
+  for (const server of servers ?? []) {
+    if (!CODEX_MCP_NAME.test(server.name) || !server.command) continue;
+    if (seen.has(server.name)) continue;
+    seen.add(server.name);
+    args.push(
+      "-c",
+      `mcp_servers.${server.name}.command=${JSON.stringify(server.command)}`,
+      "-c",
+      `mcp_servers.${server.name}.args=${JSON.stringify(server.args)}`,
+    );
+  }
+  return args;
 }
 
 /**
@@ -1474,6 +1512,27 @@ function mapItemStatus(status: string | undefined, completed: boolean): string {
   return completed ? "completed" : "in_progress";
 }
 
+/**
+ * True when an approval request asks for nothing beyond running one command
+ * or applying one patch. Codex uses the same two requests to ask for more: a
+ * retry outside the sandbox or an escalation the model wants (both come with
+ * a `reason`), network access to a host, input for a running terminal, or
+ * write access under a new root. An "always allow" rule skips only the plain
+ * kind, so it never grants access the permission mode withholds.
+ */
+export function isPlainCodexApproval(method: string, params: unknown): boolean {
+  const rec = asRecord(params);
+  if (!rec || stringField(rec, "reason")) return false;
+  if (method === "item/commandExecution/requestApproval") {
+    const kind = stringField(rec, "kind");
+    return (!kind || kind === "command") && rec.networkApprovalContext == null;
+  }
+  if (method === "item/fileChange/requestApproval") {
+    return rec.grantRoot == null;
+  }
+  return false;
+}
+
 export function mapApprovalRequest(
   method: string,
   params: unknown,
@@ -1504,6 +1563,7 @@ export function mapApprovalRequest(
         kind: "execute",
         callId,
         preview: presentation.preview,
+        tool: { key: CODEX_COMMAND_TOOL, label: toolLabel(CODEX_COMMAND_TOOL) },
       },
     };
   }
@@ -1520,10 +1580,16 @@ export function mapApprovalRequest(
         title,
         kind: "edit",
         callId,
+        tool: {
+          key: CODEX_FILE_CHANGE_TOOL,
+          label: toolLabel(CODEX_FILE_CHANGE_TOOL),
+        },
       },
     };
   }
 
+  // A sandbox escalation names no tool on purpose: per-chat tool rules never
+  // answer it. It keeps following the permission mode.
   if (method === "item/permissions/requestApproval") {
     const callId = stringField(rec, "itemId");
     const reason = stringField(rec, "reason") ?? "Approve permissions";

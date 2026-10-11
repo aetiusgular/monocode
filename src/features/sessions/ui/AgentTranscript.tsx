@@ -44,12 +44,15 @@ import { PlanPreview } from "./PlanPreview";
 import { OrchestrationPreview } from "../../orchestration/ui/OrchestrationPreview";
 import { TaskListPreview } from "./TaskListPreview";
 import { ToolCallDetailView } from "./ToolCallDetailView";
+import { ToolImageStrip } from "../../tool-images";
 import { HandoffButton, SecondOpinionButton } from "./SecondOpinionButton";
 import { SecondOpinionCard } from "./SecondOpinionCard";
 import { NoteMiniCard } from "../../notes/ui/NoteMiniCard";
 import { ArtifactCard } from "../../artifacts/ui/ArtifactCard";
 import { artifactCards } from "../../artifacts/artifacts";
 import { TurnFileCards } from "../../file-cards/ui/TurnFileCards";
+import { ApprovalRuleMenu } from "../../tool-access/ui/ApprovalRuleMenu";
+import { ReplyActions } from "../../reply-actions/ui/ReplyActions";
 
 import { TerminalSpinner } from "./TerminalSpinner";
 import { Popover } from "../../../shared/ui/Popover";
@@ -243,6 +246,10 @@ type Props = {
   onHandoff?: (target: ModelTarget, turn: Block[]) => void;
   onEditLastTurn?: () => void;
   editingLastTurn?: boolean;
+  /** Sends the last prompt again, unchanged. Absent where edit and resend is. */
+  onRetryLastTurn?: () => void;
+  /** The resend in flight is a retry, so the status line says so. */
+  retryingLastTurn?: boolean;
   onJumpToBottomChange?: (show: boolean) => void;
 
   onJumpToBottomReady?: (jump: () => void) => void;
@@ -308,6 +315,8 @@ function AgentTranscriptComponent({
   onHandoff,
   onEditLastTurn,
   editingLastTurn = false,
+  onRetryLastTurn,
+  retryingLastTurn = false,
   onJumpToBottomChange,
   onJumpToBottomReady,
   onRevealReady,
@@ -1105,6 +1114,7 @@ function AgentTranscriptComponent({
                 modelName={turnModelName}
                 doing={runningCallLabel(turn, cwd)}
                 resending={resendingEdited}
+                resendingLabel={retryingLastTurn ? RETRYING_LABEL : undefined}
               />
             ) : agentMascot && agentName ? (
               // A Mono signs its settled turns with just its mascot and name.
@@ -1494,6 +1504,22 @@ function AgentTranscriptComponent({
                   onHandoff={
                     onHandoff ? (target) => onHandoff(target, turn) : undefined
                   }
+                  replyActions={
+                    <ReplyActions
+                      replyId={turnId}
+                      blocks={turn}
+                      active={visible && !parked}
+                      // Under the turn that carries the pencil, and only then.
+                      onRetry={
+                        onRetryLastTurn &&
+                        !busy &&
+                        editableUserBlockId != null &&
+                        turn.some((block) => block.id === editableUserBlockId)
+                          ? onRetryLastTurn
+                          : undefined
+                      }
+                    />
+                  }
                 />
               ) : null}
             </div>
@@ -1617,6 +1643,7 @@ function LiveFoldTitle({
   modelName,
   doing,
   resending = false,
+  resendingLabel = RESENDING_LABEL,
 }: {
   startedAt?: number;
   paused: boolean;
@@ -1627,6 +1654,8 @@ function LiveFoldTitle({
   doing?: string | null;
   /** This turn is being replaced by its edited prompt; nothing here is running. */
   resending?: boolean;
+  /** What the line says meanwhile. A retry sends the same prompt, not an edit. */
+  resendingLabel?: string;
 }) {
   const elapsedMs = useElapsedFrom(startedAt, paused || resending);
   if (resending) {
@@ -1635,7 +1664,7 @@ function LiveFoldTitle({
     return (
       <span className="flex min-w-0" data-live-resending>
         <Shimmer className="min-w-0 truncate font-sans text-sm" duration={1}>
-          {RESENDING_LABEL}
+          {resendingLabel}
         </Shimmer>
       </span>
     );
@@ -1668,6 +1697,7 @@ function LiveFoldTitle({
 }
 
 const RESENDING_LABEL = "Sending the edited prompt…";
+const RETRYING_LABEL = "Retrying…";
 
 function backgroundLabel(tasks: string[]): string {
   return tasks.length === 1
@@ -1699,6 +1729,7 @@ function TurnDuration({
   fromModel,
   onSecondOpinion,
   onHandoff,
+  replyActions,
 }: {
   elapsedMs: number | null;
   label?: string;
@@ -1720,6 +1751,8 @@ function TurnDuration({
   fromModel?: string;
   onSecondOpinion?: (target: ModelTarget) => void;
   onHandoff?: (target: ModelTarget) => void;
+  /** Read aloud and Retry, beside the copy button. */
+  replyActions?: ReactNode;
 }) {
   const label =
     completionLabel ?? formatWorkingDuration(elapsedMs, modelName, true);
@@ -1746,6 +1779,7 @@ function TurnDuration({
         ) : (
           <Check className="size-3.5" strokeWidth={1.75} />
         )}
+        {replyActions}
         {onShowWork ? (
           <button
             type="button"
@@ -3753,6 +3787,7 @@ function SubagentPanel({
           strokeWidth={1.75}
         />
       </button>
+      <ToolImageStrip block={block} label={name} indent />
       <div className="zen-phase-body" data-open={open}>
         {open ? (
           /*
@@ -4300,6 +4335,7 @@ function ActivityToolRow({
           {pending ? null : <ToolCallStatusIcon state={state} />}
         </div>
       )}
+      <ToolImageStrip block={block} label={label} indent={!bare} />
       {detailOpen && detail ? (
         <ToolCallDetailView detail={detail} indent={!bare} />
       ) : null}
@@ -4607,6 +4643,7 @@ function ToolCall({
           />
         </div>
       )}
+      <ToolImageStrip block={block} label={label} indent />
       {open && expandable ? (
         <pre className="mt-1.5 min-w-0 whitespace-pre-wrap break-words px-2.5 font-mono text-[12px] leading-5 text-content/55">
           {expanded}
@@ -4776,6 +4813,7 @@ function ApprovalControls({
       >
         Deny
       </button>
+      <ApprovalRuleMenu approval={approval} onApproval={onApproval} />
     </div>
   );
 }

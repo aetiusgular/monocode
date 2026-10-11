@@ -22,6 +22,7 @@ import { isReviewablePlan } from "../../../features/sessions/model/plan";
 import { resolveModel } from "../../../features/sessions/model/models";
 import type { HarnessEvent } from "./types";
 import { usageLimitFromError } from "../../../features/sessions/model/usageLimit";
+import { attachToolImages } from "../../../features/tool-images/model/toolImages";
 
 /** Apply one delivery batch without copying the transcript for every token. */
 export function applyHarnessEvents(
@@ -91,6 +92,15 @@ export function applyHarnessEvent(
         streaming: event.status !== "completed" && event.status !== "failed",
         agentModel: event.agentModel,
       });
+    case "tool.images": {
+      const blocks = attachToolImages(
+        session.blocks,
+        event.callId,
+        event.images,
+        event.dropped,
+      );
+      return blocks === session.blocks ? session : { ...session, blocks };
+    }
     case "agent.step":
       return recordAgentStep(session, event);
     case "approval.requested":
@@ -885,7 +895,7 @@ function attachApproval(
               ...(preview ? { preview } : {}),
             }
           : prev.tool,
-      approval: { requestId: event.requestId },
+      approval: approvalFromEvent(event),
     };
     return { ...session, blocks };
   }
@@ -903,8 +913,18 @@ function attachApproval(
       kind: event.kind,
       ...(preview ? { preview } : {}),
     },
-    approval: { requestId: event.requestId },
+    approval: approvalFromEvent(event),
   });
+}
+
+/** The pending approval a block carries, with the tool it is about if named. */
+function approvalFromEvent(
+  event: Extract<HarnessEvent, { type: "approval.requested" }>,
+): NonNullable<Block["approval"]> {
+  return {
+    requestId: event.requestId,
+    ...(event.tool ? { tool: event.tool } : {}),
+  };
 }
 
 function findToolForApproval(

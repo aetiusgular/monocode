@@ -24,10 +24,11 @@ export const SESSION_PANEL_MIN_PANE_WIDTH =
   SESSION_PANEL_WIDTH + SESSION_PANEL_MIN_TRANSCRIPT_WIDTH;
 
 /** Sections of the panel the viewer can fold away. */
-export type SessionPanelSection = "progress" | "used" | "facts";
+export type SessionPanelSection = "progress" | "preview" | "used" | "facts";
 
 const SECTION_COLLAPSED_KEY: Record<SessionPanelSection, string> = {
   progress: "monocode.sessionPanel.progressCollapsed",
+  preview: "monocode.sessionPanel.previewCollapsed",
   used: "monocode.sessionPanel.usedCollapsed",
   facts: "monocode.sessionPanel.factsCollapsed",
 };
@@ -35,6 +36,7 @@ const SECTION_COLLAPSED_KEY: Record<SessionPanelSection, string> = {
 /** What the session runs on rarely changes, so it starts folded. */
 export const SECTION_COLLAPSED_DEFAULT: Record<SessionPanelSection, boolean> = {
   progress: false,
+  preview: false,
   used: false,
   facts: true,
 };

@@ -1,4 +1,4 @@
-import type { HarnessId } from "../../sessions/model/session";
+import type { HarnessId, ToolAccess } from "../../sessions/model/session";
 import { sessionToolsSummary } from "../model/harnessInput";
 
 /**
@@ -11,15 +11,19 @@ export function SessionToolsSummary({
   cwd,
   extraDirs,
   disabledMcpServers,
+  toolAccess,
+  disabledSkills,
 }: {
   harness: HarnessId;
   /** Directory the session works in. */
   cwd: string;
   extraDirs?: string[];
   disabledMcpServers?: string[];
+  toolAccess?: ToolAccess;
+  disabledSkills?: string[];
 }) {
   const summary = sessionToolsSummary(
-    { harness, extraDirs, disabledMcpServers },
+    { harness, extraDirs, disabledMcpServers, toolAccess, disabledSkills },
     cwd,
   );
   if (!summary) return null;

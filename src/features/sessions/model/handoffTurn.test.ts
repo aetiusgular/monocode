@@ -48,10 +48,73 @@ describe("requestOutgoingHandoff", () => {
     });
   });
 
+  it("passes the session's Docker gateway connectors on", async () => {
+    const gatewayConnectors = [
+      {
+        name: "linear",
+        command: "/usr/local/bin/docker",
+        args: ["mcp", "gateway", "run", "--profile", "monocode_linear"],
+      },
+    ];
+    await requestOutgoingHandoff({ ...base, gatewayConnectors });
+    expect(sentTurn().gatewayConnectors).toEqual(gatewayConnectors);
+    sendHarnessTurn.mockClear();
+    await requestOutgoingHandoff(base);
+    expect(sentTurn()).not.toHaveProperty("gatewayConnectors");
+  });
+
   it("leaves both out for a session without them", async () => {
     await requestOutgoingHandoff(base);
     expect(sentTurn()).not.toHaveProperty("extraDirs");
     expect(sentTurn()).not.toHaveProperty("disabledMcpServers");
+  });
+
+  it("keeps tools blocked but lets no always rule act for the user", async () => {
+    await requestOutgoingHandoff({
+      ...base,
+      toolAccess: { always: ["Bash"], never: ["WebFetch"] },
+    });
+    // The helper turn denies every request. An always rule would answer
+    // before that denial could.
+    expect(sentTurn().toolAccess).toEqual({ never: ["WebFetch"] });
+
+    sendHarnessTurn.mockClear();
+    await requestOutgoingHandoff({ ...base, toolAccess: { always: ["Bash"] } });
+    expect(sentTurn()).not.toHaveProperty("toolAccess");
+
+    // Blocked tools are a launch input: the key matches the turn before.
+    const key = (never?: string[]) =>
+      claudeSettingsKey({
+        model: "sonnet",
+        runtimeMode: "supervised",
+        deniedTools: never,
+      });
+    sendHarnessTurn.mockClear();
+    await requestOutgoingHandoff({
+      ...base,
+      toolAccess: { always: ["Bash"], never: ["WebFetch"] },
+    });
+    expect(key(sentTurn().toolAccess?.never)).toBe(key(["WebFetch"]));
+  });
+
+  it("sends the skills switched off for the chat, a launch input too", async () => {
+    const tools = sessionToolsInput(
+      { harness: "claude", disabledSkills: ["deploy"] },
+      "/repo",
+    );
+    await requestOutgoingHandoff({ ...base, ...tools });
+    expect(sentTurn().disabledSkills).toEqual(["deploy"]);
+    const key = (disabledSkills?: string[]) =>
+      claudeSettingsKey({
+        model: "sonnet",
+        runtimeMode: "supervised",
+        disabledSkills,
+      });
+    expect(key(sentTurn().disabledSkills)).toBe(key(["deploy"]));
+
+    sendHarnessTurn.mockClear();
+    await requestOutgoingHandoff(base);
+    expect(sentTurn()).not.toHaveProperty("disabledSkills");
   });
 
   it("launches Claude Code with the tools its turn before had", async () => {

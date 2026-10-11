@@ -25,6 +25,7 @@ export type SettingsSectionId =
   | "chat"
   | "providers"
   | "mcp"
+  | "connectors"
   | "skills"
   | "monos"
   | "inbox"
@@ -108,6 +109,15 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
       "Find MCP servers across providers and manage their connections.",
     keywords:
       "tools servers connections oauth authenticate login claude codex cursor opencode",
+  },
+  {
+    id: "connectors",
+    group: "agents",
+    label: "Connectors",
+    description:
+      "Add connectors from Docker's MCP catalog once and use them in every Claude Code and Codex chat.",
+    keywords:
+      "docker gateway mcp catalog marketplace oauth sign in api key notion linear github hugging face",
   },
   {
     id: "skills",

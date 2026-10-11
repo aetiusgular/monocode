@@ -42,12 +42,15 @@ import {
   type PlanBuildTarget,
   type RuntimeMode,
   type Session,
+  type ToolAccess,
   type WorkspaceMode,
   type ComposerTurnOptions,
 } from "../model/session";
 import { sessionHasBtwThreads, supportsBtwHarness } from "../model/btw";
 import { BtwSheet, useBtwConversation } from "./BtwSheet";
-import { AgentTranscript } from "./AgentTranscript";
+import { TranscriptWithApprovalRules } from "../../tool-access/ui/TranscriptWithApprovalRules";
+import { useSessionApprovalRules } from "../../tool-access/ui/approvalRules";
+import type { SessionToolsPatch } from "../../session-tools/model/harnessInput";
 import { PooledTranscript, type TranscriptPool } from "./TranscriptPool";
 import { TranscriptFind } from "./TranscriptFind";
 import {
@@ -98,6 +101,7 @@ import { AstraWelcome } from "./AstraWelcome";
 import { OpusWelcome } from "./OpusWelcome";
 import { projectKey } from "../../../shared/lib/paths";
 import { canEditLastTurn, lastTurnRecall } from "../model/editLastTurn";
+import { useRetryLastTurn } from "../../reply-actions/ui/useRetryLastTurn";
 import {
   loadProjectChatBackgroundSettings,
   projectChatBackgroundImageRevision,
@@ -123,6 +127,7 @@ import {
   sessionHasPanel,
   useSessionPanel,
 } from "../../session-panel";
+import { ToolImageGalleryHost } from "../../tool-images";
 
 export type SessionPaneProps = {
   session: Session;
@@ -171,6 +176,8 @@ export type SessionPaneProps = {
   onExtraDirsChange?: (sessionId: string, dirs: string[]) => void;
   /** Absent where a chat cannot switch MCP servers off, e.g. a host session. */
   onDisabledMcpServersChange?: (sessionId: string, names: string[]) => void;
+  /** Absent where a chat keeps no other plus-menu settings, likewise. */
+  onSessionToolsChange?: (sessionId: string, patch: SessionToolsPatch) => void;
   onSubmit: (
     sessionId: string,
     text: string,
@@ -324,6 +331,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onRuntimeModeChange,
   onExtraDirsChange,
   onDisabledMcpServersChange,
+  onSessionToolsChange,
   onSaveDraft,
   onRemoveDraft,
   onSubmit,
@@ -471,6 +479,29 @@ const LocalSessionPane = memo(function LocalSessionPane({
   useEffect(() => {
     setEditingLastTurn(false);
   }, [session.id, editLastTurnSupported]);
+  const restorePromptRef = useRef<
+    ((text: string, attachments: Attachment[]) => boolean) | null
+  >(null);
+  const retryLastTurn = useRetryLastTurn({
+    session,
+    // Offered with the pencil and never without it. It also stays away while
+    // the prompt is open for editing, while a card staged in the composer
+    // would ride along with the resend, and while a draft turn sits below
+    // the last one, which taking that turn back would drop.
+    recall:
+      editingLastTurn ||
+      draftBlock ||
+      session.inboxCard ||
+      session.noteCard ||
+      session.handoffCard
+        ? null
+        : turnRecall,
+    submit: (text, attachments, options) =>
+      onSubmit(session.id, text, attachments, options),
+    restorePrompt: (text, attachments) => {
+      restorePromptRef.current?.(text, attachments);
+    },
+  });
   const modelWelcomeSequence = useRef(0);
   const [modelWelcome, setModelWelcome] = useState<{
     kind: "astra" | "opus";
@@ -641,6 +672,19 @@ const LocalSessionPane = memo(function LocalSessionPane({
     !session.inboxAsk &&
     !session.ephemeral &&
     !monoForSession(session.id);
+  const changeToolAccess = useMemo(
+    () =>
+      sessionToolsAvailable && onSessionToolsChange
+        ? (toolAccess: ToolAccess) =>
+            onSessionToolsChange(session.id, { toolAccess })
+        : undefined,
+    [onSessionToolsChange, session.id, sessionToolsAvailable],
+  );
+  const approvalRules = useSessionApprovalRules(
+    session.harness,
+    session.toolAccess,
+    changeToolAccess,
+  );
   const showDeckProjectPicker = isEmpty && !looksLikeProject(session.cwd);
   // The agent's input always sits at the bottom, like a chat.
   const dockComposer =
@@ -750,6 +794,16 @@ const LocalSessionPane = memo(function LocalSessionPane({
           ? (names) => onDisabledMcpServersChange(session.id, names)
           : undefined
       }
+      toolAccess={session.toolAccess}
+      onToolAccessChange={changeToolAccess}
+      disabledSkills={session.disabledSkills}
+      onDisabledSkillsChange={
+        sessionToolsAvailable && onSessionToolsChange
+          ? (names) =>
+              onSessionToolsChange(session.id, { disabledSkills: names })
+          : undefined
+      }
+      transcript={session.blocks}
       canSaveDraft={
         (!remote || !!remoteFeatures?.draft) &&
         !session.busy &&
@@ -799,6 +853,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
         recallLastTurnRef.current = recall;
       }}
       onEditingLastTurnChange={setEditingLastTurn}
+      onRestorePromptReady={(restore) => {
+        restorePromptRef.current = restore;
+      }}
     />
   );
 
@@ -958,7 +1015,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
                   sessionId={session.id}
                   onMouseDown={focusPane}
                 >
-                  <AgentTranscript
+                  <TranscriptWithApprovalRules
+                    approvalRules={approvalRules}
                     blocks={
                       agent && !monoTranscript.viewingOlderPage
                         ? monoPendingTranscriptBlocks(
@@ -982,6 +1040,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                     }
                     busy={!!session.busy && !monoTranscript.viewingOlderPage}
                     resendingEdited={!!session.resendingEdited}
+                    retryingLastTurn={retryLastTurn.retrying}
                     visible={visible}
                     cwd={workCwd}
                     agentName={agent?.name}
@@ -1088,6 +1147,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
                             onFocus(session.id);
                             recallLastTurnRef.current?.();
                           }
+                        : undefined
+                    }
+                    onRetryLastTurn={
+                      editLastTurnSupported && !monoTranscript.viewingOlderPage
+                        ? retryLastTurn.retry
                         : undefined
                     }
                     latestTurnAccessory={
@@ -1252,6 +1316,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
           onOpenFile={onOpenFile}
           onShowInChat={showInChat}
         />
+        <ToolImageGalleryHost blocks={session.blocks} cwd={workCwd} />
       </div>
     </div>
   );

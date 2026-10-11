@@ -609,6 +609,7 @@ describe("settings navigation", () => {
       "chat",
       "providers",
       "mcp",
+      "connectors",
       "skills",
       "monos",
       "inbox",

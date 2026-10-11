@@ -60,7 +60,7 @@ const {
   stopCodexSession,
   __codexTestReset,
 } = await import("./codex");
-import type { HarnessEvent } from "../../core/types";
+import type { HarnessEvent, HarnessLaunchMcpServer } from "../../core/types";
 import {
   newSession,
   type RuntimeMode,
@@ -120,6 +120,7 @@ async function startTurn(
     controlsAgents?: boolean;
     ephemeral?: boolean;
     codexStore?: "mono";
+    gatewayConnectors?: HarnessLaunchMcpServer[];
   } = {},
 ) {
   const events: HarnessEvent[] = [];
@@ -141,6 +142,7 @@ async function startTurn(
     controlsAgents: options.controlsAgents,
     ephemeral: options.ephemeral,
     codexStore: options.codexStore,
+    gatewayConnectors: options.gatewayConnectors,
     intent: options.intent,
     text: "summarize the changelog",
     attachments: [],
@@ -713,6 +715,61 @@ describe("codex live turn sequence", () => {
     notify("turn/started", { turn: { id: "turn_3" } });
     notify("turn/completed", { turn: { id: "turn_3", status: "completed" } });
     await third;
+  });
+
+  it("starts app-server with Docker gateway connectors and restarts it when they change", async () => {
+    const notion: HarnessLaunchMcpServer = {
+      name: "notion-remote",
+      command: "/usr/local/bin/docker",
+      args: ["mcp", "gateway", "run", "--profile", "monocode_notion_remote"],
+    };
+    const first = await startTurn("codex-live", {
+      runtimeMode: "auto",
+      gatewayConnectors: [notion],
+    });
+    expect(spawnChild.mock.calls[0][2]).toEqual([
+      "app-server",
+      "-c",
+      'mcp_servers.notion-remote.command="/usr/local/bin/docker"',
+      "-c",
+      'mcp_servers.notion-remote.args=["mcp","gateway","run","--profile","monocode_notion_remote"]',
+    ]);
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await first.turn;
+
+    // The same connectors keep the app-server.
+    sent.length = 0;
+    const same = sendCodexTurn({
+      sessionId: "codex-live",
+      cwd: "/repo",
+      model: "codex:gpt-5.4",
+      runtimeMode: "auto",
+      gatewayConnectors: [{ ...notion, args: [...notion.args] }],
+      text: "next",
+      onEvent: () => undefined,
+    });
+    await waitFor(
+      () => parse().some((m) => m.method === "turn/start"),
+      "turn/start",
+    );
+    expect(spawnChild).toHaveBeenCalledTimes(1);
+    reply(parse().find((m) => m.method === "turn/start")!.id as number, {
+      turn: { id: "turn_2" },
+    });
+    notify("turn/started", { turn: { id: "turn_2" } });
+    notify("turn/completed", { turn: { id: "turn_2", status: "completed" } });
+    await same;
+
+    // Removing the connector needs a new app-server, on the same thread.
+    sent.length = 0;
+    const second = await startTurn("codex-live", {
+      runtimeMode: "auto",
+      expectResume: true,
+    });
+    expect(spawnChild).toHaveBeenCalledTimes(2);
+    expect(spawnChild.mock.calls[1][2]).toEqual(["app-server"]);
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await second.turn;
   });
 
   it("opens the thread with every server on when Codex cannot load a switched-off entry", async () => {

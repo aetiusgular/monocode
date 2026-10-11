@@ -38,9 +38,12 @@ import {
   type HarnessId,
   type RuntimeMode,
   type Session,
+  type ToolAccess,
 } from "../../sessions/model/session";
 import { sanitizeDisabledMcpServers } from "../../session-tools/model/connectors";
 import { sanitizeExtraDirs } from "../../session-tools/model/extraDirs";
+import { sanitizeToolAccess } from "../../tool-access/model/toolAccess";
+import { sanitizeDisabledSkills } from "../../chat-skills/model/chatSkills";
 
 export type WorkspaceSessionStub = {
   inboxAsk?: InboxAskContext;
@@ -59,6 +62,8 @@ export type WorkspaceSessionStub = {
   /** Kept here so a tab that has not sent a message yet does not lose them. */
   extraDirs?: string[];
   disabledMcpServers?: string[];
+  toolAccess?: ToolAccess;
+  disabledSkills?: string[];
 };
 
 export type WorkspaceSnapshot = {
@@ -377,6 +382,12 @@ function sessionStub(session: Session): WorkspaceSessionStub | null {
     ...(session.disabledMcpServers?.length
       ? { disabledMcpServers: session.disabledMcpServers }
       : {}),
+    ...(session.toolAccess && Object.keys(session.toolAccess).length > 0
+      ? { toolAccess: session.toolAccess }
+      : {}),
+    ...(session.disabledSkills?.length
+      ? { disabledSkills: session.disabledSkills }
+      : {}),
   };
 }
 
@@ -410,6 +421,8 @@ function sessionFromStub(stub: WorkspaceSessionStub): Session {
     ...(stub.disabledMcpServers
       ? { disabledMcpServers: stub.disabledMcpServers }
       : {}),
+    ...(stub.toolAccess ? { toolAccess: stub.toolAccess } : {}),
+    ...(stub.disabledSkills ? { disabledSkills: stub.disabledSkills } : {}),
   };
 }
 
@@ -434,6 +447,8 @@ function sanitizeStub(raw: unknown): WorkspaceSessionStub | null {
   const disabledMcpServers = sanitizeDisabledMcpServers(
     value.disabledMcpServers,
   );
+  const toolAccess = sanitizeToolAccess(value.toolAccess);
+  const disabledSkills = sanitizeDisabledSkills(value.disabledSkills);
   return {
     id: value.id,
     cwd:
@@ -464,6 +479,8 @@ function sanitizeStub(raw: unknown): WorkspaceSessionStub | null {
     ...(value.worktreeRemoved === true ? { worktreeRemoved: true } : {}),
     ...(extraDirs ? { extraDirs } : {}),
     ...(disabledMcpServers ? { disabledMcpServers } : {}),
+    ...(toolAccess ? { toolAccess } : {}),
+    ...(disabledSkills ? { disabledSkills } : {}),
   };
 }
 

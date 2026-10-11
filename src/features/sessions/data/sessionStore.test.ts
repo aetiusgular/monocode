@@ -81,6 +81,79 @@ it("saves connector switches beside extra folders on the first user block", () =
   ).not.toBe(persistFingerprint(switched));
 });
 
+it("saves tool rules beside the other composer tools", () => {
+  const session = newSession("claude", "/tmp");
+  session.blocks = [{ id: "u1", role: "user", text: "Review" }];
+  const ruled = {
+    ...session,
+    disabledMcpServers: ["github"],
+    toolAccess: { Bash: "always", WebFetch: "never", "Bash(rm *)": "never" },
+  } as Session;
+  const saved = sanitizeSessionForPersist(ruled);
+  expect(saved).not.toHaveProperty("toolAccess");
+  expect(saved.blocks[0].sessionTools).toEqual({
+    disabledMcpServers: ["github"],
+    toolAccess: { Bash: "always", WebFetch: "never" },
+  });
+  expect(persistFingerprint(ruled)).not.toBe(persistFingerprint(session));
+  expect(
+    persistFingerprint({ ...ruled, toolAccess: { Bash: "never" } }),
+  ).not.toBe(persistFingerprint(ruled));
+});
+
+it("saves skills switched off for the chat beside the other composer tools", () => {
+  const session = newSession("claude", "/tmp");
+  session.blocks = [{ id: "u1", role: "user", text: "Review" }];
+  const switched = {
+    ...session,
+    extraDirs: ["/work/docs"],
+    disabledSkills: ["deploy", "Not A Skill", "deploy", "review-pr"],
+  };
+  const saved = sanitizeSessionForPersist(switched);
+  expect(saved).not.toHaveProperty("disabledSkills");
+  expect(saved.blocks[0].sessionTools).toEqual({
+    extraDirs: ["/work/docs"],
+    disabledSkills: ["deploy", "review-pr"],
+  });
+  expect(persistFingerprint(switched)).not.toBe(persistFingerprint(session));
+  expect(
+    persistFingerprint({ ...switched, disabledSkills: ["deploy"] }),
+  ).not.toBe(persistFingerprint(switched));
+});
+
+it("keeps the tool of a decided approval and drops an invented one", () => {
+  const session = newSession("claude", "/tmp");
+  const tool = (id: string, approval: Block["approval"]): Block => ({
+    id,
+    role: "tool",
+    text: "Shell",
+    tool: { callId: id, title: "Shell", kind: "execute", status: "completed" },
+    approval,
+  });
+  session.blocks = [
+    { id: "u1", role: "user", text: "Review" },
+    tool("t1", {
+      requestId: 1,
+      decided: "allow",
+      tool: { key: "Bash", label: "anything" },
+    }),
+    tool("t2", {
+      requestId: 2,
+      decided: "deny",
+      tool: { key: "not a tool", label: "x" },
+    }),
+    tool("t3", { requestId: 3, tool: { key: "Write", label: "Write" } }),
+  ];
+  const saved = sanitizeSessionForPersist(session);
+  expect(saved.blocks.map((block) => block.approval)).toEqual([
+    undefined,
+    { requestId: 1, decided: "allow", tool: { key: "Bash", label: "Bash" } },
+    { requestId: 2, decided: "deny" },
+    // A card nobody answered does not survive a restart.
+    undefined,
+  ]);
+});
+
 it("fingerprints queued message edits, ordering, errors and pause state", () => {
   const session = newSession("codex", "/tmp");
   const first = { id: "first", text: "One", attachments: [] };

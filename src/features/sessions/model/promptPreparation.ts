@@ -4,13 +4,13 @@ import {
   applySkillsToTurn,
   warmNativeSkills,
   isNativeCommandPrompt,
-  type SkillCatalogContext,
+  type SkillTurnContext,
 } from "../../skills/model/skills";
 import { nativeCommandPrompt } from "../../../integrations/harness/core/nativeCommands";
 
 export async function preparePrompt(
   text: string,
-  context: SkillCatalogContext,
+  context: SkillTurnContext,
 ): Promise<string> {
   warmNativeSkills(context);
   if (isNativeCommandPrompt(text, context.harness))

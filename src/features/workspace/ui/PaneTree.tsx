@@ -53,6 +53,7 @@ import { FilePane } from "../../files/ui/FilePane";
 import { SessionPane } from "../../sessions/ui/SessionPane";
 import type { TranscriptPool } from "../../sessions/ui/TranscriptPool";
 import type { SessionFolderTarget } from "../../sessions/model/sessionFolders";
+import type { SessionToolsPatch } from "../../session-tools/model/harnessInput";
 import type { Worktree } from "../../source-control/model/worktrees";
 
 type Shared = {
@@ -96,6 +97,7 @@ type Shared = {
   onRuntimeModeChange: (sessionId: string, mode: RuntimeMode) => void;
   onExtraDirsChange?: (sessionId: string, dirs: string[]) => void;
   onDisabledMcpServersChange?: (sessionId: string, names: string[]) => void;
+  onSessionToolsChange?: (sessionId: string, patch: SessionToolsPatch) => void;
   onSubmit: (
     sessionId: string,
     text: string,
@@ -238,6 +240,7 @@ function PaneTreeComponent({
   onRuntimeModeChange,
   onExtraDirsChange,
   onDisabledMcpServersChange,
+  onSessionToolsChange,
   onSaveDraft,
   onRemoveDraft,
   onSubmit,
@@ -530,6 +533,7 @@ function PaneTreeComponent({
                   onRuntimeModeChange={onRuntimeModeChange}
                   onExtraDirsChange={onExtraDirsChange}
                   onDisabledMcpServersChange={onDisabledMcpServersChange}
+                  onSessionToolsChange={onSessionToolsChange}
                   onSaveDraft={onSaveDraft}
                   onRemoveDraft={onRemoveDraft}
                   onSubmit={onSubmit}

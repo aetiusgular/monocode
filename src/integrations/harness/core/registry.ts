@@ -15,6 +15,7 @@ import type {
   CompactContextInput,
   HarnessEvent,
   HarnessMcpServer,
+  HarnessToolAccess,
   ListMcpServersInput,
   RewindLastTurnInput,
   RewindLastTurnResult,
@@ -77,6 +78,13 @@ export type HarnessAdapter = {
   ): void;
   /** Keep a timed question open once the user starts answering it. */
   keepQuestionOpen?(sessionId: string, requestId: number): void;
+  /**
+   * Replace a running session's per-tool rules at once, so a rule set in the
+   * middle of a turn answers the next request. Each turn start also passes
+   * the rules as `toolAccess`; this covers the time in between. A no-op for
+   * a session with no live process.
+   */
+  setToolAccess?(sessionId: string, access?: HarnessToolAccess): void;
   /** Kill the child but keep resume state for later rebind. */
   stopSession(sessionId: string): Promise<void>;
   /** Drop resume state and kill the child (delete, harness switch, idle detach). */
@@ -347,6 +355,15 @@ export function respondHarnessQuestion(
   reply: UserQuestionReply,
 ): void {
   getHarness(harness)?.respondQuestion?.(sessionId, requestId, reply);
+}
+
+/** Hand a session's changed per-tool rules to its running harness, if any. */
+export function setHarnessToolAccess(
+  harness: HarnessId,
+  sessionId: string,
+  access?: HarnessToolAccess,
+): void {
+  getHarness(harness)?.setToolAccess?.(sessionId, access);
 }
 
 export function keepHarnessQuestionOpen(

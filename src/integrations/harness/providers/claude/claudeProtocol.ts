@@ -27,7 +27,16 @@ import {
   titleFromToolInput,
 } from "../../core/preview";
 import { streamTextDelta } from "../../core/streamText";
-import type { ApprovalDecision, HarnessEvent } from "../../core/types";
+import type {
+  ApprovalDecision,
+  HarnessEvent,
+  HarnessLaunchMcpServer,
+} from "../../core/types";
+import type { ToolResultImage } from "../../../../features/tool-images/model/toolImages";
+import {
+  sanitizeReportedMcpServers,
+  type ReportedMcpServer,
+} from "../../../../features/session-tools/model/reportedMcpServers";
 
 /** Claude Code versions that first ship Opus 5.5 / Opus 5 / Sonnet 5 / Fable 5 / Opus 4.8 / 4.7. */
 export const MINIMUM_CLAUDE_OPUS_5_5_VERSION = "2.1.280";
@@ -263,6 +272,44 @@ export function claudeMcpServerDenyRule(server: string): string {
   return `mcp__${server.trim().replace(/[^A-Za-z0-9_-]/g, "_")}`;
 }
 
+/**
+ * Deny rules for tools blocked in one chat. A bare tool name as a deny rule
+ * takes the tool out of the model's context. Only plain tool names pass: a
+ * saved session must not be able to put a flag or a scoped pattern here.
+ */
+export function claudeToolDenyRules(tools: readonly string[] = []): string[] {
+  return [
+    ...new Set(tools.filter((tool) => PLAIN_TOOL_NAME.test(tool))),
+  ].sort();
+}
+
+const PLAIN_TOOL_NAME = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
+
+/**
+ * Deny rules that keep the model from invoking skills switched off for one
+ * chat. Claude Code's documented rule syntax for its Skill tool is
+ * `Skill(name)` for an exact match and `Skill(name *)` for the skill called
+ * with arguments, and `--disallowedTools` takes deny rules in that syntax. A
+ * name that is not a plain skill name is dropped, so nothing but these two
+ * rule shapes can come from a saved session.
+ */
+export function claudeSkillDenyRules(skills: readonly string[] = []): string[] {
+  return [...new Set(skills)]
+    .filter((name) => name.length <= 64 && PLAIN_SKILL_NAME.test(name))
+    .sort()
+    .flatMap((name) => [`Skill(${name})`, `Skill(${name} *)`]);
+}
+
+const PLAIN_SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/**
+ * What Claude Code is told when a per-chat rule refuses a call. It reaches
+ * the agent as the tool's error, so it says not to try again.
+ */
+export function claudeBlockedToolMessage(toolName: string): string {
+  return `The user blocked the ${toolName} tool for this chat. Do not call it again. Continue without it, or tell the user what you need it for.`;
+}
+
 export function buildClaudeSpawnArgs(input: {
   model?: string;
   effort?: string;
@@ -284,6 +331,11 @@ export function buildClaudeSpawnArgs(input: {
   disallowedTools?: string[];
   /** MCP servers whose tools are all denied, added to `disallowedTools`. */
   disabledMcpServers?: string[];
+  /**
+   * Docker gateway connectors, passed with `--mcp-config` beside the user's
+   * own servers. Never with `--strict-mcp-config`. Ignored when isolated.
+   */
+  gatewayConnectors?: HarnessLaunchMcpServer[];
 }): string[] {
   const args = [
     "--output-format",
@@ -311,6 +363,9 @@ export function buildClaudeSpawnArgs(input: {
     args.push("--mcp-config", JSON.stringify({ mcpServers: {} }));
     args.push("--settings", JSON.stringify(settings));
   } else {
+    const gateway = claudeGatewayMcpConfig(input.gatewayConnectors);
+    // `--mcp-config` is variadic too: the flag after it ends its list.
+    if (gateway) args.push("--mcp-config", gateway);
     args.push(`--setting-sources=${CLAUDE_SETTING_SOURCES}`);
     args.push(
       "--settings",
@@ -347,6 +402,34 @@ export function buildClaudeSpawnArgs(input: {
   if (input.sessionId) args.push("--session-id", input.sessionId);
   if (input.maxTurns) args.push("--max-turns", String(input.maxTurns));
   return args;
+}
+
+const MCP_SERVER_NAME = /^[A-Za-z0-9_-]{1,100}$/;
+
+/**
+ * The `--mcp-config` JSON for Docker gateway connectors: one stdio server per
+ * connector. Claude Code adds these to the servers it already loads. Null
+ * when there are none.
+ */
+export function claudeGatewayMcpConfig(
+  servers: readonly HarnessLaunchMcpServer[] | undefined,
+): string | null {
+  const mcpServers: Record<
+    string,
+    { type: "stdio"; command: string; args: string[] }
+  > = {};
+  for (const server of servers ?? []) {
+    if (!MCP_SERVER_NAME.test(server.name) || !server.command) continue;
+    if (mcpServers[server.name]) continue;
+    mcpServers[server.name] = {
+      type: "stdio",
+      command: server.command,
+      args: [...server.args],
+    };
+  }
+  return Object.keys(mcpServers).length > 0
+    ? JSON.stringify({ mcpServers })
+    : null;
 }
 
 export function buildControlRequest(
@@ -421,6 +504,18 @@ export function isClaudeInitMessage(rec: Record<string, unknown>): boolean {
   const type = stringField(rec, "type");
   const subtype = stringField(rec, "subtype");
   return type === "system" && (subtype === "init" || subtype === "initialized");
+}
+
+/**
+ * The MCP servers a `system/init` message lists, with their status. Null when
+ * the message carries no list.
+ */
+export function initMcpServers(
+  rec: Record<string, unknown>,
+): ReportedMcpServer[] | null {
+  if (stringField(rec, "type") !== "system") return null;
+  if (stringField(rec, "subtype") !== "init") return null;
+  return sanitizeReportedMcpServers(rec.mcp_servers);
 }
 
 export function toClaudePermissionResult(
@@ -905,6 +1000,8 @@ export function toolResultsFromUserMessage(
   toolUseId: string;
   isError: boolean;
   text: string;
+  /** Images the result carried. Absent when it carried none. */
+  images?: ToolResultImage[];
 }> {
   const message = asRecord(rec.message);
   const content = message?.content;
@@ -915,13 +1012,41 @@ export function toolResultsFromUserMessage(
     const toolUseId = stringField(row, "tool_use_id");
     if (!toolUseId) return [];
     const text = toolResultText(row.content);
+    const images = toolResultImages(row.content);
     return [
       {
         toolUseId,
         isError: row.is_error === true,
         text,
+        ...(images.length > 0 ? { images } : {}),
       },
     ];
+  });
+}
+
+/**
+ * Images inside a tool result: a screenshot from a browser or computer-use
+ * tool, or an image file the Read tool opened. Only inline base64 in a format
+ * Claude accepts is taken. An image given by URL is left alone.
+ */
+function toolResultImages(value: unknown): ToolResultImage[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((block) => {
+    const row = asRecord(block);
+    if (stringField(row, "type") !== "image") return [];
+    const source = asRecord(row?.source);
+    if (stringField(source, "type") !== "base64") return [];
+    const data = source?.data;
+    const mimeType = stringField(source, "media_type")?.toLowerCase();
+    if (
+      typeof data !== "string" ||
+      !data ||
+      !mimeType ||
+      !SUPPORTED_CLAUDE_IMAGE_MIME_TYPES.has(mimeType)
+    ) {
+      return [];
+    }
+    return [{ data, mimeType }];
   });
 }
 
@@ -1147,7 +1272,15 @@ export function claudeSettingsKey(input: {
   extraDirs?: string[];
   /** Launch-time deny rules; a change needs a fresh process too. */
   disabledMcpServers?: string[];
+  /** Tools blocked for the chat, also launch-time deny rules. */
+  deniedTools?: string[];
+  /** Skills switched off for the chat, launch-time deny rules as well. */
+  disabledSkills?: string[];
+  /** Docker gateway connectors, a launch-time `--mcp-config`. */
+  gatewayConnectors?: HarnessLaunchMcpServer[];
 }): string {
+  const deniedTools = claudeToolDenyRules(input.deniedTools);
+  const deniedSkills = claudeSkillDenyRules(input.disabledSkills);
   return [
     input.model,
     input.effort ?? "",
@@ -1162,7 +1295,22 @@ export function claudeSettingsKey(input: {
     ...(input.disabledMcpServers?.length
       ? [`mcp-off:${JSON.stringify([...input.disabledMcpServers].sort())}`]
       : []),
+    ...(deniedTools.length ? [`tools-off:${JSON.stringify(deniedTools)}`] : []),
+    ...(deniedSkills.length
+      ? [`skills-off:${JSON.stringify(deniedSkills)}`]
+      : []),
+    ...(input.gatewayConnectors?.length
+      ? [
+          `gateway:${claudeGatewayMcpConfig(sortedByName(input.gatewayConnectors))}`,
+        ]
+      : []),
   ].join("|");
+}
+
+function sortedByName(
+  servers: readonly HarnessLaunchMcpServer[],
+): HarnessLaunchMcpServer[] {
+  return [...servers].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function numberField(

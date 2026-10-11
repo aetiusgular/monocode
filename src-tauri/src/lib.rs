@@ -10,6 +10,7 @@ mod codex_mono_store;
 mod control;
 pub mod control_cli;
 mod cursor_store;
+mod docker_mcp;
 mod external_editor;
 mod fs;
 mod gitlab;
@@ -442,6 +443,7 @@ pub fn run() {
             harness::harness_resolve_claude,
             harness::claude_mcp_list,
             mcp::mcp_discover,
+            docker_mcp::docker_mcp,
             mcp::mcp_add,
             harness::claude_mcp_add,
             harness::claude_mcp_remove,

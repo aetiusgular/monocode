@@ -6,6 +6,7 @@ import type { InboxAskContext } from "../../inbox/model/inboxAsk";
 import type { NoteCardMeta, NoteComposerCard } from "../../notes";
 import type { OrchestrationProposal } from "../../orchestration/model/orchestrationPlan";
 import type { LinkedWorkItemUpdateCard } from "../../inbox/model/linkedWorkItemActivity";
+import type { ToolImageRef } from "../../tool-images/model/toolImages";
 import {
   defaultSessionChoice,
   firstEnabledHarness,
@@ -346,9 +347,16 @@ export type Block = {
     /** Left running by the agent when it yielded; the turn waits on it. */
     background?: boolean;
   };
+  /**
+   * Images this tool call returned, kept as files for the transcript. On a
+   * subagent's row: the images its own tool calls returned.
+   */
+  toolImages?: ToolImageRef[];
   approval?: {
     requestId: number;
     decided?: "allow" | "deny" | "cancelled";
+    /** What the request is for, where the harness names it; see `ToolAccess`. */
+    tool?: ApprovalTool;
   };
   /** Inner activity of a delegated run. Present on Agent/Task tool blocks. */
   agentRun?: AgentRunMeta;
@@ -400,7 +408,22 @@ export type Block = {
 export type PersistedSessionTools = {
   extraDirs?: string[];
   disabledMcpServers?: string[];
+  toolAccess?: ToolAccess;
+  disabledSkills?: string[];
 };
+
+/** A standing answer for one tool's approval requests in one chat. */
+export type ToolAccessRule = "always" | "never";
+
+/**
+ * Per-chat rules by tool key. A tool without a rule follows the session's
+ * permission mode. Keys are the harness's own names: a Claude Code tool name
+ * (`Bash`, `mcp__server__tool`), or `codex:command` and `codex:file-change`.
+ */
+export type ToolAccess = Record<string, ToolAccessRule>;
+
+/** The tool an approval request is about: its rule key and a name to show. */
+export type ApprovalTool = { key: string; label: string };
 
 export type RuntimeMode =
   "supervised" | "auto-accept-edits" | "auto" | "full-access";
@@ -522,6 +545,16 @@ export type Session = {
    * harness's own configuration is left alone. Saved like `extraDirs`.
    */
   disabledMcpServers?: string[];
+  /**
+   * Tools always allowed or never allowed in this chat only, whatever the
+   * permission mode says. Saved like `extraDirs`.
+   */
+  toolAccess?: ToolAccess;
+  /**
+   * Skills (by name) switched off for this chat only. The app-wide list in
+   * Settings is left alone. Saved like `extraDirs`.
+   */
+  disabledSkills?: string[];
   /** One-shot composer text when opening a session from Inbox. */
   composerSeed?: string;
   /** Inbox issue/PR chip shown above the composer. In-memory, one-shot. */
@@ -592,6 +625,23 @@ export function harnessSupportsExtraDirs(id: HarnessId): boolean {
 /** Harnesses that can leave out one MCP server for a single conversation. */
 export function harnessSupportsConnectorSwitches(id: HarnessId): boolean {
   return id === "claude" || id === "codex";
+}
+
+/**
+ * Harnesses whose approval requests name a tool MonoCode can keep a per-chat
+ * rule for. The others either do not ask or do not say what they ask about.
+ */
+export function harnessSupportsToolAccess(id: HarnessId): boolean {
+  return id === "claude" || id === "codex";
+}
+
+/**
+ * Harnesses whose `/name` skills MonoCode offers and expands itself, so one
+ * chat can leave a skill out. Pi and omp run their own commands: MonoCode
+ * passes `/name` through to them and cannot hold one back.
+ */
+export function harnessSupportsSkillSwitches(id: HarnessId): boolean {
+  return id !== "pi" && id !== "omp";
 }
 
 export function newSession(

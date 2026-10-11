@@ -12,6 +12,7 @@ import { ChevronRight, CornerDownRight } from "../../../shared/ui/icons";
 import type { DocumentFile } from "../../file-cards/model/documentFiles";
 import { sessionWorkCwd, type Session } from "../../sessions/model/session";
 import { taskListProgressLabel } from "../../sessions/model/taskList";
+import { PreviewSection } from "../../tool-images";
 import { sessionFacts } from "../model/sessionFacts";
 import {
   loadSectionCollapsed,
@@ -249,6 +250,7 @@ export function SessionPanelView({
               />
             )}
           </div>
+          <PreviewSection blocks={session.blocks} cwd={workCwd} />
           <OutputsSection files={outputs} onOpenFile={onOpenFile} />
           <UsedSection rows={rows} active={visible} onAction={act} />
           <PanelSection title="Session" fold="facts">

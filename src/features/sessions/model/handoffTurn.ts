@@ -6,6 +6,10 @@ import {
   sendHarnessTurn,
 } from "../../../integrations/harness/core/registry";
 import { mergeStream } from "../../../integrations/harness/core/streamText";
+import type {
+  HarnessLaunchMcpServer,
+  HarnessToolAccess,
+} from "../../../integrations/harness/core/types";
 import type { HarnessId } from "./session";
 
 const HANDOFF_TIMEOUT_MS = 45_000;
@@ -25,6 +29,9 @@ export async function requestOutgoingHandoff(input: {
    */
   extraDirs?: string[];
   disabledMcpServers?: string[];
+  gatewayConnectors?: HarnessLaunchMcpServer[];
+  toolAccess?: HarnessToolAccess;
+  disabledSkills?: string[];
   userRequest: string;
 }): Promise<string> {
   let brief = "";
@@ -44,6 +51,16 @@ export async function requestOutgoingHandoff(input: {
       ...(input.disabledMcpServers
         ? { disabledMcpServers: input.disabledMcpServers }
         : {}),
+      ...(input.gatewayConnectors
+        ? { gatewayConnectors: input.gatewayConnectors }
+        : {}),
+      // Blocked tools stay blocked, and are a launch input like the two
+      // above. "Always allow" rules are left out: this turn denies every
+      // request, and a rule must not let the outgoing agent act instead.
+      ...(input.toolAccess?.never?.length
+        ? { toolAccess: { never: input.toolAccess.never } }
+        : {}),
+      ...(input.disabledSkills ? { disabledSkills: input.disabledSkills } : {}),
       text: buildOutgoingHandoffPrompt(input.userRequest),
       onEvent: (event) => {
         if (event.type === "message.delta") {

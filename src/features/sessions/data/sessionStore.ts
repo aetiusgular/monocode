@@ -11,6 +11,11 @@ import { persistableAttachment } from "../model/attachments";
 import type { ContextUsage } from "../model/contextUsage";
 import { sanitizeDisabledMcpServers } from "../../session-tools/model/connectors";
 import { sanitizeExtraDirs } from "../../session-tools/model/extraDirs";
+import { sanitizeDisabledSkills } from "../../chat-skills/model/chatSkills";
+import {
+  sanitizeApprovalTool,
+  sanitizeToolAccess,
+} from "../../tool-access/model/toolAccess";
 import {
   isRemoteProjectPath,
   normalizeProjectPath,
@@ -47,6 +52,7 @@ import type {
   TurnModel,
   TurnMetrics,
 } from "../model/session";
+import { sanitizeToolImages } from "../../tool-images/model/toolImages";
 
 import { HARNESSES, RUNTIME_MODES } from "../model/session";
 
@@ -344,10 +350,16 @@ function persistedSessionTools(
   const disabledMcpServers = sanitizeDisabledMcpServers(
     source?.disabledMcpServers,
   );
-  if (!extraDirs && !disabledMcpServers) return undefined;
+  const toolAccess = sanitizeToolAccess(source?.toolAccess);
+  const disabledSkills = sanitizeDisabledSkills(source?.disabledSkills);
+  if (!extraDirs && !disabledMcpServers && !toolAccess && !disabledSkills) {
+    return undefined;
+  }
   return {
     ...(extraDirs ? { extraDirs } : {}),
     ...(disabledMcpServers ? { disabledMcpServers } : {}),
+    ...(toolAccess ? { toolAccess } : {}),
+    ...(disabledSkills ? { disabledSkills } : {}),
   };
 }
 
@@ -976,10 +988,19 @@ function sanitizeBlock(
   const turnMetrics = sanitizeTurnMetrics(block.turnMetrics);
   if (block.role === "user" && turnMetrics) next.turnMetrics = turnMetrics;
   if (block.tool) next.tool = block.tool;
+  // Paths only. The image bytes stay in their files.
+  const toolImages = block.tool
+    ? sanitizeToolImages(block.toolImages)
+    : undefined;
+  if (toolImages) next.toolImages = toolImages;
   if (block.approval?.decided) {
+    // The tool stays with a decided card, so the chat's tool list still
+    // names what it was asked about after a restart.
+    const tool = sanitizeApprovalTool(block.approval.tool);
     next.approval = {
       requestId: block.approval.requestId,
       decided: block.approval.decided,
+      ...(tool ? { tool } : {}),
     };
   } else if (block.approval && !block.approval.decided) {
     // Drop stale live approval prompts; request ids don't survive restarts.

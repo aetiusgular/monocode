@@ -1,5 +1,6 @@
 import type {
   AgentStepKind,
+  ApprovalTool,
   Attachment,
   InterjectionMeta,
   RuntimeMode,
@@ -9,6 +10,7 @@ import type {
   TurnMetrics,
 } from "../../../features/sessions/model/session";
 import type { UserQuestion } from "../../../features/sessions/model/userQuestion";
+import type { ToolImageRef } from "../../../features/tool-images/model/toolImages";
 
 export type HarnessEvent =
   | { type: "session.started" }
@@ -81,6 +83,17 @@ export type HarnessEvent =
       /** Every path affected when one structured edit changes multiple files. */
       paths?: string[];
     }
+  /**
+   * Images a tool call returned, once the image store has saved them. For a
+   * subagent's own tool call, `callId` is the parent Agent call.
+   */
+  | {
+      type: "tool.images";
+      callId: string;
+      images: ToolImageRef[];
+      /** Files deleted to keep the session under its limit. */
+      dropped?: string[];
+    }
   /** Something a subagent did, mirrored onto its parent Agent tool call. */
   | {
       type: "agent.step";
@@ -106,6 +119,11 @@ export type HarnessEvent =
       kind?: string;
       callId?: string;
       preview?: ToolPreview;
+      /**
+       * The tool being asked about, when the harness names one a per-chat
+       * rule can be kept for. Absent on requests no rule can answer.
+       */
+      tool?: ApprovalTool;
     }
   | {
       type: "approval.resolved";
@@ -160,8 +178,25 @@ export type HarnessEvent =
 
 export type ApprovalDecision = "allow" | "deny";
 
+/**
+ * A chat's per-tool rules in the shape a harness takes: the tool keys whose
+ * approval requests are answered without asking the user.
+ */
+export type HarnessToolAccess = { always?: string[]; never?: string[] };
+
 /** The turn is connecting or has just ended; retain the follow-up for later. */
 export class TurnNotReadyError extends Error {}
+
+/**
+ * A stdio MCP server MonoCode adds to a conversation at launch, beside the
+ * harness's own servers.
+ */
+export type HarnessLaunchMcpServer = {
+  /** The MCP server name the harness sees. */
+  name: string;
+  command: string;
+  args: string[];
+};
 
 export type HarnessSessionInput = {
   sessionId: string;
@@ -193,6 +228,25 @@ export type HarnessSessionInput = {
    * Claude Code and Codex honor it; other harnesses ignore it.
    */
   disabledMcpServers?: string[];
+  /**
+   * Docker MCP gateway connectors added to this conversation, one stdio
+   * server each. Claude Code (non-isolated) and Codex honor it; other
+   * harnesses ignore it.
+   */
+  gatewayConnectors?: HarnessLaunchMcpServer[];
+  /**
+   * Tools whose approval requests are answered by a per-chat rule instead of
+   * the user. Claude Code and Codex honor it; other harnesses ignore it.
+   * "Always" only skips a prompt: it never applies in a plan turn and never
+   * grants access the permission mode withholds.
+   */
+  toolAccess?: HarnessToolAccess;
+  /**
+   * Skills, by name, the model must not invoke in this conversation. Only
+   * Claude Code honors it, as deny rules for its Skill tool. MonoCode itself
+   * keeps these out of the composer's `/` list and does not expand them.
+   */
+  disabledSkills?: string[];
   onEvent: (event: HarnessEvent) => void;
 };
 

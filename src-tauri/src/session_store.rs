@@ -249,20 +249,28 @@ pub fn session_upsert(
     Ok(summary)
 }
 
+/// Image files a session's transcript owns: the images the agent generated
+/// and the copies kept of images its tool calls returned.
 fn generated_image_paths(blocks: &Value) -> Vec<String> {
-    blocks
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|block| block.get("role").and_then(Value::as_str) == Some("image"))
-        .filter_map(|block| {
-            block
+    let mut paths = Vec::new();
+    for block in blocks.as_array().into_iter().flatten() {
+        if block.get("role").and_then(Value::as_str) == Some("image") {
+            if let Some(path) = block
                 .get("image")
                 .and_then(|image| image.get("path"))
                 .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .collect()
+            {
+                paths.push(path.to_string());
+            }
+        }
+        let tool_images = block.get("toolImages").and_then(Value::as_array);
+        for image in tool_images.into_iter().flatten() {
+            if let Some(path) = image.get("path").and_then(Value::as_str) {
+                paths.push(path.to_string());
+            }
+        }
+    }
+    paths
 }
 
 #[tauri::command(async)]

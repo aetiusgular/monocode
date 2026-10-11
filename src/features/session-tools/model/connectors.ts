@@ -158,6 +158,70 @@ export function reportedConnectorRows(
   return [...rows, ...missingRows(byName, harness, disabled)];
 }
 
+/** Where a server Claude Code reported comes from, in a few words. */
+function reportedSource(name: string): string {
+  if (name.startsWith("claude.ai ")) return "claude.ai account";
+  if (name.startsWith("plugin:")) return "Claude Code plugin";
+  return "Claude Code";
+}
+
+/** Statuses worth a row for any server: usable now or in a moment. */
+const LIVE_STATUSES = new Set(["connected", "pending", "saved"]);
+
+const STATUS_WORDS: Record<string, string> = {
+  connected: "",
+  pending: "",
+  saved: "",
+  "needs-auth": "needs sign-in",
+  failed: "failed to connect",
+};
+
+/**
+ * Adds the servers Claude Code lists that no configuration file names:
+ * claude.ai account connectors and plugin servers. Every claude.ai connector
+ * gets a row, as in the Claude app, with its state when it is not usable.
+ * Other servers get one only when usable, since Claude Code lists dozens of
+ * plugin servers that need a sign-in or failed. One already switched off keeps
+ * its row whatever its state, in place of the "not configured" row it would
+ * otherwise get.
+ */
+export function withReportedConnectorRows(
+  rows: readonly ConnectorRow[],
+  reported: readonly { name: string; status: string }[] | null,
+  disabled: readonly string[],
+): ConnectorRow[] {
+  if (!reported?.length) return [...rows];
+  const off = new Set(disabled);
+  const known = new Set(
+    rows.filter((row) => !row.missing).map((row) => row.name),
+  );
+  const added: ConnectorRow[] = reported
+    .filter(
+      (server) =>
+        !known.has(server.name) &&
+        (LIVE_STATUSES.has(server.status) ||
+          server.name.startsWith("claude.ai ") ||
+          off.has(server.name)),
+    )
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((server) => {
+      const state = STATUS_WORDS[server.status] ?? server.status;
+      return {
+        name: server.name,
+        detail: state
+          ? `${reportedSource(server.name)} · ${state}`
+          : reportedSource(server.name),
+        enabled: !off.has(server.name),
+      };
+    });
+  const addedNames = new Set(added.map((row) => row.name));
+  return [
+    ...rows.filter((row) => !row.missing),
+    ...added,
+    ...rows.filter((row) => row.missing && !addedNames.has(row.name)),
+  ];
+}
+
 /**
  * What switching a server off does not do, where that differs from what the
  * word suggests. Claude Code is told to deny the server's tools; it still

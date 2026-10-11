@@ -27,6 +27,21 @@ vi.mock(
     listHarnessMcpServers: listMcpServers,
   }),
 );
+// Asking Claude Code for its servers would start a process.
+const probeClaude = vi.hoisted(() => vi.fn());
+vi.mock(
+  "../../../integrations/harness/providers/claude/claudeMcpStatus",
+  () => ({ probeClaudeMcpServers: probeClaude }),
+);
+// Docker's MCP gateway, for the gateway connectors' rows.
+const dockerMcp = vi.hoisted(() =>
+  vi.fn(async (_args: string[]) => {
+    throw new Error("docker unavailable in tests");
+  }),
+);
+vi.mock("../../../platform/tauri/dockerMcp", () => ({
+  runDockerMcp: dockerMcp,
+}));
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }),
 }));
@@ -43,6 +58,21 @@ import type { HarnessId } from "../../sessions/model/session";
 import type { McpConnection } from "../../settings/model/mcp";
 import type { HarnessMcpServer } from "../../../integrations/harness/core/types";
 import { clearMcpSettingsCache } from "../../settings/model/mcpSettingsCache";
+import { takeRequestedConnectorsTab } from "../../gateway-connectors/model/navigation";
+import {
+  __resetInstalled,
+  __setInstalled,
+  type InstalledConnector,
+} from "../../gateway-connectors/model/installed";
+import {
+  explicitlyOnClaudeAi,
+  setClaudeAiExplicitlyOn,
+} from "../../gateway-connectors/model/sessionGateway";
+import {
+  __resetReportedMcpServers,
+  noteAccountMcpServers,
+  noteReportedMcpServers,
+} from "../model/reportedMcpServers";
 
 const DISCOVERED: McpConnection[] = [
   {
@@ -87,6 +117,10 @@ const REPORTED: HarnessMcpServer[] = [
 
 beforeEach(() => {
   clearMcpSettingsCache();
+  __resetReportedMcpServers();
+  probeClaude.mockReset();
+  // By default Claude Code is not asked: the account was asked a moment ago.
+  noteAccountMcpServers(undefined, []);
   discovered = DISCOVERED;
   reported = REPORTED;
   listMcpServers.mockReset();
@@ -118,6 +152,7 @@ type Options = {
   onDisabledMcpServersChange?: (names: string[]) => void;
   providerAccountId?: string;
   cwd?: string;
+  sessionId?: string;
 };
 
 async function renderComposer(options: Options) {
@@ -137,6 +172,7 @@ async function renderComposer(options: Options) {
         disabledMcpServers: options.disabledMcpServers,
         onDisabledMcpServersChange: options.onDisabledMcpServersChange,
         providerAccountId: options.providerAccountId,
+        sessionId: options.sessionId,
         onFocus: () => {},
         onCwdChange: () => {},
         onModelChange: () => {},
@@ -179,8 +215,11 @@ function rows(surface: HTMLElement) {
       (part) => part.textContent,
     );
     const toggle = row.querySelector<HTMLButtonElement>('[role="switch"]')!;
+    // Under a heading the row shows its name without the group's prefix; the
+    // switch keeps the full name.
+    void name;
     return {
-      name,
+      name: toggle.getAttribute("aria-label"),
       detail,
       on: toggle.getAttribute("aria-checked") === "true",
       label: toggle.getAttribute("aria-label"),
@@ -381,25 +420,26 @@ describe("Connectors popover", () => {
     );
   });
 
-  it.each(["Add connector", "Manage connectors"])(
-    "opens Settings → MCP from %s",
-    async (action) => {
-      const opened = vi.fn();
-      window.addEventListener("monocode:open-mcp-settings", opened);
-      try {
-        await renderComposer({ onDisabledMcpServersChange: vi.fn() });
-        const surface = await openConnectors();
-        const button = Array.from(surface.querySelectorAll("button")).find(
-          (candidate) => candidate.textContent === action,
-        )!;
-        await act(async () => button.click());
-        expect(opened).toHaveBeenCalledTimes(1);
-        expect(popover()).toBeNull();
-      } finally {
-        window.removeEventListener("monocode:open-mcp-settings", opened);
-      }
-    },
-  );
+  it.each([
+    ["Add connector", "discover"],
+    ["Manage connectors", "yours"],
+  ])("opens the Connectors page from %s", async (action, tab) => {
+    const opened = vi.fn();
+    window.addEventListener("monocode:open-connectors", opened);
+    try {
+      await renderComposer({ onDisabledMcpServersChange: vi.fn() });
+      const surface = await openConnectors();
+      const button = Array.from(surface.querySelectorAll("button")).find(
+        (candidate) => candidate.textContent === action,
+      )!;
+      await act(async () => button.click());
+      expect(opened).toHaveBeenCalledTimes(1);
+      expect(takeRequestedConnectorsTab()).toBe(tab);
+      expect(popover()).toBeNull();
+    } finally {
+      window.removeEventListener("monocode:open-connectors", opened);
+    }
+  });
 
   it("says a change made during a turn waits for the next one", async () => {
     const onDisabledMcpServersChange = vi.fn();
@@ -643,5 +683,314 @@ describe("Connectors badge", () => {
     expect(badge()?.getAttribute("aria-label")).toBe(
       "1 connector switched off for this chat, from the next turn",
     );
+  });
+});
+
+describe("Connectors popover with what Claude Code reported", () => {
+  const CLAUDE_REPORT = [
+    { name: "docs", status: "connected" },
+    { name: "claude.ai Exa", status: "connected" },
+    { name: "plugin:desktop-commander:desktop-commander", status: "connected" },
+    { name: "claude.ai Slack", status: "needs-auth" },
+  ];
+
+  it("adds claude.ai connectors and plugin servers no config file names", async () => {
+    noteReportedMcpServers("chat-1", CLAUDE_REPORT);
+    await renderComposer({
+      sessionId: "chat-1",
+      onDisabledMcpServersChange: vi.fn(),
+    });
+    const surface = await openConnectors();
+    expect(rows(surface).map((row) => [row.name, row.detail, row.on])).toEqual([
+      ["docs", "project · stdio", true],
+      ["github", "user · http", true],
+      ["claude.ai Exa", "claude.ai account", true],
+      ["claude.ai Slack", "claude.ai account · needs sign-in", true],
+      [
+        "plugin:desktop-commander:desktop-commander",
+        "Claude Code plugin",
+        true,
+      ],
+    ]);
+  });
+
+  it("switches a claude.ai connector off for this chat by its name", async () => {
+    noteReportedMcpServers("chat-1", CLAUDE_REPORT);
+    const onChange = vi.fn();
+    await renderComposer({
+      sessionId: "chat-1",
+      onDisabledMcpServersChange: onChange,
+    });
+    const surface = await openConnectors();
+    const toggle = surface.querySelector<HTMLButtonElement>(
+      '[role="switch"][aria-label="claude.ai Exa"]',
+    )!;
+    await act(async () => toggle.click());
+    expect(onChange).toHaveBeenLastCalledWith(["claude.ai Exa"]);
+  });
+
+  it("keeps a switched-off connector as its own row, not as unconfigured", async () => {
+    noteReportedMcpServers("chat-1", CLAUDE_REPORT);
+    await renderComposer({
+      sessionId: "chat-1",
+      disabledMcpServers: ["claude.ai Exa"],
+      onDisabledMcpServersChange: vi.fn(),
+    });
+    const surface = await openConnectors();
+    const exa = rows(surface).filter((row) => row.name === "claude.ai Exa");
+    expect(exa).toEqual([
+      {
+        name: "claude.ai Exa",
+        detail: "claude.ai account",
+        on: false,
+        label: "claude.ai Exa",
+        locked: false,
+      },
+    ]);
+  });
+
+  it("uses the account's list in a chat that has not started", async () => {
+    noteAccountMcpServers(undefined, CLAUDE_REPORT);
+    await renderComposer({
+      sessionId: "new-chat",
+      onDisabledMcpServersChange: vi.fn(),
+    });
+    const surface = await openConnectors();
+    expect(rows(surface).map((row) => row.name)).toContain("claude.ai Exa");
+  });
+
+  it("asks Claude Code for the account's servers when it opens", async () => {
+    __resetReportedMcpServers();
+    let answer: (value: unknown) => void = () => {};
+    probeClaude.mockImplementation(
+      () => new Promise((resolve) => (answer = resolve)),
+    );
+    await renderComposer({
+      sessionId: "chat-1",
+      onDisabledMcpServersChange: vi.fn(),
+    });
+    const surface = await openConnectors();
+    expect(probeClaude).toHaveBeenCalledWith({
+      cwd: "/repo",
+      providerAccountId: "default",
+    });
+    expect(surface.textContent).toContain(
+      "Checking claude.ai connectors and plugins…",
+    );
+    await act(async () =>
+      answer([
+        { name: "claude.ai Exa", status: "connected" },
+        { name: "claude.ai Slack", status: "needs-auth" },
+      ]),
+    );
+    expect(rows(surface).map((row) => [row.name, row.detail])).toEqual([
+      ["docs", "project · stdio"],
+      ["github", "user · http"],
+      ["claude.ai Exa", "claude.ai account"],
+      ["claude.ai Slack", "claude.ai account · needs sign-in"],
+    ]);
+    expect(surface.textContent).not.toContain("Checking claude.ai");
+  });
+
+  it("says so when Claude Code cannot be asked", async () => {
+    __resetReportedMcpServers();
+    probeClaude.mockRejectedValue(new Error("no claude"));
+    await renderComposer({
+      sessionId: "chat-1",
+      onDisabledMcpServersChange: vi.fn(),
+    });
+    const surface = await openConnectors();
+    await act(async () => {});
+    expect(surface.textContent).toContain(
+      "Could not list claude.ai connectors and plugins.",
+    );
+    expect(rows(surface).map((row) => row.name)).toEqual(["docs", "github"]);
+  });
+
+  it("does not ask again so soon after the last answer", async () => {
+    await renderComposer({
+      sessionId: "chat-1",
+      onDisabledMcpServersChange: vi.fn(),
+    });
+    await openConnectors();
+    expect(probeClaude).not.toHaveBeenCalled();
+  });
+
+  it("leaves Codex sessions alone", async () => {
+    noteReportedMcpServers("chat-1", CLAUDE_REPORT);
+    await renderComposer({
+      harness: "codex",
+      sessionId: "chat-1",
+      onDisabledMcpServersChange: vi.fn(),
+    });
+    const surface = await openConnectors();
+    expect(rows(surface).map((row) => row.name)).toEqual(["linear"]);
+    expect(probeClaude).not.toHaveBeenCalled();
+  });
+});
+
+describe("Connectors popover layout", () => {
+  it("groups the rows under headings once there is more than one source", async () => {
+    noteAccountMcpServers(undefined, [
+      { name: "claude.ai Exa", status: "connected" },
+      { name: "plugin:pdf-viewer:pdf", status: "connected" },
+    ]);
+    await renderComposer({
+      sessionId: "chat-1",
+      onDisabledMcpServersChange: vi.fn(),
+    });
+    const surface = await openConnectors();
+    const headings = Array.from(surface.querySelectorAll("section > p")).map(
+      (p) => p.textContent,
+    );
+    expect(headings).toEqual(["This computer", "claude.ai", "Plugins"]);
+    const shown = Array.from(
+      surface.querySelectorAll("li > span > span:first-child"),
+    ).map((span) => span.textContent);
+    expect(shown).toEqual(["docs", "github", "Exa", "pdf-viewer:pdf"]);
+  });
+
+  it("has no headings when every server comes from config files", async () => {
+    await renderComposer({ onDisabledMcpServersChange: vi.fn() });
+    const surface = await openConnectors();
+    expect(surface.querySelectorAll("section > p")).toHaveLength(0);
+    expect(
+      surface.querySelector('[aria-label="Claude Code MCP servers"]'),
+    ).not.toBeNull();
+  });
+});
+
+describe("Connectors popover with Docker gateway connectors", () => {
+  const gateway = (
+    server: string,
+    title: string,
+    status: InstalledConnector["status"] = "ready",
+  ): InstalledConnector => ({
+    profileId: `monocode_${server.replace(/[^a-z0-9]/g, "_")}`,
+    server,
+    title,
+    description: "",
+    kind: "remote",
+    auth: "oauth",
+    sessionName: server,
+    secrets: [],
+    missingSecrets: [],
+    oauthApp: server,
+    settings: [],
+    missingSettings: [],
+    setup:
+      status === "needs-sign-in" || status === "needs-setup"
+        ? status
+        : "complete",
+    ...(status === "ready"
+      ? { test: { at: 1, ok: true, tools: 3, output: "" } }
+      : status === "failed"
+        ? {
+            test: {
+              at: 1,
+              ok: false,
+              tools: 0,
+              reason: "No build for Apple Silicon",
+              output: "",
+            },
+          }
+        : {}),
+    status,
+  });
+
+  beforeEach(() => {
+    __setInstalled({
+      connectors: [
+        gateway("notion-remote", "Notion"),
+        gateway("linear", "Linear", "needs-sign-in"),
+      ],
+      docker: "/usr/local/bin/docker",
+      dockerState: "ready",
+    });
+    noteAccountMcpServers(undefined, [
+      { name: "claude.ai Notion", status: "connected" },
+      { name: "claude.ai Exa", status: "connected" },
+    ]);
+    // Claude Code's own report of the chat names the gateway copy too.
+    noteReportedMcpServers("chat-1", [
+      { name: "notion-remote", status: "connected" },
+    ]);
+  });
+
+  afterEach(() => {
+    __resetInstalled();
+    setClaudeAiExplicitlyOn("chat-1", "claude.ai Notion", false);
+  });
+
+  it("lists them under their own heading and marks the claude.ai copy off", async () => {
+    await renderComposer({
+      sessionId: "chat-1",
+      onDisabledMcpServersChange: vi.fn(),
+    });
+    const surface = await openConnectors();
+    const section = surface.querySelector<HTMLElement>(
+      'section[aria-label="Docker gateway"]',
+    );
+    expect(section).not.toBeNull();
+    expect(
+      rows(section!).map((row) => [row.name, row.detail, row.on, row.locked]),
+    ).toEqual([
+      ["linear", "Hosted · needs sign-in in Connectors", false, true],
+      ["notion-remote", "Hosted", true, false],
+    ]);
+    const all = rows(surface);
+    expect(all.filter((row) => row.name === "notion-remote")).toHaveLength(1);
+    expect(all.find((row) => row.name === "claude.ai Notion")).toMatchObject({
+      detail: "Off: using the Docker gateway copy",
+      on: false,
+    });
+    expect(all.find((row) => row.name === "claude.ai Exa")?.on).toBe(true);
+  });
+
+  it("switches the claude.ai copy back on for this chat only", async () => {
+    const onChange = vi.fn();
+    await renderComposer({
+      sessionId: "chat-1",
+      onDisabledMcpServersChange: onChange,
+    });
+    const surface = await openConnectors();
+    await act(async () =>
+      surface
+        .querySelector<HTMLButtonElement>(
+          '[role="switch"][aria-label="claude.ai Notion"]',
+        )!
+        .click(),
+    );
+    expect(onChange).not.toHaveBeenCalled();
+    expect(explicitlyOnClaudeAi("chat-1")).toEqual(["claude.ai Notion"]);
+    expect(
+      rows(popover()!).find((row) => row.name === "claude.ai Notion")?.on,
+    ).toBe(true);
+
+    // Switching a gateway connector off uses the chat's off list.
+    await act(async () =>
+      popover()!
+        .querySelector<HTMLButtonElement>(
+          '[role="switch"][aria-label="notion-remote"]',
+        )!
+        .click(),
+    );
+    expect(onChange).toHaveBeenLastCalledWith(["notion-remote"]);
+  });
+
+  it("asks Docker for the connectors when the switches open", async () => {
+    dockerMcp.mockClear();
+    await renderComposer({
+      sessionId: "chat-1",
+      onDisabledMcpServersChange: vi.fn(),
+    });
+    await openConnectors();
+    expect(dockerMcp.mock.calls[0]?.[0]).toEqual([
+      "mcp",
+      "profile",
+      "list",
+      "--format",
+      "json",
+    ]);
   });
 });

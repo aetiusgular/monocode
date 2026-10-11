@@ -66,9 +66,11 @@ import {
 } from "../../projects/model/recents";
 import type {
   Attachment,
+  Block,
   HarnessId,
   MessageQueueStatus,
   QueuedMessage,
+  ToolAccess,
   UsageLimit,
   RuntimeMode,
   WorkspaceMode,
@@ -79,6 +81,8 @@ import {
   harnessSupportsAttachments,
   harnessSupportsConnectorSwitches,
   harnessSupportsExtraDirs,
+  harnessSupportsSkillSwitches,
+  harnessSupportsToolAccess,
 } from "../model/session";
 import type {
   UserQuestionPrompt,
@@ -132,6 +136,18 @@ import {
   supportsProviderAccounts,
 } from "../../providers/model/providerAccounts";
 import { useTurnStartSnapshot } from "../../session-tools/ui/useTurnStartSnapshot";
+import {
+  harnessToolAccess,
+  toolRuleCount,
+} from "../../tool-access/model/toolAccess";
+import { ToolAccessMenuItem } from "../../tool-access/ui/ToolAccessMenuItem";
+import { ToolAccessPopover } from "../../tool-access/ui/ToolAccessPopover";
+import {
+  OPEN_SKILLS_SETTINGS_EVENT,
+  chatDisabledSkills,
+} from "../../chat-skills/model/chatSkills";
+import { SkillsMenuItem } from "../../chat-skills/ui/SkillsMenuItem";
+import { SkillsPopover } from "../../chat-skills/ui/SkillsPopover";
 import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
 import { InboxMiniCard } from "../../inbox/ui/InboxMiniCard";
 import { NoteMiniCard } from "../../notes/ui/NoteMiniCard";
@@ -285,6 +301,14 @@ type Props = {
   /** MCP servers switched off for this chat. Shown only with a handler. */
   disabledMcpServers?: string[];
   onDisabledMcpServersChange?: (names: string[]) => void;
+  /** Per-tool rules for this chat. Shown only with a change handler. */
+  toolAccess?: ToolAccess;
+  onToolAccessChange?: (toolAccess: ToolAccess) => void;
+  /** Skills switched off for this chat, by name. Shown only with a handler. */
+  disabledSkills?: string[];
+  onDisabledSkillsChange?: (names: string[]) => void;
+  /** The transcript, read by the plus-menu lists while one is open. */
+  transcript?: readonly Block[];
   /** Provider account the session is bound to, when it already has one. */
   providerAccountId?: string;
   onQuoteRequestConsumed?: (id: number) => void;
@@ -320,10 +344,18 @@ type Props = {
   onDraftChange?: (text: string) => void;
   onRecallLastTurnReady?: (recall: () => void) => void;
   onEditingLastTurnChange?: (editing: boolean) => void;
+  /**
+   * Hands out a way to put a prompt back as an unsent draft, for a retry the
+   * harness dropped. It declines, and returns false, when a draft is here.
+   */
+  onRestorePromptReady?: (
+    restore: (text: string, attachments: Attachment[]) => boolean,
+  ) => void;
   children?: ReactNode;
 };
 
 const NO_DISABLED_MCP_SERVERS: string[] = [];
+const NO_TRANSCRIPT: readonly Block[] = [];
 
 function ToolButton({
   active,
@@ -416,6 +448,11 @@ export function Composer({
   onExtraDirsChange,
   disabledMcpServers = NO_DISABLED_MCP_SERVERS,
   onDisabledMcpServersChange,
+  toolAccess,
+  onToolAccessChange,
+  disabledSkills,
+  onDisabledSkillsChange,
+  transcript = NO_TRANSCRIPT,
   providerAccountId,
   onQuoteRequestConsumed,
   onInboxCardDismiss,
@@ -442,6 +479,7 @@ export function Composer({
   onDraftChange,
   onRecallLastTurnReady,
   onEditingLastTurnChange,
+  onRestorePromptReady,
   children,
 }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -503,6 +541,10 @@ export function Composer({
   const [pasteError, setPasteError] = useState<string | null>(null);
   const [plusOpen, setPlusOpen] = useState(false);
   const [connectorsOpen, setConnectorsOpen] = useState(false);
+  // The other per-chat lists the plus menu opens, one at a time.
+  const [chatList, setChatList] = useState<"tool-access" | "skills" | null>(
+    null,
+  );
   const [planSelected, setPlanSelected] = useState(false);
   const [operatorSelected, setOperatorSelected] = useState(false);
   const [orchestrationSelected, setOrchestrationSelected] = useState(false);
@@ -572,9 +614,15 @@ export function Composer({
     harness,
     executionCwd: localCwd,
     sessionId,
-    pickerOpen: pickerOpen && !remote,
+    // The per-chat skill switches list the same catalog, read afresh.
+    pickerOpen: (pickerOpen || chatList === "skills") && !remote,
   });
   const skills = skillCatalog.skills;
+  // Skills this chat has switched off, where the switches apply.
+  const skillsOff = useMemo(
+    () => chatDisabledSkills(harness, disabledSkills),
+    [harness, disabledSkills],
+  );
   const slashItems = useMemo(
     () =>
       remote
@@ -590,6 +638,7 @@ export function Composer({
             ...(supportsBtwHarness(harness) ? [BTW_COMMAND] : []),
             ...skills.filter(
               (skill) =>
+                !skillsOff.includes(skill.name) &&
                 ![OPERATOR_COMMAND.name, "mono", "monocode"].includes(
                   skill.name,
                 ) &&
@@ -606,6 +655,7 @@ export function Composer({
     [
       harness,
       skills,
+      skillsOff,
       remote,
       remoteFeatures?.plan,
       hideTopBar,
@@ -627,6 +677,13 @@ export function Composer({
     !!onDisabledMcpServersChange &&
     harnessSupportsConnectorSwitches(harness);
   const connectorsAtTurnStart = useTurnStartSnapshot(disabledMcpServers, busy);
+  const toolAccessSupported =
+    !remote && !!onToolAccessChange && harnessSupportsToolAccess(harness);
+  const skillSwitchesSupported =
+    !remote &&
+    !!onDisabledSkillsChange &&
+    harnessSupportsSkillSwitches(harness);
+  const skillsAtTurnStart = useTurnStartSnapshot(skillsOff, busy);
   const skillNames = useMemo(
     () => new Set(slashItems.map((skill) => skill.invocation)),
     [slashItems],
@@ -731,6 +788,7 @@ export function Composer({
   useEffect(() => {
     setMcpPickerOpen(false);
     setConnectorsOpen(false);
+    setChatList(null);
   }, [executionCwd, harness, sessionId]);
 
   useEffect(() => {
@@ -1312,6 +1370,17 @@ export function Composer({
     if (!editLastTurnSupported || !onRecallLastTurnReady) return;
     onRecallLastTurnReady(recallLastTurn);
   }, [editLastTurnSupported, onRecallLastTurnReady, recallLastTurn]);
+
+  useEffect(() => {
+    onRestorePromptReady?.((text, files) => {
+      // Whatever was typed since is newer than the prompt, so it stays.
+      if (ref.current?.value.trim() || attachmentsRef.current.length > 0) {
+        return false;
+      }
+      restoreDraft(text, files, new Set(files.map((file) => file.id)));
+      return true;
+    });
+  }, [onRestorePromptReady, restoreDraft]);
 
   const submit = (value: string) => {
     if (disabled || worktreeRemoved || submitLockRef.current) return;
@@ -2177,9 +2246,10 @@ export function Composer({
             >
               <ToolButton
                 label="Add files or choose a mode"
-                active={plusOpen || connectorsOpen}
+                active={plusOpen || connectorsOpen || chatList !== null}
                 onClick={() => {
                   setConnectorsOpen(false);
+                  setChatList(null);
                   setPlusOpen((open) => !open);
                 }}
               >
@@ -2240,6 +2310,26 @@ export function Composer({
                       onOpen={() => {
                         setPlusOpen(false);
                         setConnectorsOpen(true);
+                      }}
+                    />
+                  ) : null}
+                  {toolAccessSupported ? (
+                    <ToolAccessMenuItem
+                      ruleCount={toolRuleCount(
+                        harnessToolAccess(harness, toolAccess),
+                      )}
+                      onOpen={() => {
+                        setPlusOpen(false);
+                        setChatList("tool-access");
+                      }}
+                    />
+                  ) : null}
+                  {skillSwitchesSupported ? (
+                    <SkillsMenuItem
+                      offCount={skillsOff.length}
+                      onOpen={() => {
+                        setPlusOpen(false);
+                        setChatList("skills");
                       }}
                     />
                   ) : null}
@@ -2370,6 +2460,7 @@ export function Composer({
                 <ConnectorsPopover
                   anchor={plusRef}
                   harness={harness}
+                  sessionId={sessionId}
                   cwd={executionCwd}
                   // The account the next turn runs under, as a send picks it.
                   providerAccountId={
@@ -2393,6 +2484,37 @@ export function Composer({
                   }}
                 />
               ) : null}
+              {chatList === "tool-access" && toolAccessSupported ? (
+                <ToolAccessPopover
+                  anchor={plusRef}
+                  harness={harness}
+                  toolAccess={toolAccess}
+                  blocks={transcript}
+                  onChange={(next) => onToolAccessChange?.(next)}
+                  onDismiss={(reason) => {
+                    setChatList(null);
+                    if (reason === "escape") ref.current?.focus();
+                  }}
+                />
+              ) : null}
+              {chatList === "skills" && skillSwitchesSupported ? (
+                <SkillsPopover
+                  anchor={plusRef}
+                  harness={harness}
+                  skills={skills}
+                  disabled={skillsOff}
+                  atTurnStart={skillsAtTurnStart}
+                  onChange={(names) => onDisabledSkillsChange?.(names)}
+                  onManage={() => {
+                    setChatList(null);
+                    window.dispatchEvent(new Event(OPEN_SKILLS_SETTINGS_EVENT));
+                  }}
+                  onDismiss={(reason) => {
+                    setChatList(null);
+                    if (reason === "escape") ref.current?.focus();
+                  }}
+                />
+              ) : null}
             </div>
             {compact && !remote ? (
               <SessionToolsSummary
@@ -2400,6 +2522,8 @@ export function Composer({
                 cwd={executionCwd}
                 extraDirs={extraDirs}
                 disabledMcpServers={disabledMcpServers}
+                toolAccess={toolAccess}
+                disabledSkills={disabledSkills}
               />
             ) : null}
             {!compact && connectorsSupported && disabledMcpServers.length ? (

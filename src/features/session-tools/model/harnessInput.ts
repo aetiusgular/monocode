@@ -1,29 +1,81 @@
-import type { Session } from "../../sessions/model/session";
+import type {
+  HarnessLaunchMcpServer,
+  HarnessToolAccess,
+} from "../../../integrations/harness/core/types";
+import {
+  chatDisabledSkills,
+  harnessDisabledSkills,
+} from "../../chat-skills/model/chatSkills";
+import type { Session, ToolAccess } from "../../sessions/model/session";
+import {
+  harnessToolAccess,
+  toolLabel,
+  toolRuleCount,
+} from "../../tool-access/model/toolAccess";
+import {
+  gatewaySessionInput,
+  gatewaySwitchedOff,
+} from "../../gateway-connectors/model/sessionGateway";
 import { harnessDisabledMcpServers } from "./connectors";
 import { harnessExtraDirs } from "./extraDirs";
 
+/** The session fields a harness turn's composer tools are built from. */
+type SessionTools = Pick<
+  Session,
+  | "harness"
+  | "extraDirs"
+  | "disabledMcpServers"
+  | "toolAccess"
+  | "disabledSkills"
+> &
+  // The chat, for its claude.ai connectors switched back on over a Docker
+  // gateway copy.
+  Partial<Pick<Session, "id">>;
+
 /**
  * A session's composer tools in the shape a harness turn takes. Every call
- * that can start a harness process (send, rewind, compact) must pass the same
- * value: Claude Code and Codex reopen the conversation whenever these launch
- * inputs differ.
+ * that can start a harness process (send, rewind, compact, handoff) must pass
+ * the same value: Claude Code and Codex reopen the conversation whenever these
+ * launch inputs differ.
  */
 export function sessionToolsInput(
-  session: Pick<Session, "harness" | "extraDirs" | "disabledMcpServers">,
+  session: SessionTools,
   workCwd: string,
-): { extraDirs?: string[]; disabledMcpServers?: string[] } {
+): {
+  extraDirs?: string[];
+  disabledMcpServers?: string[];
+  gatewayConnectors?: HarnessLaunchMcpServer[];
+  toolAccess?: HarnessToolAccess;
+  disabledSkills?: string[];
+} {
   const extraDirs = harnessExtraDirs(
     session.harness,
     session.extraDirs,
     workCwd,
   );
-  const disabledMcpServers = harnessDisabledMcpServers(
+  // Docker gateway connectors are added at launch. One switched off for the
+  // chat is simply not added, so its name never reaches the harness as a
+  // switch. claude.ai copies of a connector the gateway serves are off by
+  // default for Claude Code chats.
+  const gateway = gatewaySessionInput(session, workCwd);
+  const disabledMcpServers = harnessDisabledMcpServers(session.harness, [
+    ...(session.disabledMcpServers ?? []).filter(
+      (name) => !gateway.names.has(name),
+    ),
+    ...gateway.defaultOff,
+  ]);
+  const gatewayConnectors = gateway.servers;
+  const toolAccess = harnessToolAccess(session.harness, session.toolAccess);
+  const disabledSkills = harnessDisabledSkills(
     session.harness,
-    session.disabledMcpServers,
+    session.disabledSkills,
   );
   return {
     ...(extraDirs ? { extraDirs } : {}),
     ...(disabledMcpServers ? { disabledMcpServers } : {}),
+    ...(gatewayConnectors.length > 0 ? { gatewayConnectors } : {}),
+    ...(toolAccess ? { toolAccess } : {}),
+    ...(disabledSkills ? { disabledSkills } : {}),
   };
 }
 
@@ -46,18 +98,57 @@ export function withDisabledMcpServers<
 }
 
 /**
+ * Per-chat settings the composer's plus menu changes through one handler.
+ * A key that is present replaces that setting; an empty value clears it.
+ */
+export type SessionToolsPatch = {
+  toolAccess?: ToolAccess;
+  disabledSkills?: string[];
+};
+
+/** The session with a plus-menu change applied. */
+export function withSessionToolsPatch<
+  T extends Pick<Session, "toolAccess" | "disabledSkills">,
+>(session: T, patch: SessionToolsPatch): T {
+  let next = session;
+  if (patch.toolAccess) {
+    next = {
+      ...next,
+      toolAccess:
+        Object.keys(patch.toolAccess).length > 0 ? patch.toolAccess : undefined,
+    };
+  }
+  if (patch.disabledSkills) {
+    next = {
+      ...next,
+      disabledSkills:
+        patch.disabledSkills.length > 0 ? patch.disabledSkills : undefined,
+    };
+  }
+  return next;
+}
+
+/**
  * The tools a turn is sent with, in a few words, for a composer too small for
- * the folder chips and the connectors badge. `title` lists each folder's path
- * and each switched-off server. Null when a turn is sent with neither.
+ * the folder chips and the connectors badge. `title` lists each folder's path,
+ * each switched-off server, each tool rule and each switched-off skill. Null
+ * when a turn is sent with none of them.
  */
 export function sessionToolsSummary(
-  session: Pick<Session, "harness" | "extraDirs" | "disabledMcpServers">,
+  session: SessionTools,
   workCwd: string,
 ): { label: string; title: string } | null {
-  const { extraDirs = [], disabledMcpServers = [] } = sessionToolsInput(
-    session,
-    workCwd,
-  );
+  const {
+    extraDirs = [],
+    disabledMcpServers: passed = [],
+    toolAccess,
+  } = sessionToolsInput(session, workCwd);
+  // Gateway connectors switched off are left out at launch rather than
+  // passed as switches; they are still off.
+  const disabledMcpServers = [
+    ...passed,
+    ...gatewaySwitchedOff(session.harness, session.disabledMcpServers),
+  ];
   const parts: string[] = [];
   const lines: string[] = [];
   if (extraDirs.length > 0) {
@@ -69,6 +160,28 @@ export function sessionToolsSummary(
   if (disabledMcpServers.length > 0) {
     parts.push(`${disabledMcpServers.length} off`);
     lines.push(`Connectors off: ${disabledMcpServers.join(", ")}`);
+  }
+  const rules = toolRuleCount(toolAccess);
+  if (rules > 0) {
+    parts.push(`${rules} ${rules === 1 ? "tool rule" : "tool rules"}`);
+    const always = toolAccess?.always ?? [];
+    const never = toolAccess?.never ?? [];
+    if (always.length > 0) {
+      lines.push(`Always allow: ${always.map(toolLabel).join(", ")}`);
+    }
+    if (never.length > 0) {
+      lines.push(`Never allow: ${never.map(toolLabel).join(", ")}`);
+    }
+  }
+  // Not a harness input everywhere, but a turn is prepared without them: a
+  // switched-off skill's `/name` is not expanded on any harness that has the
+  // switches.
+  const skillsOff = chatDisabledSkills(session.harness, session.disabledSkills);
+  if (skillsOff.length > 0) {
+    parts.push(
+      `${skillsOff.length} ${skillsOff.length === 1 ? "skill" : "skills"} off`,
+    );
+    lines.push(`Skills off: ${skillsOff.join(", ")}`);
   }
   return parts.length > 0
     ? { label: parts.join(" · "), title: lines.join("\n") }

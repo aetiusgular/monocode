@@ -289,6 +289,7 @@ import {
   keepHarnessQuestionOpen,
   runHarnessTextPrompt,
   sendHarnessTurn,
+  setHarnessToolAccess,
   steerHarnessTurn,
   startHarnessBridge,
   stopHarnessSession,
@@ -685,10 +686,23 @@ import {
   resolveLinkedWorkItem,
 } from "../features/sessions/model/sessionWorkItem";
 import {
+  OPEN_SKILLS_SETTINGS_EVENT,
+  turnDisabledSkills,
+} from "../features/chat-skills/model/chatSkills";
+import {
   sessionToolsInput,
   withDisabledMcpServers,
   withExtraDirs,
+  withSessionToolsPatch,
+  type SessionToolsPatch,
 } from "../features/session-tools/model/harnessInput";
+import { sessionImagePaths } from "../features/tool-images/model/toolImages";
+import { loadClaudeConnectors } from "../features/session-tools/model/claudeConnectors";
+import {
+  refreshInstalled,
+  testStale,
+} from "../features/gateway-connectors/model/installed";
+import { OPEN_CONNECTORS_EVENT } from "../features/gateway-connectors/model/navigation";
 import {
   completeLinkedWorkItemUpdateCard,
   failLinkedWorkItemUpdateCard,
@@ -4600,9 +4614,7 @@ function Workspace({
             forgetHarnessSession(harness, id),
           ),
         );
-        const imagePaths = stopped.blocks.flatMap((block) =>
-          block.role === "image" && block.image ? [block.image.path] : [],
-        );
+        const imagePaths = sessionImagePaths(stopped.blocks);
         await deleteSession(id, imagePaths);
         const fresh = {
           ...newSession(
@@ -4726,9 +4738,7 @@ function Workspace({
               ),
             );
             await flushSessionCheckpoint(sessionId);
-            const imagePaths = stopped.blocks.flatMap((block) =>
-              block.role === "image" && block.image ? [block.image.path] : [],
-            );
+            const imagePaths = sessionImagePaths(stopped.blocks);
             await orchestrator.deleteSession(sessionId, () =>
               deleteSession(sessionId, imagePaths),
             );
@@ -6602,6 +6612,26 @@ function Workspace({
     [],
   );
 
+  const onSessionToolsChange = useCallback(
+    (sessionId: string, patch: SessionToolsPatch) => {
+      const update = (s: Session) =>
+        s.id === sessionId ? withSessionToolsPatch(s, patch) : s;
+      sessionsRef.current = sessionsRef.current.map(update);
+      setSessions((prev) => prev.map(update));
+      // A running harness takes changed tool rules at once, not at the next
+      // turn: the next approval request may come before then.
+      const next = sessionsRef.current.find((s) => s.id === sessionId);
+      if (next && patch.toolAccess) {
+        setHarnessToolAccess(
+          next.harness,
+          sessionId,
+          sessionToolsInput(next, sessionWorkCwd(next)).toolAccess,
+        );
+      }
+    },
+    [],
+  );
+
   const onSaveDraft = useCallback(
     (
       sessionId: string,
@@ -6975,6 +7005,7 @@ function Workspace({
                 harness: current.harness,
                 sessionId,
                 cwd: initialWorkCwd,
+                disabledSkills: turnDisabledSkills(current),
               }),
             };
           },
@@ -7112,6 +7143,7 @@ function Workspace({
               harness: current.harness,
               sessionId,
               cwd: initialWorkCwd,
+              disabledSkills: turnDisabledSkills(current),
             });
             await steerHarnessTurn({
               harness: current.harness,
@@ -7750,6 +7782,7 @@ function Workspace({
                   harness: current.harness,
                   sessionId,
                   cwd: workCwd,
+                  disabledSkills: turnDisabledSkills(current),
                 });
           const turnPrompt = proposalDraft
             ? options?.orchestrationRetry?.response
@@ -11621,6 +11654,36 @@ function Workspace({
       window.removeEventListener("monocode:open-mcp-settings", onOpenMcp);
   }, [openSettings]);
 
+  // Docker gateway connectors: the Connectors page, and the list sessions
+  // start with, asked of Docker once soon after the app opens.
+  useEffect(() => {
+    const onOpen = () => openSettings("connectors");
+    window.addEventListener(OPEN_CONNECTORS_EVENT, onOpen);
+    // Connectors never tested are tested then, so a chat can start them.
+    const timer = setTimeout(
+      () => void refreshInstalled().then(() => testStale()),
+      3_000,
+    );
+    return () => {
+      window.removeEventListener(OPEN_CONNECTORS_EVENT, onOpen);
+      clearTimeout(timer);
+    };
+  }, [openSettings]);
+
+  // Claude Code's claude.ai connectors and plugin servers, for the connector
+  // switches. Asked once soon after the app opens, then when they open.
+  useEffect(() => {
+    const timer = setTimeout(() => void loadClaudeConnectors({}), 5_000);
+    return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    const onOpenSkills = () => openSettings("skills");
+    window.addEventListener(OPEN_SKILLS_SETTINGS_EVENT, onOpenSkills);
+    return () =>
+      window.removeEventListener(OPEN_SKILLS_SETTINGS_EVENT, onOpenSkills);
+  }, [openSettings]);
+
   const onOpenNotificationSettings = useCallback(
     (path?: string) => {
       openSettings("inbox", "project-notifications");
@@ -12337,6 +12400,7 @@ function Workspace({
     onRuntimeModeChange,
     onExtraDirsChange,
     onDisabledMcpServersChange,
+    onSessionToolsChange,
     onSaveDraft,
     onRemoveDraft,
     onSubmit,
