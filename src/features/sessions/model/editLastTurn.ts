@@ -185,6 +185,8 @@ export function canEditLastTurn(session: Session): boolean {
   if (!block || block.draft) return false;
   if (needsTurnBoundary(session.harness) && !block.providerTurnId) return false;
   if (block.secondOpinion || block.noteCard || block.ciContext) return false;
+  // A research turn's instructions are not in its text; a resend would drop them.
+  if (block.research) return false;
   if (session.blocks.some((entry) => entry.role === "handoff")) return false;
   return true;
 }

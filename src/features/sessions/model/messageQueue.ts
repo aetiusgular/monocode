@@ -54,6 +54,7 @@ export function canSteerQueuedHead(session: Session): boolean {
   return (
     !!head &&
     !head.monoSessionCompletion &&
+    !head.research &&
     !!session.busy &&
     !!session.turnReady &&
     !session.worktreePreparing &&

@@ -803,7 +803,14 @@ const LocalSessionPane = memo(function LocalSessionPane({
               onSessionToolsChange(session.id, { disabledSkills: names })
           : undefined
       }
+      disabledPlugins={session.disabledPlugins}
+      onDisabledPluginsChange={
+        sessionToolsAvailable && onSessionToolsChange
+          ? (ids) => onSessionToolsChange(session.id, { disabledPlugins: ids })
+          : undefined
+      }
       transcript={session.blocks}
+      skillRecording={sessionToolsAvailable}
       canSaveDraft={
         (!remote || !!remoteFeatures?.draft) &&
         !session.busy &&

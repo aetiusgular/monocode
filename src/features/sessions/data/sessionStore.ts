@@ -12,6 +12,8 @@ import type { ContextUsage } from "../model/contextUsage";
 import { sanitizeDisabledMcpServers } from "../../session-tools/model/connectors";
 import { sanitizeExtraDirs } from "../../session-tools/model/extraDirs";
 import { sanitizeDisabledSkills } from "../../chat-skills/model/chatSkills";
+import { sanitizeResearchRequest } from "../../research-mode/model/researchPrompt";
+import { sanitizeDisabledPlugins } from "../../claude-plugins/model/chatPlugins";
 import {
   sanitizeApprovalTool,
   sanitizeToolAccess,
@@ -277,6 +279,7 @@ function sanitizeQueuedMessages(value: unknown): QueuedMessage[] {
       HARNESSES.includes(handoff.to)
         ? handoff
         : undefined;
+    const research = sanitizeResearchRequest(message.research);
     if (
       !message.text.trim() &&
       !attachments.length &&
@@ -301,6 +304,7 @@ function sanitizeQueuedMessages(value: unknown): QueuedMessage[] {
         )
           ? { intent: message.intent }
           : {}),
+        ...(research ? { research } : {}),
         ...(typeof message.error === "string" && message.error
           ? { error: message.error }
           : {}),
@@ -352,7 +356,14 @@ function persistedSessionTools(
   );
   const toolAccess = sanitizeToolAccess(source?.toolAccess);
   const disabledSkills = sanitizeDisabledSkills(source?.disabledSkills);
-  if (!extraDirs && !disabledMcpServers && !toolAccess && !disabledSkills) {
+  const disabledPlugins = sanitizeDisabledPlugins(source?.disabledPlugins);
+  if (
+    !extraDirs &&
+    !disabledMcpServers &&
+    !toolAccess &&
+    !disabledSkills &&
+    !disabledPlugins
+  ) {
     return undefined;
   }
   return {
@@ -360,6 +371,7 @@ function persistedSessionTools(
     ...(disabledMcpServers ? { disabledMcpServers } : {}),
     ...(toolAccess ? { toolAccess } : {}),
     ...(disabledSkills ? { disabledSkills } : {}),
+    ...(disabledPlugins ? { disabledPlugins } : {}),
   };
 }
 
@@ -958,6 +970,7 @@ function sanitizeBlock(
     (block.intent === "plan" || block.intent === "orchestrate")
   )
     next.intent = block.intent;
+  if (block.role === "user" && block.research === true) next.research = true;
   if (
     block.role === "user" &&
     typeof block.appRequestId === "string" &&

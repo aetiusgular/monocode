@@ -44,6 +44,7 @@ import { sanitizeDisabledMcpServers } from "../../session-tools/model/connectors
 import { sanitizeExtraDirs } from "../../session-tools/model/extraDirs";
 import { sanitizeToolAccess } from "../../tool-access/model/toolAccess";
 import { sanitizeDisabledSkills } from "../../chat-skills/model/chatSkills";
+import { sanitizeDisabledPlugins } from "../../claude-plugins/model/chatPlugins";
 
 export type WorkspaceSessionStub = {
   inboxAsk?: InboxAskContext;
@@ -64,6 +65,7 @@ export type WorkspaceSessionStub = {
   disabledMcpServers?: string[];
   toolAccess?: ToolAccess;
   disabledSkills?: string[];
+  disabledPlugins?: string[];
 };
 
 export type WorkspaceSnapshot = {
@@ -388,6 +390,9 @@ function sessionStub(session: Session): WorkspaceSessionStub | null {
     ...(session.disabledSkills?.length
       ? { disabledSkills: session.disabledSkills }
       : {}),
+    ...(session.disabledPlugins?.length
+      ? { disabledPlugins: session.disabledPlugins }
+      : {}),
   };
 }
 
@@ -423,6 +428,7 @@ function sessionFromStub(stub: WorkspaceSessionStub): Session {
       : {}),
     ...(stub.toolAccess ? { toolAccess: stub.toolAccess } : {}),
     ...(stub.disabledSkills ? { disabledSkills: stub.disabledSkills } : {}),
+    ...(stub.disabledPlugins ? { disabledPlugins: stub.disabledPlugins } : {}),
   };
 }
 
@@ -449,6 +455,7 @@ function sanitizeStub(raw: unknown): WorkspaceSessionStub | null {
   );
   const toolAccess = sanitizeToolAccess(value.toolAccess);
   const disabledSkills = sanitizeDisabledSkills(value.disabledSkills);
+  const disabledPlugins = sanitizeDisabledPlugins(value.disabledPlugins);
   return {
     id: value.id,
     cwd:
@@ -481,6 +488,7 @@ function sanitizeStub(raw: unknown): WorkspaceSessionStub | null {
     ...(disabledMcpServers ? { disabledMcpServers } : {}),
     ...(toolAccess ? { toolAccess } : {}),
     ...(disabledSkills ? { disabledSkills } : {}),
+    ...(disabledPlugins ? { disabledPlugins } : {}),
   };
 }
 

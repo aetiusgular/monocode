@@ -6,6 +6,7 @@ import {
   chatDisabledSkills,
   harnessDisabledSkills,
 } from "../../chat-skills/model/chatSkills";
+import { harnessDisabledPlugins } from "../../claude-plugins/model/chatPlugins";
 import type { Session, ToolAccess } from "../../sessions/model/session";
 import {
   harnessToolAccess,
@@ -27,6 +28,7 @@ type SessionTools = Pick<
   | "disabledMcpServers"
   | "toolAccess"
   | "disabledSkills"
+  | "disabledPlugins"
 > &
   // The chat, for its claude.ai connectors switched back on over a Docker
   // gateway copy.
@@ -47,6 +49,7 @@ export function sessionToolsInput(
   gatewayConnectors?: HarnessLaunchMcpServer[];
   toolAccess?: HarnessToolAccess;
   disabledSkills?: string[];
+  disabledPlugins?: string[];
 } {
   const extraDirs = harnessExtraDirs(
     session.harness,
@@ -70,12 +73,17 @@ export function sessionToolsInput(
     session.harness,
     session.disabledSkills,
   );
+  const disabledPlugins = harnessDisabledPlugins(
+    session.harness,
+    session.disabledPlugins,
+  );
   return {
     ...(extraDirs ? { extraDirs } : {}),
     ...(disabledMcpServers ? { disabledMcpServers } : {}),
     ...(gatewayConnectors.length > 0 ? { gatewayConnectors } : {}),
     ...(toolAccess ? { toolAccess } : {}),
     ...(disabledSkills ? { disabledSkills } : {}),
+    ...(disabledPlugins ? { disabledPlugins } : {}),
   };
 }
 
@@ -104,11 +112,12 @@ export function withDisabledMcpServers<
 export type SessionToolsPatch = {
   toolAccess?: ToolAccess;
   disabledSkills?: string[];
+  disabledPlugins?: string[];
 };
 
 /** The session with a plus-menu change applied. */
 export function withSessionToolsPatch<
-  T extends Pick<Session, "toolAccess" | "disabledSkills">,
+  T extends Pick<Session, "toolAccess" | "disabledSkills" | "disabledPlugins">,
 >(session: T, patch: SessionToolsPatch): T {
   let next = session;
   if (patch.toolAccess) {
@@ -125,14 +134,21 @@ export function withSessionToolsPatch<
         patch.disabledSkills.length > 0 ? patch.disabledSkills : undefined,
     };
   }
+  if (patch.disabledPlugins) {
+    next = {
+      ...next,
+      disabledPlugins:
+        patch.disabledPlugins.length > 0 ? patch.disabledPlugins : undefined,
+    };
+  }
   return next;
 }
 
 /**
  * The tools a turn is sent with, in a few words, for a composer too small for
  * the folder chips and the connectors badge. `title` lists each folder's path,
- * each switched-off server, each tool rule and each switched-off skill. Null
- * when a turn is sent with none of them.
+ * each switched-off server, each tool rule, each switched-off skill and each
+ * switched-off plugin. Null when a turn is sent with none of them.
  */
 export function sessionToolsSummary(
   session: SessionTools,
@@ -142,6 +158,7 @@ export function sessionToolsSummary(
     extraDirs = [],
     disabledMcpServers: passed = [],
     toolAccess,
+    disabledPlugins = [],
   } = sessionToolsInput(session, workCwd);
   // Gateway connectors switched off are left out at launch rather than
   // passed as switches; they are still off.
@@ -182,6 +199,12 @@ export function sessionToolsSummary(
       `${skillsOff.length} ${skillsOff.length === 1 ? "skill" : "skills"} off`,
     );
     lines.push(`Skills off: ${skillsOff.join(", ")}`);
+  }
+  if (disabledPlugins.length > 0) {
+    parts.push(
+      `${disabledPlugins.length} ${disabledPlugins.length === 1 ? "plugin" : "plugins"} off`,
+    );
+    lines.push(`Plugins off: ${disabledPlugins.join(", ")}`);
   }
   return parts.length > 0
     ? { label: parts.join(" · "), title: lines.join("\n") }

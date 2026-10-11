@@ -373,6 +373,7 @@ import {
   planTurnKey,
   planTurnPrompt,
 } from "../features/sessions/model/plan";
+import { researchTurnPrompt } from "../features/research-mode/model/researchPrompt";
 import {
   displayPath,
   isEqualOrInside,
@@ -689,6 +690,7 @@ import {
   OPEN_SKILLS_SETTINGS_EVENT,
   turnDisabledSkills,
 } from "../features/chat-skills/model/chatSkills";
+import { OPEN_PLUGINS_SETTINGS_EVENT } from "../features/claude-plugins/model/chatPlugins";
 import {
   sessionToolsInput,
   withDisabledMcpServers,
@@ -6959,6 +6961,7 @@ function Workspace({
                   noteCard,
                   handoffCard,
                   intent,
+                  research: options?.research,
                 },
                 rawCommand ? undefined : userTurnCards(noteCard),
               )
@@ -7065,6 +7068,7 @@ function Workspace({
           current.worktreePreparing ||
           intent === "plan" ||
           intent === "orchestrate" ||
+          options?.research ||
           operatorCommand.matched
             ? "queue"
             : // The agent has yielded and only background work is left, which
@@ -7097,6 +7101,7 @@ function Workspace({
                         noteCard,
                         handoffCard,
                         intent,
+                        research: options?.research,
                       },
                     ],
                     queueStatus:
@@ -7302,6 +7307,9 @@ function Workspace({
         ...(ciContext ? { ciContext } : {}),
         ...(operatorCommand.matched ? { monocode: true } : {}),
         ...(intent === "plan" || intent === "orchestrate" ? { intent } : {}),
+        ...(options?.research && !rawCommand
+          ? { research: true as const }
+          : {}),
         ...(options?.appRequestId
           ? { appRequestId: options.appRequestId }
           : {}),
@@ -7798,7 +7806,9 @@ function Workspace({
                 )
             : intent === "plan" && !rawCommand
               ? planTurnPrompt(prompt)
-              : prompt;
+              : options?.research && !rawCommand
+                ? researchTurnPrompt(prompt, options.research)
+                : prompt;
           const earlier = queuedHandoff
             ? userMessagesAfterHandoff(current)
             : [];
@@ -8842,6 +8852,7 @@ function Workspace({
                 noteCard: head.noteCard,
                 handoffCard: head.handoffCard,
                 intent: head.intent,
+                research: head.research,
                 ...(head.monoSessionCompletion
                   ? {
                       monoSessionCompletion: head.monoSessionCompletion,
@@ -8998,6 +9009,7 @@ function Workspace({
         noteCard: message.noteCard,
         handoffCard: message.handoffCard,
         intent: message.intent,
+        research: message.research,
       });
     },
     [onSubmit, enqueueHarnessEvent, flushHarnessEvents],
@@ -11682,6 +11694,13 @@ function Workspace({
     window.addEventListener(OPEN_SKILLS_SETTINGS_EVENT, onOpenSkills);
     return () =>
       window.removeEventListener(OPEN_SKILLS_SETTINGS_EVENT, onOpenSkills);
+  }, [openSettings]);
+
+  useEffect(() => {
+    const onOpenPlugins = () => openSettings("plugins");
+    window.addEventListener(OPEN_PLUGINS_SETTINGS_EVENT, onOpenPlugins);
+    return () =>
+      window.removeEventListener(OPEN_PLUGINS_SETTINGS_EVENT, onOpenPlugins);
   }, [openSettings]);
 
   const onOpenNotificationSettings = useCallback(

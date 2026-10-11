@@ -121,6 +121,26 @@ it("saves skills switched off for the chat beside the other composer tools", () 
   ).not.toBe(persistFingerprint(switched));
 });
 
+it("saves plugins switched off for the chat beside the other composer tools", () => {
+  const session = newSession("claude", "/tmp");
+  session.blocks = [{ id: "u1", role: "user", text: "Review" }];
+  const switched = {
+    ...session,
+    disabledPlugins: [
+      "paper-desktop@paper",
+      "not an id",
+      "paper-desktop@paper",
+      "obsidian@obsidian-skills",
+    ],
+  };
+  const saved = sanitizeSessionForPersist(switched);
+  expect(saved).not.toHaveProperty("disabledPlugins");
+  expect(saved.blocks[0].sessionTools).toEqual({
+    disabledPlugins: ["paper-desktop@paper", "obsidian@obsidian-skills"],
+  });
+  expect(persistFingerprint(switched)).not.toBe(persistFingerprint(session));
+});
+
 it("keeps the tool of a decided approval and drops an invented one", () => {
   const session = newSession("claude", "/tmp");
   const tool = (id: string, approval: Block["approval"]): Block => ({

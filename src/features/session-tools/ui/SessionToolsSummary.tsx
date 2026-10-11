@@ -13,6 +13,7 @@ export function SessionToolsSummary({
   disabledMcpServers,
   toolAccess,
   disabledSkills,
+  disabledPlugins,
 }: {
   harness: HarnessId;
   /** Directory the session works in. */
@@ -21,9 +22,17 @@ export function SessionToolsSummary({
   disabledMcpServers?: string[];
   toolAccess?: ToolAccess;
   disabledSkills?: string[];
+  disabledPlugins?: string[];
 }) {
   const summary = sessionToolsSummary(
-    { harness, extraDirs, disabledMcpServers, toolAccess, disabledSkills },
+    {
+      harness,
+      extraDirs,
+      disabledMcpServers,
+      toolAccess,
+      disabledSkills,
+      disabledPlugins,
+    },
     cwd,
   );
   if (!summary) return null;

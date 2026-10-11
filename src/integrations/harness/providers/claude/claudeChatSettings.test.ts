@@ -68,6 +68,7 @@ type TurnOptions = {
   intent?: TurnIntent;
   toolAccess?: HarnessToolAccess;
   disabledSkills?: string[];
+  disabledPlugins?: string[];
 };
 
 function send(options: TurnOptions, events: HarnessEvent[] = []) {
@@ -80,6 +81,7 @@ function send(options: TurnOptions, events: HarnessEvent[] = []) {
     intent: options.intent,
     toolAccess: options.toolAccess,
     disabledSkills: options.disabledSkills,
+    disabledPlugins: options.disabledPlugins,
     text: "do the work",
     attachments: [],
     onEvent: (event) => events.push(event),
@@ -301,6 +303,83 @@ describe("Claude Code launch arguments with skills switched off", () => {
     const fourth = send({});
     await waitFor(() => spawned.length === 3, "second replacement");
     expect(spawned[2]).not.toContain("--disallowedTools");
+    emit({ type: "system", subtype: "init", session_id: "sess_1" });
+    await waitFor(
+      () => parse().filter((m) => m.type === "user").length === 4,
+      "fourth prompt",
+    );
+    await finish(fourth);
+  });
+});
+
+describe("Claude Code launch settings with plugins switched off", () => {
+  const settingsOf = (args: string[]) =>
+    JSON.parse(args[args.indexOf("--settings") + 1]) as Record<string, unknown>;
+
+  it("passes each plugin as false under enabledPlugins in --settings", async () => {
+    const { turn } = await startTurn({
+      disabledPlugins: ["paper-desktop@paper", "obsidian@obsidian-skills"],
+    });
+    const settings = settingsOf(spawned[0]);
+    expect(settings.enabledPlugins).toEqual({
+      "obsidian@obsidian-skills": false,
+      "paper-desktop@paper": false,
+    });
+    // Beside the environment every session gets, in the one flag.
+    expect(settings.env).toEqual({ CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" });
+    expect(spawned[0].filter((arg) => arg === "--settings")).toHaveLength(1);
+    await finish(turn);
+  });
+
+  it("passes no enabledPlugins key while none is off", async () => {
+    const { turn } = await startTurn();
+    expect(settingsOf(spawned[0])).not.toHaveProperty("enabledPlugins");
+    await finish(turn);
+  });
+
+  it("makes the switched-off plugins part of the settings key", () => {
+    const base = { model: "sonnet", runtimeMode: "supervised" as const };
+    const none = claudeSettingsKey(base);
+    const one = claudeSettingsKey({ ...base, disabledPlugins: ["a@m"] });
+    expect(one).not.toBe(none);
+    expect(
+      claudeSettingsKey({ ...base, disabledPlugins: ["b@m", "a@m"] }),
+    ).toBe(claudeSettingsKey({ ...base, disabledPlugins: ["a@m", "b@m"] }));
+    expect(claudeSettingsKey({ ...base, disabledPlugins: [] })).toBe(none);
+    expect(claudeSettingsKey({ ...base, disabledPlugins: ["not an id"] })).toBe(
+      none,
+    );
+  });
+
+  it("restarts the process, resuming, when a plugin is switched off or back on", async () => {
+    const first = await startTurn();
+    await finish(first.turn);
+
+    const second = send({ disabledPlugins: ["paper-desktop@paper"] });
+    await waitFor(() => spawned.length === 2, "replacement process");
+    expect(settingsOf(spawned[1]).enabledPlugins).toEqual({
+      "paper-desktop@paper": false,
+    });
+    expect(spawned[1]).toEqual(expect.arrayContaining(["--resume", "sess_1"]));
+    emit({ type: "system", subtype: "init", session_id: "sess_1" });
+    await waitFor(
+      () => parse().filter((m) => m.type === "user").length === 2,
+      "second prompt",
+    );
+    await finish(second);
+
+    // The same switches again: the process is kept.
+    const third = send({ disabledPlugins: ["paper-desktop@paper"] });
+    await waitFor(
+      () => parse().filter((m) => m.type === "user").length === 3,
+      "third prompt",
+    );
+    expect(spawned).toHaveLength(2);
+    await finish(third);
+
+    const fourth = send({});
+    await waitFor(() => spawned.length === 3, "second replacement");
+    expect(settingsOf(spawned[2])).not.toHaveProperty("enabledPlugins");
     emit({ type: "system", subtype: "init", session_id: "sess_1" });
     await waitFor(
       () => parse().filter((m) => m.type === "user").length === 4,

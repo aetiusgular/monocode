@@ -22,11 +22,13 @@ export type SettingsSectionId =
   | "connections"
   | "appearance"
   | "keybindings"
+  | "voice"
   | "chat"
   | "providers"
   | "mcp"
   | "connectors"
   | "skills"
+  | "plugins"
   | "monos"
   | "inbox"
   | "worktrees"
@@ -48,6 +50,8 @@ export type SettingsSection = {
   description: string;
   /** Extra words search matches the section on, beyond its label. */
   keywords?: string;
+  /** Listed on macOS only. */
+  macOnly?: boolean;
 };
 
 export const SETTINGS_SECTIONS: SettingsSection[] = [
@@ -82,6 +86,15 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description:
       "Every shortcut the workspace handles, from the app menu and the key handler.",
     keywords: "shortcut hotkey keyboard binding",
+  },
+  {
+    id: "voice",
+    group: "app",
+    label: "Voice",
+    description:
+      "Dictate into the composer. whisper.cpp transcribes on this Mac and the audio never leaves it.",
+    keywords: "microphone mic dictation speech whisper transcribe audio",
+    macOnly: true,
   },
   {
     id: "chat",
@@ -128,6 +141,15 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     keywords: "skill instructions prompt",
   },
   {
+    id: "plugins",
+    group: "agents",
+    label: "Plugins",
+    description:
+      "Claude Code plugins you have installed, with a switch for each.",
+    keywords:
+      "claude code plugin marketplace enable disable synced claude.ai commands agents hooks",
+  },
+  {
     id: "monos",
     group: "agents",
     label: "Monos",
@@ -160,14 +182,25 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
 ];
 
-export function settingsSectionsByGroup(): {
+/** Whether this platform lists the section. */
+export function settingsSectionListed(
+  section: SettingsSection,
+  isMac: boolean = IS_MAC,
+): boolean {
+  return !section.macOnly || isMac;
+}
+
+export function settingsSectionsByGroup(isMac: boolean = IS_MAC): {
   id: SettingsGroupId;
   label: string;
   sections: SettingsSection[];
 }[] {
   return SETTINGS_GROUPS.map((group) => ({
     ...group,
-    sections: SETTINGS_SECTIONS.filter((section) => section.group === group.id),
+    sections: SETTINGS_SECTIONS.filter(
+      (section) =>
+        section.group === group.id && settingsSectionListed(section, isMac),
+    ),
   })).filter((group) => group.sections.length > 0);
 }
 
@@ -531,6 +564,7 @@ export function searchSettings(
   }
 
   for (const section of SETTINGS_SECTIONS) {
+    if (!settingsSectionListed(section)) continue;
     const score = matchScore(
       needle,
       section.label,
@@ -1088,6 +1122,15 @@ export const KEYBINDINGS: KeybindingRow[] = [
   },
   { command: "App: Switch Model", keys: `${MOD}.`, when: "Always" },
   { command: "App: Toggle Mono", keys: `${MOD}I`, when: "Project with a mono" },
+  ...(IS_MAC
+    ? [
+        {
+          command: "Composer: Voice Input",
+          keys: `${MOD}${SHIFT}M`,
+          when: "composerFocus && voiceReady",
+        },
+      ]
+    : []),
   {
     command: "Composer: Toggle Workspace",
     keys: `${MOD}${SHIFT}G`,

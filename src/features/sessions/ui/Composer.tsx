@@ -129,6 +129,9 @@ import { ConnectorsBadge } from "../../session-tools/ui/ConnectorsBadge";
 import { ConnectorsMenuItem } from "../../session-tools/ui/ConnectorsMenuItem";
 import { ConnectorsPopover } from "../../session-tools/ui/ConnectorsPopover";
 import { ExtraDirChips } from "../../session-tools/ui/ExtraDirChips";
+import { ResearchChip } from "../../research-mode/ui/ResearchChip";
+import { ResearchMenuItem } from "../../research-mode/ui/ResearchMenuItem";
+import { useComposerResearch } from "../../research-mode/ui/useComposerResearch";
 import { SessionToolsSummary } from "../../session-tools/ui/SessionToolsSummary";
 import { connectorChangePending } from "../../session-tools/model/connectors";
 import {
@@ -148,6 +151,21 @@ import {
 } from "../../chat-skills/model/chatSkills";
 import { SkillsMenuItem } from "../../chat-skills/ui/SkillsMenuItem";
 import { SkillsPopover } from "../../chat-skills/ui/SkillsPopover";
+import {
+  isRecordSkillHarness,
+  recordSkillMenu,
+} from "../../skill-recording/model/skillRecording";
+import { RecordSkillDialog } from "../../skill-recording/ui/RecordSkillDialog";
+import { RecordSkillMenuItem } from "../../skill-recording/ui/RecordSkillMenuItem";
+import { useSkillRecordingRefresh } from "../../skill-recording/ui/useSkillRecordingRefresh";
+import { VoiceInputButton } from "../../voice-input/ui/VoiceInputButton";
+import {
+  OPEN_PLUGINS_SETTINGS_EVENT,
+  chatDisabledPlugins,
+  harnessSupportsPluginSwitches,
+} from "../../claude-plugins/model/chatPlugins";
+import { PluginsMenuItem } from "../../claude-plugins/ui/PluginsMenuItem";
+import { PluginsPopover } from "../../claude-plugins/ui/PluginsPopover";
 import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
 import { InboxMiniCard } from "../../inbox/ui/InboxMiniCard";
 import { NoteMiniCard } from "../../notes/ui/NoteMiniCard";
@@ -307,8 +325,13 @@ type Props = {
   /** Skills switched off for this chat, by name. Shown only with a handler. */
   disabledSkills?: string[];
   onDisabledSkillsChange?: (names: string[]) => void;
+  /** Claude Code plugins switched off for this chat. Shown with a handler. */
+  disabledPlugins?: string[];
+  onDisabledPluginsChange?: (ids: string[]) => void;
   /** The transcript, read by the plus-menu lists while one is open. */
   transcript?: readonly Block[];
+  /** Offer "Record a skill". Set only for a local, saved chat. */
+  skillRecording?: boolean;
   /** Provider account the session is bound to, when it already has one. */
   providerAccountId?: string;
   onQuoteRequestConsumed?: (id: number) => void;
@@ -452,7 +475,10 @@ export function Composer({
   onToolAccessChange,
   disabledSkills,
   onDisabledSkillsChange,
+  disabledPlugins,
+  onDisabledPluginsChange,
   transcript = NO_TRANSCRIPT,
+  skillRecording = false,
   providerAccountId,
   onQuoteRequestConsumed,
   onInboxCardDismiss,
@@ -542,13 +568,27 @@ export function Composer({
   const [plusOpen, setPlusOpen] = useState(false);
   const [connectorsOpen, setConnectorsOpen] = useState(false);
   // The other per-chat lists the plus menu opens, one at a time.
-  const [chatList, setChatList] = useState<"tool-access" | "skills" | null>(
-    null,
-  );
+  const [chatList, setChatList] = useState<
+    "tool-access" | "skills" | "record-skill" | "plugins" | null
+  >(null);
   const [planSelected, setPlanSelected] = useState(false);
   const [operatorSelected, setOperatorSelected] = useState(false);
   const [orchestrationSelected, setOrchestrationSelected] = useState(false);
   const [draftSelected, setDraftSelected] = useState(false);
+  const research = useComposerResearch({
+    harness,
+    cwd: executionCwd,
+    sessionId,
+    providerAccountId:
+      providerAccountId ??
+      (supportsProviderAccounts(harness)
+        ? selectedProviderAccountId(harness, cwd)
+        : undefined),
+    disabledMcpServers,
+    toolAccess,
+    remote: remoteSession,
+    plusOpen,
+  });
   const [slash, setSlash] = useState<SlashToken | null>(null);
   const [skillActive, setSkillActive] = useState(0);
   const [creatingSkill, setCreatingSkill] = useState(false);
@@ -684,6 +724,23 @@ export function Composer({
     !!onDisabledSkillsChange &&
     harnessSupportsSkillSwitches(harness);
   const skillsAtTurnStart = useTurnStartSnapshot(skillsOff, busy);
+  const recordSkill = recordSkillMenu({
+    available: skillRecording,
+    remote,
+    harness,
+    blocks: transcript,
+    busy,
+  });
+  const armSkillRefresh = useSkillRecordingRefresh(busy);
+  const pluginSwitchesSupported =
+    !remote &&
+    !!onDisabledPluginsChange &&
+    harnessSupportsPluginSwitches(harness);
+  const pluginsOff = useMemo(
+    () => chatDisabledPlugins(harness, disabledPlugins),
+    [harness, disabledPlugins],
+  );
+  const pluginsAtTurnStart = useTurnStartSnapshot(pluginsOff, busy);
   const skillNames = useMemo(
     () => new Set(slashItems.map((skill) => skill.invocation)),
     [slashItems],
@@ -1033,6 +1090,7 @@ export function Composer({
     onDraftChange?.("");
     setDraftSelected(false);
     setPlanSelected(false);
+    research.clear();
     setOrchestrationSelected(false);
     setSessionFolderSelected(false);
     setSessionFolderOpen(false);
@@ -1508,6 +1566,14 @@ export function Composer({
         : text;
     const files = attachmentsRef.current;
     if (!text && files.length === 0 && !noteCard && !handoffCard) return;
+    const intent =
+      planSelected || command.planning
+        ? "plan"
+        : orchestrationSelected || orchestratorCommand.matched
+          ? "orchestrate"
+          : "default";
+    const researchSend = research.forSend(intent, orchestratorCommand.text);
+    if (researchSend.blocked) return;
     // Clear the parent draft before onSubmit. The app can synchronously remount
     // the composer when the first message leaves an empty session (EmptySession →
     // docked layout). If draftRef still holds the sent text, the new instance
@@ -1525,12 +1591,8 @@ export function Composer({
       ),
       files,
       {
-        intent:
-          planSelected || command.planning
-            ? "plan"
-            : orchestrationSelected || orchestratorCommand.matched
-              ? "orchestrate"
-              : "default",
+        intent,
+        ...(researchSend.request ? { research: researchSend.request } : {}),
         ...(resendEdited
           ? {
               resendEdited: true,
@@ -1566,6 +1628,7 @@ export function Composer({
     setResendEdited(false);
     onEditingLastTurnChange?.(false);
     setPlanSelected(false);
+    research.clear();
     setOperatorSelected(false);
     setOrchestrationSelected(false);
     setSessionFolderSelected(false);
@@ -2128,6 +2191,20 @@ export function Composer({
             />
           ) : null}
 
+          {!compact &&
+          research.active &&
+          !planActive &&
+          !orchestrationActive &&
+          !draftActive ? (
+            <ResearchChip
+              canSearch={research.state === "ready"}
+              onClear={() => {
+                research.clear();
+                ref.current?.focus();
+              }}
+            />
+          ) : null}
+
           {attachments.length > 0 ? (
             <div className="flex flex-wrap gap-1.5 px-3 pt-2">
               {attachments.map((file) => (
@@ -2333,6 +2410,25 @@ export function Composer({
                       }}
                     />
                   ) : null}
+                  {recordSkill.visible ? (
+                    <RecordSkillMenuItem
+                      disabled={recordSkill.disabled}
+                      hint={recordSkill.hint}
+                      onOpen={() => {
+                        setPlusOpen(false);
+                        setChatList("record-skill");
+                      }}
+                    />
+                  ) : null}
+                  {pluginSwitchesSupported ? (
+                    <PluginsMenuItem
+                      offCount={pluginsOff.length}
+                      onOpen={() => {
+                        setPlusOpen(false);
+                        setChatList("plugins");
+                      }}
+                    />
+                  ) : null}
                   {!remote || remoteFeatures?.plan ? (
                     <button
                       type="button"
@@ -2341,6 +2437,7 @@ export function Composer({
                       onClick={() => {
                         setPlanSelected(!planActive);
                         if (planActive) clearLeadingMode(PLAN_COMMAND.name);
+                        research.clear();
                         setOperatorSelected(false);
                         setOrchestrationSelected(false);
                         setDraftSelected(false);
@@ -2360,6 +2457,30 @@ export function Composer({
                         <Check className="mt-0.5 size-3.5 shrink-0 text-accent" />
                       ) : null}
                     </button>
+                  ) : null}
+                  {research.state !== "hidden" ? (
+                    <ResearchMenuItem
+                      state={research.state}
+                      active={research.active}
+                      onToggle={() => {
+                        const on = !research.active;
+                        research.setSelected(on);
+                        if (on) {
+                          setPlanSelected(false);
+                          clearLeadingMode(PLAN_COMMAND.name);
+                          setOrchestrationSelected(false);
+                          clearLeadingMode(ORCHESTRATOR_COMMAND.name);
+                          setDraftSelected(false);
+                          clearLeadingMode(DRAFT_COMMAND.name);
+                        }
+                        setPlusOpen(false);
+                        ref.current?.focus();
+                      }}
+                      onOpenConnectors={() => {
+                        setPlusOpen(false);
+                        research.openConnectors();
+                      }}
+                    />
                   ) : null}
                   {!remote ? (
                     <button
@@ -2401,6 +2522,7 @@ export function Composer({
                         if (orchestrationActive) {
                           clearLeadingMode(ORCHESTRATOR_COMMAND.name);
                         }
+                        research.clear();
                         setPlanSelected(false);
                         setOperatorSelected(false);
                         setDraftSelected(false);
@@ -2434,6 +2556,7 @@ export function Composer({
                       onClick={() => {
                         setDraftSelected(!draftActive);
                         if (draftActive) clearLeadingMode(DRAFT_COMMAND.name);
+                        research.clear();
                         setPlanSelected(false);
                         setOperatorSelected(false);
                         setOrchestrationSelected(false);
@@ -2515,6 +2638,52 @@ export function Composer({
                   }}
                 />
               ) : null}
+              {chatList === "record-skill" &&
+              recordSkill.visible &&
+              !recordSkill.disabled &&
+              isRecordSkillHarness(harness) ? (
+                <RecordSkillDialog
+                  anchor={plusRef}
+                  harness={harness}
+                  projectCwd={executionCwd}
+                  inWorktree={pathKey(executionCwd) !== pathKey(cwd)}
+                  blocks={transcript}
+                  catalogNames={skills.map((skill) => skill.name)}
+                  onRecord={(prompt) => {
+                    const sent = onSubmit(prompt, []);
+                    if (sent !== false) armSkillRefresh();
+                    return sent;
+                  }}
+                  onDismiss={(reason) => {
+                    setChatList(null);
+                    if (reason !== "outside") ref.current?.focus();
+                  }}
+                />
+              ) : null}
+              {chatList === "plugins" && pluginSwitchesSupported ? (
+                <PluginsPopover
+                  anchor={plusRef}
+                  cwd={executionCwd}
+                  // The account the next turn runs under, as a send picks it.
+                  accountId={
+                    providerAccountId ??
+                    selectedProviderAccountId("claude", cwd)
+                  }
+                  disabled={pluginsOff}
+                  atTurnStart={pluginsAtTurnStart}
+                  onChange={(ids) => onDisabledPluginsChange?.(ids)}
+                  onManage={() => {
+                    setChatList(null);
+                    window.dispatchEvent(
+                      new Event(OPEN_PLUGINS_SETTINGS_EVENT),
+                    );
+                  }}
+                  onDismiss={(reason) => {
+                    setChatList(null);
+                    if (reason === "escape") ref.current?.focus();
+                  }}
+                />
+              ) : null}
             </div>
             {compact && !remote ? (
               <SessionToolsSummary
@@ -2524,6 +2693,7 @@ export function Composer({
                 disabledMcpServers={disabledMcpServers}
                 toolAccess={toolAccess}
                 disabledSkills={disabledSkills}
+                disabledPlugins={disabledPlugins}
               />
             ) : null}
             {!compact && connectorsSupported && disabledMcpServers.length ? (
@@ -2646,6 +2816,7 @@ export function Composer({
               </button>
             ) : null}
             <div className="flex shrink-0 items-center gap-1">
+              <VoiceInputButton textareaRef={ref} disabled={disabled} />
               <ComposerAction
                 busy={busy}
                 disabled={disabled}

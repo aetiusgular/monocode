@@ -6,6 +6,7 @@ mod automations;
 mod azure_devops;
 mod chat_background;
 mod checkpoint;
+mod claude_plugin;
 mod codex_mono_store;
 mod control;
 pub mod control_cli;
@@ -50,6 +51,7 @@ pub mod ssh_askpass;
 mod trackpad_zoom;
 #[cfg(target_os = "windows")]
 mod tray;
+mod voice_input;
 mod window;
 mod window_transfer;
 #[cfg(windows)]
@@ -444,6 +446,11 @@ pub fn run() {
             harness::claude_mcp_list,
             mcp::mcp_discover,
             docker_mcp::docker_mcp,
+            voice_input::voice_status,
+            voice_input::voice_transcribe,
+            voice_input::voice_download_model,
+            voice_input::voice_cancel_download,
+            claude_plugin::claude_plugin,
             mcp::mcp_add,
             harness::claude_mcp_add,
             harness::claude_mcp_remove,

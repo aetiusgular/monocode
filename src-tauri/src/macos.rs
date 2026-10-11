@@ -897,6 +897,8 @@ fn dev_bundle_plist(app_name: &str) -> Vec<u8> {
 	<string>13.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>MonoCode uses the microphone for voice input. Audio is transcribed on this Mac and never sent anywhere.</string>
 </dict>
 </plist>
 "#
@@ -980,5 +982,11 @@ mod tests {
         let plist = String::from_utf8(dev_bundle_plist("MonoCode Dev")).unwrap();
         assert!(plist.contains("<string>MonoCode Dev</string>"));
         assert!(!plist.contains("<string>MonoCode</string>"));
+    }
+
+    #[test]
+    fn dev_bundle_plist_explains_microphone_use() {
+        let plist = String::from_utf8(dev_bundle_plist("MonoCode")).unwrap();
+        assert!(plist.contains("<key>NSMicrophoneUsageDescription</key>"));
     }
 }

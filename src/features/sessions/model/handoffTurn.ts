@@ -32,6 +32,7 @@ export async function requestOutgoingHandoff(input: {
   gatewayConnectors?: HarnessLaunchMcpServer[];
   toolAccess?: HarnessToolAccess;
   disabledSkills?: string[];
+  disabledPlugins?: string[];
   userRequest: string;
 }): Promise<string> {
   let brief = "";
@@ -61,6 +62,9 @@ export async function requestOutgoingHandoff(input: {
         ? { toolAccess: { never: input.toolAccess.never } }
         : {}),
       ...(input.disabledSkills ? { disabledSkills: input.disabledSkills } : {}),
+      ...(input.disabledPlugins
+        ? { disabledPlugins: input.disabledPlugins }
+        : {}),
       text: buildOutgoingHandoffPrompt(input.userRequest),
       onEvent: (event) => {
         if (event.type === "message.delta") {

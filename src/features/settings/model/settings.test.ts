@@ -611,11 +611,26 @@ describe("settings navigation", () => {
       "mcp",
       "connectors",
       "skills",
+      "plugins",
       "monos",
       "inbox",
       "archive",
       "worktrees",
     ]);
+  });
+
+  it("lists Voice under App on macOS only", () => {
+    const ids = (isMac: boolean) =>
+      settingsSectionsByGroup(isMac).flatMap((group) =>
+        group.sections.map((section) => section.id),
+      );
+    expect(ids(true)).toContain("voice");
+    expect(ids(false)).not.toContain("voice");
+    expect(
+      settingsSectionsByGroup(true)
+        .find((group) => group.id === "app")
+        ?.sections.map((section) => section.id),
+    ).toEqual(["general", "connections", "appearance", "keybindings", "voice"]);
   });
 
   it("points every indexed setting at a real section", () => {

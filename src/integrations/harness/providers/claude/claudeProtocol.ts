@@ -37,6 +37,7 @@ import {
   sanitizeReportedMcpServers,
   type ReportedMcpServer,
 } from "../../../../features/session-tools/model/reportedMcpServers";
+import { claudePluginOverrides } from "../../../../features/claude-plugins/model/chatPlugins";
 
 /** Claude Code versions that first ship Opus 5.5 / Opus 5 / Sonnet 5 / Fable 5 / Opus 4.8 / 4.7. */
 export const MINIMUM_CLAUDE_OPUS_5_5_VERSION = "2.1.280";
@@ -82,6 +83,8 @@ export type ClaudeCliSettings = {
   fastMode?: boolean;
   ultracode?: boolean;
   disableAllHooks?: boolean;
+  /** Plugins switched off for one chat, each `false`. */
+  enabledPlugins?: Record<string, boolean>;
 };
 
 /**
@@ -1276,11 +1279,14 @@ export function claudeSettingsKey(input: {
   deniedTools?: string[];
   /** Skills switched off for the chat, launch-time deny rules as well. */
   disabledSkills?: string[];
+  /** Plugins switched off for the chat, a launch-time `--settings` key. */
+  disabledPlugins?: string[];
   /** Docker gateway connectors, a launch-time `--mcp-config`. */
   gatewayConnectors?: HarnessLaunchMcpServer[];
 }): string {
   const deniedTools = claudeToolDenyRules(input.deniedTools);
   const deniedSkills = claudeSkillDenyRules(input.disabledSkills);
+  const pluginsOff = claudePluginOverrides(input.disabledPlugins);
   return [
     input.model,
     input.effort ?? "",
@@ -1299,6 +1305,7 @@ export function claudeSettingsKey(input: {
     ...(deniedSkills.length
       ? [`skills-off:${JSON.stringify(deniedSkills)}`]
       : []),
+    ...(pluginsOff ? [`plugins-off:${JSON.stringify(pluginsOff)}`] : []),
     ...(input.gatewayConnectors?.length
       ? [
           `gateway:${claudeGatewayMcpConfig(sortedByName(input.gatewayConnectors))}`,

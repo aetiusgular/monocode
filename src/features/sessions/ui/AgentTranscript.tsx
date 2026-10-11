@@ -163,6 +163,7 @@ import {
   transcriptMutationNeedsRepaint,
   transcriptWordRanges,
 } from "../model/transcriptHighlights";
+import { ResearchLabel } from "../../research-mode/ui/ResearchLabel";
 
 const NEAR_BOTTOM_PX = 16;
 const WHEEL_HOLD_MS = 150;
@@ -2589,6 +2590,7 @@ function UserMessageBlock({
                   {expanded ? "Show less" : "Show more"}
                 </button>
               ) : null}
+              {block.research ? <ResearchLabel /> : null}
               {block.ciContext ? (
                 <details
                   className="group/ci mt-2 min-w-0 border-t border-content/10 pt-2"

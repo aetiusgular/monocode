@@ -117,6 +117,19 @@ describe("requestOutgoingHandoff", () => {
     expect(sentTurn()).not.toHaveProperty("disabledSkills");
   });
 
+  it("sends the plugins switched off for the chat, a launch input too", async () => {
+    const tools = sessionToolsInput(
+      { harness: "claude", disabledPlugins: ["paper-desktop@paper"] },
+      "/repo",
+    );
+    await requestOutgoingHandoff({ ...base, ...tools });
+    expect(sentTurn().disabledPlugins).toEqual(["paper-desktop@paper"]);
+
+    sendHarnessTurn.mockClear();
+    await requestOutgoingHandoff(base);
+    expect(sentTurn()).not.toHaveProperty("disabledPlugins");
+  });
+
   it("launches Claude Code with the tools its turn before had", async () => {
     // A model switch has already renamed the session's harness, so the tools
     // are worked out for the outgoing one.

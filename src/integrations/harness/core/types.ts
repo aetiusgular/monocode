@@ -247,6 +247,12 @@ export type HarnessSessionInput = {
    * keeps these out of the composer's `/` list and does not expand them.
    */
   disabledSkills?: string[];
+  /**
+   * Claude Code plugins, by `name@marketplace` id, switched off for this
+   * conversation. Only Claude Code honors it, as `false` entries under
+   * `enabledPlugins` in the `--settings` its process starts with.
+   */
+  disabledPlugins?: string[];
   onEvent: (event: HarnessEvent) => void;
 };
 

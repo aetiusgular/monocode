@@ -44,6 +44,8 @@ import { JiraSettings } from "./JiraSettings";
 import { GradientBlurBackground } from "./GradientBlurBackground";
 import { McpSettings } from "./McpSettings";
 import { ConnectorsPage } from "../../gateway-connectors/ui/ConnectorsPage";
+import { VoiceSettings } from "../../voice-input/ui/VoiceSettings";
+import { PluginsPage } from "../../claude-plugins/ui/PluginsPage";
 import { InboxProviderMark } from "../../inbox/ui/InboxProviderMark";
 import { RemoveProjectDialog } from "../../projects/ui/RemoveProjectDialog";
 import { WindowControls } from "../../../app/shell/WindowControls";
@@ -583,11 +585,13 @@ export function SettingsView({
               ) : null}
               {section === "chat" ? <ChatPage /> : null}
               {section === "keybindings" ? <KeybindingsPage /> : null}
+              {section === "voice" ? <VoiceSettings /> : null}
               {section === "monos" ? <MonosPage /> : null}
               {section === "mcp" ? (
                 <McpSettings cwd={cwd} recents={recents} />
               ) : null}
               {section === "connectors" ? <ConnectorsPage cwd={cwd} /> : null}
+              {section === "plugins" ? <PluginsPage cwd={cwd} /> : null}
               {section === "providers" ? (
                 <ProvidersPage cwd={cwd} recents={recents} />
               ) : null}

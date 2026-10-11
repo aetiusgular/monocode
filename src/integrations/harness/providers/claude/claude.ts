@@ -92,6 +92,7 @@ import {
   type UserQuestionReply,
 } from "../../../../features/sessions/model/userQuestion";
 import { approvalTool } from "../../../../features/tool-access/model/toolAccess";
+import { claudePluginOverrides } from "../../../../features/claude-plugins/model/chatPlugins";
 import type {
   ApprovalDecision,
   CompactContextInput,
@@ -2097,6 +2098,7 @@ function settingsKeyFor(input: HarnessSessionInput): string {
     disabledMcpServers: input.disabledMcpServers,
     deniedTools: input.toolAccess?.never,
     disabledSkills: input.disabledSkills,
+    disabledPlugins: input.disabledPlugins,
     gatewayConnectors: input.gatewayConnectors,
   })}`;
 }
@@ -2195,6 +2197,13 @@ function launchOptions(
   }
   if (!loadClaudeHooks()) {
     settings.disableAllHooks = true;
+  }
+  // Plugins switched off for the chat: `false` under `enabledPlugins` in
+  // `--settings`, which Claude Code applies above the user, project and local
+  // files for this process only.
+  const enabledPlugins = claudePluginOverrides(input.disabledPlugins);
+  if (enabledPlugins) {
+    settings.enabledPlugins = enabledPlugins;
   }
   return {
     model: resolveClaudeApiModelId(native, context),

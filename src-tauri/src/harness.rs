@@ -28,8 +28,8 @@ const DEFAULT_PROVIDER_ACCOUNT_ID: &str = "default";
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct HarnessAccount {
-    provider: String,
-    id: String,
+    pub(crate) provider: String,
+    pub(crate) id: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -371,7 +371,10 @@ pub fn harness_resolve_claude() -> Result<CursorBinary, String> {
         })
 }
 
-fn resolve_mcp_binary(provider: &str, binary_path: Option<&str>) -> Result<PathBuf, String> {
+pub(crate) fn resolve_mcp_binary(
+    provider: &str,
+    binary_path: Option<&str>,
+) -> Result<PathBuf, String> {
     if !matches!(provider, "claude" | "codex" | "cursor" | "opencode") {
         return Err("Unsupported MCP provider".into());
     }
@@ -1067,7 +1070,7 @@ pub fn provider_account_remove(
     })
 }
 
-fn apply_provider_account(
+pub(crate) fn apply_provider_account(
     app: &AppHandle,
     cmd: &mut Command,
     account: Option<&HarnessAccount>,
@@ -1404,6 +1407,19 @@ pub(crate) fn exec_output_with_stdin(
     timeout: Duration,
     input: Option<&[u8]>,
 ) -> Result<std::process::Output, String> {
+    exec_output_configured(command, args, cwd, timeout, input, |_| Ok(()))
+}
+
+/// [`exec_output_with_stdin`] with `configure` run on the command before it
+/// starts, such as to give it a provider account's environment.
+pub(crate) fn exec_output_configured(
+    command: &str,
+    args: &[String],
+    cwd: Option<&str>,
+    timeout: Duration,
+    input: Option<&[u8]>,
+    configure: impl FnOnce(&mut Command) -> Result<(), String>,
+) -> Result<std::process::Output, String> {
     let mut cmd = Command::new(command);
     cmd.args(args)
         .stdin(if input.is_some() {
@@ -1414,6 +1430,7 @@ pub(crate) fn exec_output_with_stdin(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     prepare_child(&mut cmd, command);
+    configure(&mut cmd)?;
     if let Some(dir) = cwd {
         let workdir = expand_home(dir);
         if workdir.is_dir() {

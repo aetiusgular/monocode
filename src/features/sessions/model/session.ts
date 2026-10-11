@@ -7,6 +7,7 @@ import type { NoteCardMeta, NoteComposerCard } from "../../notes";
 import type { OrchestrationProposal } from "../../orchestration/model/orchestrationPlan";
 import type { LinkedWorkItemUpdateCard } from "../../inbox/model/linkedWorkItemActivity";
 import type { ToolImageRef } from "../../tool-images/model/toolImages";
+import type { ResearchRequest } from "../../research-mode/model/researchPrompt";
 import {
   defaultSessionChoice,
   firstEnabledHarness,
@@ -94,6 +95,8 @@ export type ComposerTurnOptions = {
   onResendRejected?: (recovery: EditedResendRejection) => void;
   /** Promote an existing unsent transcript block instead of appending a turn. */
   draftBlockId?: string;
+  /** Send this message as research: the harness gets research instructions. */
+  research?: ResearchRequest;
 };
 
 export type PlanStatus = "streaming" | "ready" | "building" | "built";
@@ -277,6 +280,7 @@ export type QueuedMessage = {
   noteCard?: NoteComposerCard;
   handoffCard?: HandoffComposerCard;
   intent?: TurnIntent;
+  research?: ResearchRequest;
   /** An app notification that must wait for an idle Mono, never steer its work. */
   monoSessionCompletion?: MonoSessionCompletion;
   /** Delivery failed; the message remains available to retry or edit. */
@@ -333,6 +337,8 @@ export type Block = {
   monocode?: boolean;
   /** The Plan or Orchestrator mode this user turn was sent in. */
   intent?: Extract<TurnIntent, "plan" | "orchestrate">;
+  /** This user turn was sent in research mode. */
+  research?: true;
   /** Stable CLI request that submitted this turn, for safe retries. */
   appRequestId?: string;
   /** Provider-reported token metrics for this user turn, when available. */
@@ -410,6 +416,7 @@ export type PersistedSessionTools = {
   disabledMcpServers?: string[];
   toolAccess?: ToolAccess;
   disabledSkills?: string[];
+  disabledPlugins?: string[];
 };
 
 /** A standing answer for one tool's approval requests in one chat. */
@@ -555,6 +562,11 @@ export type Session = {
    * Settings is left alone. Saved like `extraDirs`.
    */
   disabledSkills?: string[];
+  /**
+   * Claude Code plugins (by `name@marketplace` id) switched off for this chat
+   * only. Claude Code's own settings are left alone. Saved like `extraDirs`.
+   */
+  disabledPlugins?: string[];
   /** One-shot composer text when opening a session from Inbox. */
   composerSeed?: string;
   /** Inbox issue/PR chip shown above the composer. In-memory, one-shot. */
