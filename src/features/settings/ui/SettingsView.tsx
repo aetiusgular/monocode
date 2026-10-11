@@ -239,9 +239,11 @@ import {
   saveComposerAutocorrect,
   saveMaskEmails,
   saveShowRemainingUsage,
+  saveTabsAcrossProjects,
   useComposerAutocorrect,
   useMaskEmails,
   useShowRemainingUsage,
+  useTabsAcrossProjects,
 } from "../model/displayPrefs";
 import {
   accountStatus,
@@ -2111,6 +2113,7 @@ function useAppearanceSettings(
 function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
   const percent = Math.round(appearance.opacity * 100);
   const glassDisabled = useColorScheme() === "light";
+  const tabsAcrossProjects = useTabsAcrossProjects();
 
   return (
     <>
@@ -2285,6 +2288,17 @@ function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
               { value: "hidden", label: "Hidden" },
             ]}
             onChange={appearance.onCollapsedProjectRailMode}
+          />
+        </Row>
+        <Row
+          id="tabs-across-projects"
+          label="Tabs from every project"
+          description="Show every project's tabs in the title bar, each project in its colour. Right-click or ⌥-click a tab to fold its project."
+        >
+          <Toggle
+            label="Tabs from every project"
+            on={tabsAcrossProjects}
+            onChange={saveTabsAcrossProjects}
           />
         </Row>
         <Row

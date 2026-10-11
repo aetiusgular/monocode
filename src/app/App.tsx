@@ -110,6 +110,7 @@ import {
 } from "../features/sessions/ui/DeleteSessionDialog";
 import {
   type WorktreeFocus,
+  setWorktreeFocus,
   useWorktreeFocus,
   worktreeFocus,
 } from "../features/source-control/model/worktreeFocus";
@@ -417,6 +418,16 @@ import {
   workspaceTabWorktree,
   focusedWorkspaceTabCwd,
 } from "../features/workspace/model/workspaceTabGroups";
+import {
+  groupTabsByProject,
+  nextStripTab,
+  planProjectStripTabClose,
+  stripSlotTab,
+  visibleStripTabs,
+  type ProjectTabPlacement,
+} from "../features/workspace/model/projectTabStrip";
+import { useCollapsedProjectTabGroups } from "../features/workspace/model/collapsedProjectTabs";
+import { useTabsAcrossProjects } from "../features/settings/model/displayPrefs";
 import { applyAddToChatRequest } from "../features/sessions/model/addChatToWorkspace";
 import {
   ADD_TO_CHAT_EVENT,
@@ -777,6 +788,10 @@ import {
   collectWorkspaceSnapshot,
   workspaceSnapshotKey,
 } from "../features/workspace/model/workspaceSnapshot";
+import {
+  planWorkspaceSave,
+  type PendingWorkspaceSave,
+} from "../features/workspace/model/workspaceSave";
 import type { InstalledUpdate } from "./model/updateNotice";
 import {
   bindResumedSessions,
@@ -1023,7 +1038,9 @@ function titleTabsEqual(a: TitleTab[], b: TitleTab[]): boolean {
       tab.blank === other.blank &&
       tab.terminal === other.terminal &&
       tab.previewFileId === other.previewFileId &&
-      tab.groupId === other.groupId
+      tab.groupId === other.groupId &&
+      tab.projectPath === other.projectPath &&
+      tab.worktree === other.worktree
     );
   });
 }
@@ -1220,7 +1237,14 @@ function Workspace({
   const [sessionSidebarOpen, setSessionSidebarOpen] = useState(
     loadSessionSidebarOpen,
   );
-  const tabCloseScope = "project" as const;
+  const tabsAcrossProjects = useTabsAcrossProjects();
+  const tabsAcrossProjectsRef = useRef(tabsAcrossProjects);
+  tabsAcrossProjectsRef.current = tabsAcrossProjects;
+  // With every project's tabs in the strip, a project's last tab closes onto
+  // its neighbour instead of leaving a blank tab in that project.
+  const tabCloseScope = tabsAcrossProjects
+    ? ("workspace" as const)
+    : ("project" as const);
   const currentProjectDock = findProjectTerminal(projectTerminals, projectCwd);
   const dockVisible = !!currentProjectDock?.open;
   const [filesSearchOpen, setFilesSearchOpen] = useState(false);
@@ -1587,6 +1611,7 @@ function Workspace({
   const inFlightSyncKey = useRef<string | null>(null);
   const sawInFlight = useRef(false);
   const workspaceSyncKey = useRef<string | null>(null);
+  const workspacePendingSave = useRef<PendingWorkspaceSave | null>(null);
   const observedSessions = useRef(new Map<string, Session>());
   const pendingPersist = useRef(new Map<string, Session>());
   const removingSessionIds = useRef(new Set<string>());
@@ -2440,11 +2465,26 @@ function Workspace({
       keepWorkspaceTab,
     );
     const key = workspaceSnapshotKey(snapshot);
-    if (workspaceSyncKey.current === key) return;
-    workspaceSyncKey.current = key;
-    const timer = window.setTimeout(() => {
+    // The key counts as saved only once the write is sent: this effect re-runs
+    // on every session update, and each re-run cancels the pending timer.
+    const plan = planWorkspaceSave({
+      key,
+      savedKey: workspaceSyncKey.current,
+      pending: workspacePendingSave.current,
+      now: Date.now(),
+    });
+    workspacePendingSave.current = plan.pending;
+    if (plan.action === "skip") return;
+    const save = () => {
+      workspaceSyncKey.current = key;
+      workspacePendingSave.current = null;
       void saveWorkspaceSnapshot(snapshot).catch(() => undefined);
-    }, 250);
+    };
+    if (plan.action === "save") {
+      save();
+      return;
+    }
+    const timer = window.setTimeout(save, plan.ms);
     return () => window.clearTimeout(timer);
   }, [
     tabs,
@@ -2543,6 +2583,28 @@ function Workspace({
             setProjectCwd(normalized);
             setRecents(rememberProject(normalized));
           }
+          // The grouped strip lists every worktree's tabs, so landing on one
+          // moves the project's sidebar to that worktree, the way the
+          // workspace navigation's fallback labels a landing tab.
+          if (
+            tabsAcrossProjectsRef.current &&
+            !isRemoteProjectPath(normalized)
+          ) {
+            const landing =
+              tabWorkspace(tab, sessionsRef.current) ?? normalized;
+            const focus = worktreeFocus(normalized);
+            if (sameProjectPath(landing, normalized)) {
+              if (focus) setWorktreeFocus(normalized, undefined);
+            } else if (!focus || !sameProjectPath(focus.path, landing)) {
+              const session = sessionsRef.current.find(
+                (entry) => entry.id === nextFocusedId,
+              );
+              setWorktreeFocus(normalized, {
+                path: landing,
+                branch: session?.branch ?? null,
+              });
+            }
+          }
         }
       }
       setComposerFocused(
@@ -2550,7 +2612,7 @@ function Workspace({
           sessionsRef.current.some((session) => session.id === nextFocusedId),
       );
     },
-    [],
+    [tabWorkspace],
   );
 
   const commitTabVisit = useCallback((history: TabVisitHistory) => {
@@ -3214,13 +3276,22 @@ function Workspace({
       const current = tabsRef.current;
       const index = current.findIndex((t) => t.id === id);
       if (index < 0) return;
-      const closePlan = planWorkspaceTabClose({
-        tabs: current,
-        sessions: sessionsRef.current,
-        closingTabId: id,
-        scope: tabCloseScope,
-        worktreeOf: tabWorktreeOf,
-      });
+      // The grouped strip lands on the project's own neighbour first, then
+      // on the neighbouring group, which the flat order cannot tell apart.
+      const closePlan = tabsAcrossProjects
+        ? planProjectStripTabClose({
+            tabs: current,
+            sessions: sessionsRef.current,
+            closingTabId: id,
+            worktreeOf: tabWorktreeOf,
+          })
+        : planWorkspaceTabClose({
+            tabs: current,
+            sessions: sessionsRef.current,
+            closingTabId: id,
+            scope: tabCloseScope,
+            worktreeOf: tabWorktreeOf,
+          });
       if (closePlan.action === "keep") return;
       const closing = current[index];
       const closingFiles = [
@@ -3274,7 +3345,15 @@ function Workspace({
         finishClose();
       })();
     },
-    [activateTab, persistSession, refreshHistory, sidebarCwd, tabCloseScope],
+    [
+      activateTab,
+      persistSession,
+      refreshHistory,
+      sidebarCwd,
+      tabCloseScope,
+      tabWorktreeOf,
+      tabsAcrossProjects,
+    ],
   );
 
   const onCloseTabs = useCallback(
@@ -3922,7 +4001,25 @@ function Workspace({
     }
     return stats;
   }, [tabs, sessions, sidebarCwd, tabWorkspace, workspaceNavigation.revision]);
+  /** Every open tab grouped by project, for the strip that spans projects. */
+  const projectTabStrip = useMemo(
+    () =>
+      tabsAcrossProjects
+        ? groupTabsByProject(tabs, sessions, (tab) =>
+            tabWorkspace(tab, sessions),
+          )
+        : null,
+    // The revision tracks workspace pins, which tabWorkspace reads.
+    [
+      tabsAcrossProjects,
+      tabs,
+      sessions,
+      tabWorkspace,
+      workspaceNavigation.revision,
+    ],
+  );
   const deckProjectTabs = useMemo(() => {
+    if (projectTabStrip) return projectTabStrip.order;
     // A projectless session belongs to no project, so it stands on its own
     // rather than trailing the last project's tabs.
     const active = tabs.find((tab) => tab.id === activeTabId);
@@ -3936,6 +4033,7 @@ function Workspace({
     });
   }, [
     activeTabId,
+    projectTabStrip,
     tabs,
     sessions,
     projectCwd,
@@ -3943,31 +4041,38 @@ function Workspace({
     tabWorkspace,
     workspaceNavigation.revision,
   ]);
+  // Shortcuts walk what the strip shows: a collapsed group is skipped, apart
+  // from its active tab.
+  const collapsedProjectTabGroups = useCollapsedProjectTabGroups();
+  const cycleTabs = useMemo(
+    () =>
+      projectTabStrip
+        ? visibleStripTabs(
+            projectTabStrip,
+            collapsedProjectTabGroups,
+            activeTabId,
+          )
+        : deckProjectTabs,
+    [activeTabId, collapsedProjectTabGroups, deckProjectTabs, projectTabStrip],
+  );
 
   const onNext = useCallback(() => {
     if (monoViewIdRef.current) {
       activateTab(activeTabId);
       return;
     }
-    const index = deckProjectTabs.findIndex((t) => t.id === activeTabId);
-    if (index >= 0)
-      activateTab(deckProjectTabs[(index + 1) % deckProjectTabs.length].id);
-  }, [activateTab, activeTabId, deckProjectTabs]);
+    const next = nextStripTab(cycleTabs, activeTabId, 1);
+    if (next) activateTab(next.id);
+  }, [activateTab, activeTabId, cycleTabs]);
 
   const onPrev = useCallback(() => {
     if (monoViewIdRef.current) {
       activateTab(activeTabId);
       return;
     }
-    const index = deckProjectTabs.findIndex((t) => t.id === activeTabId);
-    if (index >= 0) {
-      activateTab(
-        deckProjectTabs[
-          (index - 1 + deckProjectTabs.length) % deckProjectTabs.length
-        ].id,
-      );
-    }
-  }, [activateTab, activeTabId, deckProjectTabs]);
+    const prev = nextStripTab(cycleTabs, activeTabId, -1);
+    if (prev) activateTab(prev.id);
+  }, [activateTab, activeTabId, cycleTabs]);
 
   const onVisitBack = useCallback(() => {
     if (monoViewIdRef.current) {
@@ -4007,13 +4112,10 @@ function Workspace({
 
   const onActivate = useCallback(
     (slot: number) => {
-      const tab =
-        slot < 0
-          ? deckProjectTabs[deckProjectTabs.length - 1]
-          : deckProjectTabs[slot];
+      const tab = stripSlotTab(cycleTabs, slot);
       if (tab) activateTab(tab.id);
     },
-    [activateTab, deckProjectTabs],
+    [activateTab, cycleTabs],
   );
 
   const onFocusPane = useCallback(
@@ -11266,7 +11368,13 @@ function Workspace({
   );
 
   const nextTitleTabs: TitleTab[] = deckProjectTabs.map((tab) =>
-    toTitleTab(tab, sessions, dirtyFiles, unseenFinishedIds),
+    toTitleTab(
+      tab,
+      sessions,
+      dirtyFiles,
+      unseenFinishedIds,
+      projectTabStrip?.placements.get(tab.id),
+    ),
   );
   tabProjectsRef.current = new Map(
     nextTitleTabs.map((tab) => [tab.id, tab.project]),
@@ -12591,6 +12699,7 @@ function Workspace({
       hideWindowControls={monoCovers && monoSidebarOpen && !!monoDetailsPanel}
       activeId={monoViewSession ? "" : activeTabId}
       cwd={sidebarCwd}
+      groupByProject={tabsAcrossProjects}
       projectRailOpen={projectRailOpen}
       sessionSidebarOpen={sessionSidebarOpen}
       compactRail={compactTitleNavigation}
@@ -13347,6 +13456,8 @@ function toTitleTab(
   sessions: Session[],
   dirtyFiles: Set<string>,
   unseenFinishedIds: ReadonlySet<string>,
+  /** Where the grouped strip places the tab; absent in the one-project strip. */
+  placement?: ProjectTabPlacement,
 ): TitleTab {
   const paneIds = leafIds(tab.layout);
   const multiPane = paneIds.length > 1;
@@ -13462,6 +13573,11 @@ function toTitleTab(
     terminal: hasTerminal && harnesses.length === 0,
     previewFileId: previewWorkspaceFile(tab)?.id,
     groupId: tab.groupId,
+    ...(placement ? { projectPath: placement.projectPath } : {}),
+    // A worktree tab is tagged with its branch, else the worktree folder.
+    ...(placement?.worktree
+      ? { worktree: focused?.branch || projectName(placement.worktree) }
+      : {}),
   };
 }
 

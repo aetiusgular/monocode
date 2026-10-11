@@ -18,19 +18,30 @@ export type ReorderExternalDrop<T extends string> = {
   onEnd?: (id: T) => void;
 };
 
+/**
+ * Index range (inclusive) a dragged item may land in. The handle stops at the
+ * range's edges and only items inside it make room, so a bounded drag never
+ * looks like it left its group.
+ */
+export type ReorderSpan<T extends string> = (
+  id: T,
+  ids: T[],
+) => { start: number; end: number } | undefined;
+
 /** Direct manipulation for a row or column of equal-sized items. */
 export function useAnimatedReorder<T extends string>(
   ids: T[],
   onReorder: (ids: T[], movedId: T) => void,
   axis: "x" | "y" = "x",
   externalDrop?: ReorderExternalDrop<T>,
+  span?: ReorderSpan<T>,
 ) {
   const nodes = useRef(new Map<T, HTMLElement>());
   const [draggingId, setDraggingId] = useState<T | null>(null);
-  const latest = useRef({ ids, onReorder, externalDrop });
+  const latest = useRef({ ids, onReorder, externalDrop, span });
   useLayoutEffect(() => {
-    latest.current = { ids, onReorder, externalDrop };
-  }, [ids, onReorder, externalDrop]);
+    latest.current = { ids, onReorder, externalDrop, span };
+  }, [ids, onReorder, externalDrop, span]);
   const cleanup = useRef<(() => void) | null>(null);
   const finishSettling = useRef<(() => void) | null>(null);
   const suppressClickUntil = useRef(0);
@@ -53,6 +64,14 @@ export function useAnimatedReorder<T extends string>(
       const items = latest.current.ids;
       const from = items.indexOf(id);
       if (items.length < 2 || from < 0) return;
+      const range = latest.current.span?.(id, items);
+      // The range always holds the item itself and stays inside the list.
+      const first = Math.max(0, Math.min(from, range?.start ?? 0));
+      const last = Math.min(
+        items.length - 1,
+        Math.max(from, range?.end ?? items.length - 1),
+      );
+      if (first === last) return;
       const elements = items.map((item) => nodes.current.get(item));
       if (elements.some((element) => !element)) return;
       const tabs = elements as HTMLElement[];
@@ -150,10 +169,10 @@ export function useAnimatedReorder<T extends string>(
           0,
         );
         const offset = Math.max(
-          rects[0].start - rects[from].start,
+          rects[first].start - rects[from].start,
           Math.min(
             pointerPosition - startPosition + scrollOffset,
-            rects[rects.length - 1].end - rects[from].end,
+            rects[last].end - rects[from].end,
           ),
         );
         if (moveHandle) {
@@ -161,6 +180,7 @@ export function useAnimatedReorder<T extends string>(
         }
         const center = rects[from].start + rects[from].size / 2 + offset;
         const next = rects.reduce((nearest, rect, index) => {
+          if (index < first || index > last) return nearest;
           const distance = Math.abs(center - rect.start - rect.size / 2);
           const previous = rects[nearest];
           return distance <

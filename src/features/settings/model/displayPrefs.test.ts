@@ -4,12 +4,15 @@ import {
   loadComposerAutocorrect,
   loadMaskEmails,
   loadShowRemainingUsage,
+  loadTabsAcrossProjects,
   saveComposerAutocorrect,
   saveMaskEmails,
   saveShowRemainingUsage,
+  saveTabsAcrossProjects,
   subscribeComposerAutocorrect,
   subscribeMaskEmails,
   subscribeShowRemainingUsage,
+  subscribeTabsAcrossProjects,
 } from "./displayPrefs";
 
 const prefs = [
@@ -36,6 +39,14 @@ const prefs = [
     load: loadComposerAutocorrect,
     save: saveComposerAutocorrect,
     subscribe: subscribeComposerAutocorrect,
+  },
+  {
+    name: "tabs across projects",
+    key: "monocode.tabsAcrossProjects",
+    defaultValue: true,
+    load: loadTabsAcrossProjects,
+    save: saveTabsAcrossProjects,
+    subscribe: subscribeTabsAcrossProjects,
   },
 ];
 

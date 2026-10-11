@@ -12,6 +12,7 @@ import {
   X,
 } from "../../shared/ui/icons";
 import {
+  Fragment,
   memo,
   useCallback,
   useEffect,
@@ -58,6 +59,27 @@ import {
   useExternalTitleTabDrop,
 } from "../../features/workspace/model/paneDrop";
 import type { PaneEdge } from "../../features/workspace/model/layout";
+import {
+  clampReorderToGroup,
+  closeRunFallback,
+  hiddenStripTabIds,
+  projectRunCount,
+  projectTabRuns,
+  reorderSpan,
+  type ProjectTabRun,
+} from "../../features/workspace/model/projectTabStrip";
+import {
+  setProjectTabGroupCollapsed,
+  toggleProjectTabGroup,
+  useCollapsedProjectTabGroups,
+} from "../../features/workspace/model/collapsedProjectTabs";
+import {
+  ProjectTabGap,
+  ProjectTabMark,
+  ProjectTabStub,
+  stubHarnesses,
+  useProjectTabLook,
+} from "../../features/workspace/ui/ProjectTabStub";
 
 export type Tab = {
   id: string;
@@ -87,12 +109,21 @@ export type Tab = {
   terminal?: boolean;
   /** File id when the whole tab is one preview file; double-click pins it. */
   previewFileId?: string;
+  /** Project folder path; the strip groups tabs by it when asked to. */
+  projectPath?: string;
+  /** Branch or folder of the worktree the tab runs in, outside the main checkout. */
+  worktree?: string;
 };
 
 type Props = {
   tabs: Tab[];
   activeId: string;
   cwd: string;
+  /**
+   * Mark each project's run of tabs with its colour and a gap once tabs span
+   * projects, and let a run fold to a stub.
+   */
+  groupByProject?: boolean;
   /**
    * The Mono filling the main area. It takes the tabs' place, and nothing
    * project-scoped belongs beside it.
@@ -125,6 +156,8 @@ type Props = {
   recents?: RecentProject[];
   onSelectProject?: (path: string) => void;
 };
+
+const NO_HIDDEN_TABS: ReadonlySet<string> = new Set();
 
 function sessionMeta(tab: Tab): string {
   if (tab.more.length === 1) return tab.more[0];
@@ -167,9 +200,12 @@ export function tabCopy(tab: Tab): {
     if (sessions) metaParts.push(sessions);
   }
 
+  // A worktree tab names its branch first: "feature-x · 2 sessions".
+  if (tab.worktree) metaParts.unshift(tab.worktree);
   const meta = metaParts.join(" · ");
 
   const tooltipParts = [project];
+  if (tab.worktree) tooltipParts.push(tab.worktree);
   if (conversation) tooltipParts.push(conversation);
   tooltipParts.push(...tab.more);
   if (tab.files.length > 0) tooltipParts.push(tab.files.join(", "));
@@ -280,10 +316,12 @@ function TitleTabItem({
   closable,
   canDrag,
   sortable,
+  tint,
   onSelect,
   onClose,
   onPinFile,
   onContextMenu,
+  onFoldProject,
   itemRef,
 }: {
   tab: Tab;
@@ -291,18 +329,20 @@ function TitleTabItem({
   closable: boolean;
   canDrag: boolean;
   sortable: SortableApi;
+  /** Project color marking the tab as part of a group. */
+  tint?: string;
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
   onPinFile?: (fileId: string) => void;
   onContextMenu: (id: string, event: ReactMouseEvent<HTMLDivElement>) => void;
+  /** ⌥-click folds the tab's project instead of selecting the tab. */
+  onFoldProject?: () => void;
   itemRef?: (el: HTMLDivElement | null) => void;
 }) {
   const { headline, meta, tooltip } = tabCopy(tab);
   const fileIcon = tab.files[0];
-  const accessibleTooltip =
-    (tab.doneHarnesses?.length ?? 0) > 0
-      ? `${tooltip} · Response complete`
-      : tooltip;
+  const done = (tab.doneHarnesses?.length ?? 0) > 0;
+  const accessibleTooltip = done ? `${tooltip} · Response complete` : tooltip;
 
   return (
     <div
@@ -339,19 +379,26 @@ function TitleTabItem({
         title={accessibleTooltip}
         aria-label={accessibleTooltip}
         data-tauri-drag-region="false"
-        onClick={() => {
+        onClick={(event) => {
           if (sortable.consumeClick()) return;
+          if (event.altKey && onFoldProject) {
+            onFoldProject();
+            return;
+          }
           onSelect(tab.id);
         }}
         onDoubleClick={() => {
           if (tab.previewFileId) onPinFile?.(tab.previewFileId);
         }}
+        // A finished, unseen reply lifts the title so it reads from afar.
         className={`relative flex h-7.5 min-w-0 flex-1 cursor-default items-center gap-1.5 self-center rounded-md px-2 text-left ${
           closable ? "pr-7" : "pr-2.5"
         } ${
           active
             ? "bg-selection text-content"
-            : "text-content/50 hover:bg-content/5 hover:text-content"
+            : done
+              ? "text-content/80 hover:bg-content/5 hover:text-content"
+              : "text-content/50 hover:bg-content/5 hover:text-content"
         }`}
       >
         {tab.harnesses.length > 0 ? (
@@ -417,6 +464,7 @@ function TitleTabItem({
           <X className="size-3" strokeWidth={1.75} />
         </button>
       ) : null}
+      {tint ? <ProjectTabMark color={tint} /> : null}
     </div>
   );
 }
@@ -618,6 +666,7 @@ function TitleBarComponent({
   tabs,
   activeId,
   cwd,
+  groupByProject = false,
   mono,
   onShowMonoDetails,
   hideWindowControls = false,
@@ -645,8 +694,50 @@ function TitleBarComponent({
   recents = [],
   onSelectProject,
 }: Props) {
-  const tabIds = tabs.map((tab) => tab.id);
   const { displayed, setTabNode, finishMotion } = useTabCloseMotion(tabs);
+  const collapsedGroups = useCollapsedProjectTabGroups();
+  const lookOf = useProjectTabLook();
+  // Runs follow what is drawn, closing tabs included, so a chip stays put
+  // while its last tab animates out.
+  const runs = useMemo(
+    () =>
+      groupByProject
+        ? projectTabRuns(displayed.map((entry) => entry.item))
+        : null,
+    [displayed, groupByProject],
+  );
+  // Tints, gaps and folds wait until the strip spans projects; one project
+  // looks the way it always did.
+  const grouped = runs != null && projectRunCount(runs) > 1;
+  const hiddenIds = useMemo(
+    () =>
+      grouped && runs
+        ? hiddenStripTabIds(runs, collapsedGroups, activeId)
+        : NO_HIDDEN_TABS,
+    [activeId, collapsedGroups, grouped, runs],
+  );
+  const stripItems = useMemo(
+    () =>
+      tabs
+        .filter((tab) => !hiddenIds.has(tab.id))
+        .map((tab) => ({ id: tab.id, projectPath: tab.projectPath })),
+    [hiddenIds, tabs],
+  );
+  const tabIds = useMemo(() => stripItems.map((item) => item.id), [stripItems]);
+  // A drag stays inside its project's run; the clamp backs the span up.
+  const reorderWithinRun = useCallback(
+    (ids: string[], movedId: string) =>
+      onReorder(
+        groupByProject ? clampReorderToGroup(stripItems, ids, movedId) : ids,
+        movedId,
+      ),
+    [groupByProject, onReorder, stripItems],
+  );
+  const runSpan = useMemo(
+    () =>
+      groupByProject ? (id: string) => reorderSpan(stripItems, id) : undefined,
+    [groupByProject, stripItems],
+  );
   const externalTabDrop = useMemo<ReorderExternalDrop<string> | undefined>(
     () =>
       onPlaceOnPane
@@ -676,7 +767,13 @@ function TitleBarComponent({
         : undefined,
     [activeId, onPlaceOnPane],
   );
-  const sortable = useAnimatedReorder(tabIds, onReorder, "x", externalTabDrop);
+  const sortable = useAnimatedReorder(
+    tabIds,
+    reorderWithinRun,
+    "x",
+    externalTabDrop,
+    runSpan,
+  );
   const paneToTabDrop = useExternalTitleTabDrop();
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const tabStripRef = useRef<HTMLDivElement | null>(null);
@@ -692,6 +789,12 @@ function TitleBarComponent({
     tabId: string;
     x: number;
     y: number;
+  } | null>(null);
+  const [stubMenu, setStubMenu] = useState<{
+    key: string;
+    x: number;
+    y: number;
+    trigger: HTMLElement | null;
   } | null>(null);
   const syncTabOverflow = useCallback(() => {
     const el = tabStripRef.current;
@@ -709,7 +812,7 @@ function TitleBarComponent({
     el.scrollBy({ left: direction * amount, behavior: "smooth" });
   }, []);
   const activeTabRef = useRef<HTMLDivElement | null>(null);
-  const canDrag = tabs.length > 1;
+  const canDrag = tabIds.length > 1;
 
   useEffect(() => {
     if (sortable.draggingId) return;
@@ -718,6 +821,19 @@ function TitleBarComponent({
       block: "nearest",
     });
   }, [activeId, sortable.draggingId]);
+
+  // Landing on a tab unfolds its group, however the tab was reached. Only a
+  // change of tab does this, so the active group can still be folded by hand
+  // and a saved fold survives a launch.
+  const runsRef = useRef(runs);
+  runsRef.current = grouped ? runs : null;
+  const unfoldedFor = useRef(activeId);
+  useEffect(() => {
+    if (unfoldedFor.current === activeId) return;
+    unfoldedFor.current = activeId;
+    const run = runsRef.current?.find((entry) => entry.ids.includes(activeId));
+    if (run?.key) setProjectTabGroupCollapsed(run.key, false);
+  }, [activeId]);
 
   useLayoutEffect(() => {
     const el = tabStripRef.current;
@@ -734,7 +850,7 @@ function TitleBarComponent({
 
   useLayoutEffect(() => {
     syncTabOverflow();
-  }, [activeId, syncTabOverflow, tabs]);
+  }, [activeId, collapsedGroups, syncTabOverflow, tabs]);
 
   const activeTab = useMemo(
     () => tabs.find((t) => t.id === activeId),
@@ -763,6 +879,58 @@ function TitleBarComponent({
     } catch {}
   }, [systemTitle]);
 
+  /**
+   * The project a run belongs to, with what its menu entries need: the tabs
+   * still open in it, where closing them all lands, and whether it is folded.
+   */
+  const projectActions = (key: string) => {
+    const run = runs?.find((entry) => entry.key === key);
+    if (!grouped || !run?.key || !run.path) return null;
+    const ids = run.ids.filter((id) => tabs.some((tab) => tab.id === id));
+    return {
+      key: run.key,
+      name: lookOf(run.path).name,
+      ids,
+      fallback: closeRunFallback(
+        tabs.map((tab) => tab.id),
+        ids,
+        activeId,
+      ),
+      folded: collapsedGroups.has(run.key),
+    };
+  };
+  type ProjectActions = NonNullable<ReturnType<typeof projectActions>>;
+
+  const projectMenuItems = (project: ProjectActions): ExplorerMenuItem[] => [
+    {
+      kind: "item",
+      id: "project-fold",
+      label: project.folded
+        ? `Expand ${project.name}`
+        : `Collapse ${project.name}`,
+    },
+    {
+      kind: "item",
+      id: "project-close",
+      label: `Close ${project.name} Tabs`,
+      description:
+        project.ids.length === 1 ? "1 tab" : `${project.ids.length} tabs`,
+      disabled: project.ids.length === 0 || !project.fallback,
+    },
+  ];
+
+  const pickProjectAction = (id: string, project: ProjectActions): boolean => {
+    if (id === "project-fold") {
+      toggleProjectTabGroup(project.key);
+      return true;
+    }
+    if (id === "project-close") {
+      if (project.fallback) onCloseMany(project.ids, project.fallback);
+      return true;
+    }
+    return false;
+  };
+
   const contextTab = tabMenu
     ? tabs.find((tab) => tab.id === tabMenu.tabId)
     : undefined;
@@ -773,6 +941,10 @@ function TitleBarComponent({
         left: titleTabContextCloseIds(tabs, contextTab.id, "left"),
       }
     : null;
+  const contextRunKey = contextTab
+    ? runs?.find((run) => run.ids.includes(contextTab.id))?.key
+    : undefined;
+  const contextProject = contextRunKey ? projectActions(contextRunKey) : null;
   const contextMenuItems: ExplorerMenuItem[] = contextTab
     ? [
         {
@@ -801,6 +973,9 @@ function TitleBarComponent({
           label: "Close Tabs to the Left",
           disabled: contextCloseIds?.left.length === 0,
         },
+        ...(contextProject
+          ? [{ kind: "sep" as const }, ...projectMenuItems(contextProject)]
+          : []),
         ...(contextTab.sessionCount > 0 && (onArchiveTab || onDeleteTab)
           ? [
               { kind: "sep" as const },
@@ -839,6 +1014,7 @@ function TitleBarComponent({
   const onPickTabMenu = (id: string) => {
     if (!contextTab || !contextCloseIds) return;
     setTabMenu(null);
+    if (contextProject && pickProjectAction(id, contextProject)) return;
     if (id === "close") {
       onClose(contextTab.id);
       return;
@@ -854,6 +1030,23 @@ function TitleBarComponent({
     if (id === "others" || id === "right" || id === "left") {
       onCloseMany(contextCloseIds[id], contextTab.id);
     }
+  };
+
+  const stubProject = stubMenu ? projectActions(stubMenu.key) : null;
+  const stubMenuItems: ExplorerMenuItem[] = stubProject
+    ? projectMenuItems(stubProject)
+    : [];
+
+  const closeStubMenu = () => {
+    const trigger = stubMenu?.trigger;
+    setStubMenu(null);
+    trigger?.focus();
+  };
+
+  const onPickStubMenu = (id: string) => {
+    if (!stubProject) return;
+    closeStubMenu();
+    pickProjectAction(id, stubProject);
   };
 
   const railClosed = !projectRailOpen;
@@ -999,78 +1192,9 @@ function TitleBarComponent({
               data-title-tab-strip
               className="scrollbar-none flex h-full min-w-0 cursor-default items-center gap-0.5 overflow-x-auto overflow-y-hidden overscroll-none pl-1.5 pr-2.5"
             >
-              {displayed.map((entry) => {
-                const tab = entry.item;
-                const shell = (
-                  <div
-                    ref={(el) => {
-                      if (!entry.closing) setTabNode(tab.id, el);
-                    }}
-                    className={
-                      entry.closing || entry.opening
-                        ? "relative flex h-full w-full min-w-0 overflow-hidden items-center"
-                        : "relative flex h-full w-56 min-w-28 shrink cursor-default items-center"
-                    }
-                    data-title-tab-id={entry.closing ? undefined : tab.id}
-                    data-tab-slot-id={entry.closing ? undefined : tab.id}
-                    data-tauri-drag-region="false"
-                  >
-                    {!entry.closing && paneToTabDrop?.targetTabId === tab.id ? (
-                      <span
-                        data-pane-tab-drop-hint
-                        className={`pointer-events-none absolute inset-y-1 z-50 w-0.5 rounded-full bg-accent shadow-[0_0_8px_var(--color-accent)] ${
-                          paneToTabDrop.position === "before"
-                            ? "left-0"
-                            : "right-0"
-                        }`}
-                      />
-                    ) : null}
-                    <TitleTabItem
-                      tab={tab}
-                      active={!entry.closing && tab.id === activeId}
-                      closable={
-                        !entry.closing && titleTabClosable(tab, tabs.length)
-                      }
-                      canDrag={!entry.closing && canDrag}
-                      sortable={sortable}
-                      onSelect={onSelect}
-                      onClose={onClose}
-                      onPinFile={onPinFile}
-                      onContextMenu={(tabId, event) =>
-                        setTabMenu({
-                          tabId,
-                          x: event.clientX,
-                          y: event.clientY,
-                        })
-                      }
-                      itemRef={
-                        !entry.closing && tab.id === activeId
-                          ? (el) => {
-                              activeTabRef.current = el;
-                            }
-                          : undefined
-                      }
-                    />
-                  </div>
-                );
-                if (entry.closing || entry.opening) {
-                  return (
-                    <TabWidthMotion
-                      key={tab.id}
-                      phase={entry.closing ? "closing" : "opening"}
-                      width={entry.width}
-                      onFinish={() => finishMotion(tab.id)}
-                    >
-                      {shell}
-                    </TabWidthMotion>
-                  );
-                }
-                return (
-                  <div key={tab.id} className="contents">
-                    {shell}
-                  </div>
-                );
-              })}
+              {grouped && runs
+                ? runs.map((run, index) => renderRun(run, index))
+                : displayed.map((entry) => renderEntry(entry))}
             </div>
           </div>
         )}
@@ -1097,8 +1221,130 @@ function TitleBarComponent({
           onClose={() => setTabMenu(null)}
         />
       ) : null}
+      {stubMenu && stubProject ? (
+        <ExplorerMenu
+          x={stubMenu.x}
+          y={stubMenu.y}
+          width={220}
+          items={stubMenuItems}
+          ariaLabel={`Project actions for ${stubProject.name}`}
+          onPick={onPickStubMenu}
+          onClose={closeStubMenu}
+        />
+      ) : null}
     </header>
   );
+
+  /**
+   * One project's tabs, set off from the run before by a gap and folded to a
+   * stub when collapsed; a projectless tab is its own run.
+   */
+  function renderRun(run: ProjectTabRun, index: number) {
+    const key = run.key;
+    const look = key && run.path ? lookOf(run.path) : null;
+    const entries = displayed.slice(run.start, run.end);
+    const live = entries.filter((entry) => !entry.closing);
+    const collapsed = !!key && collapsedGroups.has(key);
+    const fold = key ? () => toggleProjectTabGroup(key) : undefined;
+    return (
+      <Fragment key={key ?? run.ids[0]}>
+        {index > 0 ? <ProjectTabGap /> : null}
+        {look && key && collapsed ? (
+          <ProjectTabStub
+            look={look}
+            count={live.length}
+            harnesses={stubHarnesses(live.map((entry) => entry.item))}
+            busy={live.some((entry) => entry.item.busyHarnesses.length > 0)}
+            done={live.some(
+              (entry) => (entry.item.doneHarnesses?.length ?? 0) > 0,
+            )}
+            onExpand={() => setProjectTabGroupCollapsed(key, false)}
+            onOpenMenu={(x, y, trigger) => setStubMenu({ key, x, y, trigger })}
+          />
+        ) : null}
+        {entries.map((entry) =>
+          !entry.closing && hiddenIds.has(entry.item.id)
+            ? null
+            : renderEntry(entry, look?.color, fold),
+        )}
+      </Fragment>
+    );
+  }
+
+  function renderEntry(
+    entry: (typeof displayed)[number],
+    tint?: string,
+    onFoldProject?: () => void,
+  ) {
+    const tab = entry.item;
+    const shell = (
+      <div
+        ref={(el) => {
+          if (!entry.closing) setTabNode(tab.id, el);
+        }}
+        className={
+          entry.closing || entry.opening
+            ? "relative flex h-full w-full min-w-0 overflow-hidden items-center"
+            : "relative flex h-full w-56 min-w-28 shrink cursor-default items-center"
+        }
+        data-title-tab-id={entry.closing ? undefined : tab.id}
+        data-tab-slot-id={entry.closing ? undefined : tab.id}
+        data-tauri-drag-region="false"
+      >
+        {!entry.closing && paneToTabDrop?.targetTabId === tab.id ? (
+          <span
+            data-pane-tab-drop-hint
+            className={`pointer-events-none absolute inset-y-1 z-50 w-0.5 rounded-full bg-accent shadow-[0_0_8px_var(--color-accent)] ${
+              paneToTabDrop.position === "before" ? "left-0" : "right-0"
+            }`}
+          />
+        ) : null}
+        <TitleTabItem
+          tab={tab}
+          active={!entry.closing && tab.id === activeId}
+          closable={!entry.closing && titleTabClosable(tab, tabs.length)}
+          canDrag={!entry.closing && canDrag}
+          sortable={sortable}
+          tint={tint}
+          onSelect={onSelect}
+          onClose={onClose}
+          onPinFile={onPinFile}
+          onFoldProject={entry.closing ? undefined : onFoldProject}
+          onContextMenu={(tabId, event) =>
+            setTabMenu({
+              tabId,
+              x: event.clientX,
+              y: event.clientY,
+            })
+          }
+          itemRef={
+            !entry.closing && tab.id === activeId
+              ? (el) => {
+                  activeTabRef.current = el;
+                }
+              : undefined
+          }
+        />
+      </div>
+    );
+    if (entry.closing || entry.opening) {
+      return (
+        <TabWidthMotion
+          key={tab.id}
+          phase={entry.closing ? "closing" : "opening"}
+          width={entry.width}
+          onFinish={() => finishMotion(tab.id)}
+        >
+          {shell}
+        </TabWidthMotion>
+      );
+    }
+    return (
+      <div key={tab.id} className="contents">
+        {shell}
+      </div>
+    );
+  }
 }
 
 export const TitleBar = memo(TitleBarComponent);

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   useAnimatedReorder,
   type ReorderExternalDrop,
+  type ReorderSpan,
 } from "./useAnimatedReorder";
 
 const ids = ["sessions", "changes", "explorer"];
@@ -46,6 +47,7 @@ function setup(
   reducedMotion = false,
   axis: "x" | "y" = "x",
   externalDrop?: ReorderExternalDrop<string>,
+  span?: ReorderSpan<string>,
 ) {
   Object.assign(browser, { matchMedia: () => ({ matches: reducedMotion }) });
   const onReorder = vi.fn();
@@ -53,7 +55,7 @@ function setup(
   // Render the real hook to obtain its gesture interface without mocking React.
   // Mount/unmount effects and native click targeting need a browser check.
   function Probe() {
-    reorder = useAnimatedReorder(ids, onReorder, axis, externalDrop);
+    reorder = useAnimatedReorder(ids, onReorder, axis, externalDrop, span);
     return null;
   }
   renderToString(createElement(Probe));
@@ -300,6 +302,39 @@ describe("workspace tab gestures", () => {
     );
     expect(tabs.every((tab) => tab.style.transform === "")).toBe(true);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps a bounded drag inside its span and drops at the span's edge", () => {
+    const span: ReorderSpan<string> = (id) =>
+      id === "sessions" ? { start: 0, end: 1 } : undefined;
+    const { press, tabs, onReorder } = setup(false, "x", undefined, span);
+    press();
+    pointer("pointermove", 300);
+    vi.advanceTimersByTime(16);
+    // The handle stops at the second slot; the third tab never makes room.
+    expect(tabs[0].style.transform).toBe("translate3d(100px, 0, 0)");
+    expect(tabs[1].style.transform).toBe("translate3d(-100px, 0, 0)");
+    expect(tabs[2].style.transform).toBe("translate3d(0px, 0, 0)");
+    pointer("pointerup", 300);
+    vi.runAllTimers();
+    expect(onReorder).toHaveBeenCalledExactlyOnceWith(
+      ["changes", "sessions", "explorer"],
+      "sessions",
+    );
+  });
+
+  it("does not start a drag for an item whose span is only itself", () => {
+    const span: ReorderSpan<string> = (id) =>
+      id === "explorer" ? { start: 2, end: 2 } : undefined;
+    const { press, tabs, onReorder } = setup(false, "x", undefined, span);
+    press(2);
+    pointer("pointermove", 50);
+    vi.advanceTimersByTime(16);
+    expect(tabs[2].dataset.dragging).toBeUndefined();
+    expect(tabs.every((tab) => tab.style.transform === "")).toBe(true);
+    pointer("pointerup", 50);
+    vi.runAllTimers();
+    expect(onReorder).not.toHaveBeenCalled();
   });
 
   it("hands a drag to an external target without reordering", () => {

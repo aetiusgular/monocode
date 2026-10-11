@@ -715,6 +715,18 @@ describe("settings pages", () => {
     expect(hidden?.getAttribute("aria-checked")).toBe("true");
   });
 
+  it("lists tabs from every project by default and lets users turn it off", async () => {
+    await render("appearance");
+    const control = container.querySelector<HTMLButtonElement>(
+      '[role="switch"][aria-label="Tabs from every project"]',
+    )!;
+
+    expect(control.getAttribute("aria-checked")).toBe("true");
+    await act(async () => control.click());
+    expect(control.getAttribute("aria-checked")).toBe("false");
+    expect(localStorage.getItem("monocode.tabsAcrossProjects")).toBe("0");
+  });
+
   it("sets interface scale from a menu instead of a live slider", async () => {
     await render("appearance");
     const row = container.querySelector('[data-setting-id="interface-scale"]')!;

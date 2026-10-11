@@ -377,6 +377,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "sidebar compact icons hidden navigation layout",
   },
   {
+    id: "tabs-across-projects",
+    section: "appearance",
+    label: "Tabs from every project",
+    keywords: "title bar tab strip projects group colour collapse layout",
+  },
+  {
     id: "show-excluded-files",
     section: "appearance",
     label: "Show excluded files",

@@ -207,14 +207,14 @@ describe("keybinding overrides", () => {
   });
 
   it("persists a custom shortcut and matches only that combination", () => {
-    saveKeybindingOverride("App: Search", { shortcut: "Command+Shift+KeyM" });
+    saveKeybindingOverride("App: Search", { shortcut: "Command+Shift+KeyY" });
     expect(localStorage.getItem(KEYBINDING_OVERRIDES_KEY)).toBe(
-      '{"App: Search":{"shortcut":"Command+Shift+KeyM"}}',
+      '{"App: Search":{"shortcut":"Command+Shift+KeyY"}}',
     );
     expect(
       keybindingPressed(
         "App: Search",
-        key("KeyM", { metaKey: true, shiftKey: true }),
+        key("KeyY", { metaKey: true, shiftKey: true }),
         true,
       ),
     ).toBe(true);
@@ -222,7 +222,7 @@ describe("keybinding overrides", () => {
       keybindingPressed("App: Search", key("KeyK", { metaKey: true }), true),
     ).toBe(false);
     expect(
-      matchCustomKeybinding(key("KeyM", { metaKey: true, shiftKey: true })),
+      matchCustomKeybinding(key("KeyY", { metaKey: true, shiftKey: true })),
     ).toBe("App: Search");
 
     saveKeybindingOverride("App: Search", {});
@@ -595,7 +595,9 @@ describe("collapsed project rail setting", () => {
 
 describe("settings navigation", () => {
   it("lists every section under exactly one rail group", () => {
-    const groups = settingsSectionsByGroup();
+    // Off macOS, so the list reads the same on every machine; the Mac-only
+    // Voice section has its own test below.
+    const groups = settingsSectionsByGroup(false);
     expect(groups.map((group) => group.label)).toEqual([
       "App",
       "Agents",
