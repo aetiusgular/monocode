@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { HARNESSES, type HarnessId } from "../../../features/sessions/model/session";
+import {
+  HARNESSES,
+  type HarnessId,
+} from "../../../features/sessions/model/session";
 import {
   harnessSupportsAttachments,
   harnessSupportsConnectorSwitches,
@@ -24,14 +27,26 @@ const except = (ids: HarnessId[]) => (id: HarnessId) => !ids.includes(id);
 
 // The literal checks the table replaced, as they read at 891b98e and v0.12.0.
 // Reading the table must change no behaviour.
-const BEFORE: [string, (id: HarnessId) => boolean, (id: HarnessId) => boolean][] = [
+const BEFORE: [
+  string,
+  (id: HarnessId) => boolean,
+  (id: HarnessId) => boolean,
+][] = [
   ["attachments", harnessSupportsAttachments, except(["fx"])],
   ["extraDirs", harnessSupportsExtraDirs, only(["claude", "codex"])],
-  ["connectorSwitches", harnessSupportsConnectorSwitches, only(["claude", "codex"])],
+  [
+    "connectorSwitches",
+    harnessSupportsConnectorSwitches,
+    only(["claude", "codex"]),
+  ],
   ["toolAccess", harnessSupportsToolAccess, only(["claude", "codex"])],
   // Devin joined with v0.12.0 and runs its own commands; the old literal
   // check missed it, and chatSkills.test.ts caught that.
-  ["skillSwitches", harnessSupportsSkillSwitches, except(["pi", "omp", "devin"])],
+  [
+    "skillSwitches",
+    harnessSupportsSkillSwitches,
+    except(["pi", "omp", "devin"]),
+  ],
   ["research", harnessSupportsResearch, only(["claude", "codex"])],
   ["pluginSwitches", harnessSupportsPluginSwitches, only(["claude"])],
   [
@@ -48,11 +63,14 @@ describe("harness capability table", () => {
     }
   });
 
-  it.each(BEFORE)("keeps %s as it was for every harness", (_name, now, then) => {
-    for (const id of HARNESSES) {
-      expect(now(id), id).toBe(then(id));
-    }
-  });
+  it.each(BEFORE)(
+    "keeps %s as it was for every harness",
+    (_name, now, then) => {
+      for (const id of HARNESSES) {
+        expect(now(id), id).toBe(then(id));
+      }
+    },
+  );
 
   it("gives a harness it does not know the baseline", () => {
     const unknown = "newharness" as HarnessId;

@@ -59,7 +59,15 @@ export function modelsToList(
   return rows;
 }
 
-function ModelRow({ id, name, harnessLabel }: { id: string; name: string; harnessLabel: string }) {
+function ModelRow({
+  id,
+  name,
+  harnessLabel,
+}: {
+  id: string;
+  name: string;
+  harnessLabel: string;
+}) {
   const traits = modelTraits(id);
   // What the model gets without your entry, for the "Default" choices.
   const defaults = modelTraits(id, {});
@@ -115,7 +123,13 @@ function ModelRow({ id, name, harnessLabel }: { id: string; name: string; harnes
             }
           >
             <option value="">
-              Default ({defaults.vision === undefined ? "unknown" : defaults.vision ? "yes" : "no"})
+              Default (
+              {defaults.vision === undefined
+                ? "unknown"
+                : defaults.vision
+                  ? "yes"
+                  : "no"}
+              )
             </option>
             <option value="yes">Reads images</option>
             <option value="no">Text only</option>
@@ -175,7 +189,8 @@ function ModelRow({ id, name, harnessLabel }: { id: string; name: string; harnes
                 return;
               }
               const value = sanitizeContextWindow(Number(raw));
-              if (value !== undefined) saveTraitOverride(id, { contextWindow: value });
+              if (value !== undefined)
+                saveTraitOverride(id, { contextWindow: value });
             }}
             className={`h-7 w-24 rounded-md border bg-transparent px-1.5 text-[12px] text-content ${windowInvalid ? "border-red-400/60" : "border-content/10"}`}
           />
@@ -217,9 +232,9 @@ export function ModelsPage() {
   return (
     <div className="flex flex-col gap-3" data-models-page>
       <p className="text-[12px] text-content/50">
-        What MonoCode may assume about each model. A local model's catalog
-        entry is a default and can be wrong, so set its traits here. Claude
-        models are known and not listed. Nothing here is sent anywhere.
+        What MonoCode may assume about each model. A local model's catalog entry
+        is a default and can be wrong, so set its traits here. Claude models are
+        known and not listed. Nothing here is sent anywhere.
       </p>
       {/* [lane-1] models-page */}
       {/* [lane-2] models-page */}

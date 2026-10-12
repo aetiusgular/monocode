@@ -4,7 +4,10 @@ import {
   setHarnessModels,
   type AgentModel,
 } from "../../sessions/model/models";
-import { parseCodexModelList, parseVision } from "../../../integrations/harness/providers/codex/codexCatalog";
+import {
+  parseCodexModelList,
+  parseVision,
+} from "../../../integrations/harness/providers/codex/codexCatalog";
 import {
   clearTraitOverride,
   loadTraitOverrides,
@@ -80,7 +83,9 @@ describe("model traits", () => {
 
   it("puts your settings above the catalog", () => {
     // Codex fallback metadata on a local home claims image input.
-    setHarnessModels("codex", [{ ...LOCAL, vision: true, contextWindow: 272_000 }]);
+    setHarnessModels("codex", [
+      { ...LOCAL, vision: true, contextWindow: 272_000 },
+    ]);
     expect(modelTraits(LOCAL.id).source.vision).toBe("catalog");
     saveTraitOverride(LOCAL.id, {
       vision: false,
@@ -116,7 +121,9 @@ describe("model traits", () => {
     expect(loadTraitOverrides()[LOCAL.id]).toEqual({ slow: true });
     clearTraitOverride(LOCAL.id);
     expect(loadTraitOverrides()[LOCAL.id]).toBeUndefined();
-    expect(JSON.parse(localStorage.getItem(MODEL_TRAITS_KEY) ?? "{}")).toEqual({});
+    expect(JSON.parse(localStorage.getItem(MODEL_TRAITS_KEY) ?? "{}")).toEqual(
+      {},
+    );
   });
 
   it("keeps working when storage throws", () => {
@@ -155,7 +162,10 @@ describe("stored traits read back", () => {
       list: [1, 2],
     });
     expect(Object.keys(clean)).toEqual(["codex:a"]);
-    expect(clean["codex:a"]).toEqual({ tools: "reliable", contextWindow: 16_384 });
+    expect(clean["codex:a"]).toEqual({
+      tools: "reliable",
+      contextWindow: 16_384,
+    });
   });
 
   it("keeps at most the bound", () => {

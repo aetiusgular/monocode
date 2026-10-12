@@ -76,7 +76,8 @@ export function isToolCalling(value: unknown): value is ToolCalling {
 export function sanitizeContextWindow(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   const whole = Math.floor(value);
-  if (whole < MIN_CONTEXT_WINDOW || whole > MAX_CONTEXT_WINDOW) return undefined;
+  if (whole < MIN_CONTEXT_WINDOW || whole > MAX_CONTEXT_WINDOW)
+    return undefined;
   return whole;
 }
 
