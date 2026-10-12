@@ -262,6 +262,7 @@ import { SuggestedPromptChips as SuggestedPromptChips_l2 } from "../../suggested
 import type { SuggestedPrompt as SuggestedPrompt_l2 } from "../../suggested-prompts/model/suggestions";
 // [lane-3] imports
 // [lane-4] imports
+import { helperRouteForSession as helperRouteForSession_l4 } from "../../../integrations/harness/core/helperPrompt";
 // [lane-5] imports
 
 type Props = {
@@ -1942,6 +1943,15 @@ export function Composer({
   };
   // [lane-3] body
   // [lane-4] body
+  // F6: a commit before a branch switch is written by this session's model.
+  const helperRoute_l4 = helperRouteForSession_l4({
+    harness,
+    model,
+    modelSettings,
+    providerAccountId,
+    cwd,
+    ...(sessionId ? { id: sessionId } : {}),
+  });
   // [lane-5] body
   return (
     <div
@@ -2189,6 +2199,7 @@ export function Composer({
                     <BranchPicker
                       cwd={executionCwd}
                       branch={branch}
+                      textHarness={helperRoute_l4}
                       enabled={enabled && !busy}
                       onChange={onBranchChange}
                       onClose={() => ref.current?.focus()}
@@ -2216,6 +2227,7 @@ export function Composer({
                   <BranchPicker
                     cwd={executionCwd}
                     branch={branch}
+                    textHarness={helperRoute_l4}
                     enabled={enabled && !busy}
                     onChange={onBranchChange}
                     onClose={() => ref.current?.focus()}

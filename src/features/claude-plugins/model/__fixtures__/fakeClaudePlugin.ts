@@ -59,6 +59,17 @@ type Options = {
   fail?: string;
   /** `disable` of these ids fails the way a required synced plugin does. */
   required?: string[];
+  /** Marketplaces `marketplace list --json` reports. */
+  marketplaces?: { name: string; source: string; repo?: string }[];
+  /** What `list --json --available` offers. */
+  available?: {
+    pluginId: string;
+    name: string;
+    marketplaceName: string;
+    description?: string;
+  }[];
+  /** Plugin ids installed by running a command, with that command. */
+  commandSources?: Record<string, string>;
 };
 
 const result = (value: Record<string, unknown>, success: boolean) => ({
@@ -86,7 +97,10 @@ export function fakeClaudePlugin(runClaudePlugin: Mock, options: Options = {}) {
         : entry.enabled,
     ]),
   );
-  const fake = { fail: options.fail, plugins, on };
+  const marketplaces = (options.marketplaces ?? []).map((entry) => ({
+    ...entry,
+  }));
+  const fake = { fail: options.fail, plugins, on, marketplaces };
   runClaudePlugin.mockImplementation(
     async (args: string[], call: { cwd?: string; accountId?: string } = {}) => {
       if (fake.fail) throw new Error(fake.fail);
@@ -103,7 +117,7 @@ export function fakeClaudePlugin(runClaudePlugin: Mock, options: Options = {}) {
         return {
           stdout: JSON.stringify(
             args.includes("--available")
-              ? { installed: list, available: [] }
+              ? { installed: list, available: options.available ?? [] }
               : list,
           ),
           stderr: "",
@@ -170,6 +184,137 @@ export function fakeClaudePlugin(runClaudePlugin: Mock, options: Options = {}) {
         on.set(key, want);
         return result(
           { command: verb, outcome: "ok", message: "done", pluginId: id },
+          true,
+        );
+      }
+      if (verb === "marketplace") {
+        const [, , action] = args;
+        const name = args[args.length - 1];
+        const known = marketplaces.some((entry) => entry.name === name);
+        if (action === "list") {
+          return {
+            stdout: JSON.stringify(marketplaces),
+            stderr: "",
+            success: true,
+          };
+        }
+        if (action === "add") {
+          const added = name.split("/").pop() ?? name;
+          marketplaces.push({ name: added, source: "github", repo: name });
+          return result(
+            {
+              command: "marketplace-add",
+              outcome: "ok",
+              marketplace: added,
+              message: `Successfully added marketplace: ${added}`,
+            },
+            true,
+          );
+        }
+        if (!known) {
+          return result(
+            {
+              command: `marketplace-${action}`,
+              outcome: "failed",
+              marketplace: name,
+              message: `Marketplace '${name}' not found`,
+              failureCode: "not_configured",
+            },
+            false,
+          );
+        }
+        if (action === "remove") {
+          marketplaces.splice(
+            marketplaces.findIndex((entry) => entry.name === name),
+            1,
+          );
+          for (let i = plugins.length - 1; i >= 0; i--) {
+            if (plugins[i].id.endsWith(`@${name}`)) plugins.splice(i, 1);
+          }
+        }
+        return result(
+          {
+            command: `marketplace-${action}`,
+            outcome: "ok",
+            marketplace: name,
+            message: `Successfully ${action}d marketplace: ${name}`,
+          },
+          true,
+        );
+      }
+      if (verb === "install" || verb === "update" || verb === "uninstall") {
+        const id = args[args.length - 1];
+        const scope = args[3];
+        const hashAt = args.indexOf("--accept-command");
+        const command = options.commandSources?.[id];
+        const sha256 = "a".repeat(64);
+        if (
+          verb !== "uninstall" &&
+          command &&
+          (hashAt < 0 || args[hashAt + 1] !== sha256)
+        ) {
+          return {
+            stdout: `"${id}" is installed by running a command:\n  ${command}\n${JSON.stringify(
+              {
+                command: verb,
+                outcome: "failed",
+                plugin: id,
+                scope,
+                message: `${id} is installed by running a command on this machine that has not been reviewed yet, so it was not run.`,
+                failureCode: "command_source_refused",
+                shownCommand: {
+                  kind: "command_source",
+                  pluginId: id,
+                  command,
+                  mode: "copy",
+                  catalogRevision: "sha256:x",
+                  sha256,
+                },
+              },
+            )}\n`,
+            stderr: "",
+            success: false,
+          };
+        }
+        if (verb === "install") {
+          plugins.push({
+            id,
+            version: "1.0.0",
+            scope,
+            enabled: true,
+            installPath: `/fake/cache/${id}`,
+            ...(scope === "user" ? {} : { projectPath: call.cwd }),
+          });
+          on.set(`${id}|${scope}`, true);
+        }
+        if (verb === "uninstall") {
+          const at = plugins.findIndex(
+            (entry) => entry.id === id && entry.scope === scope,
+          );
+          if (at < 0) {
+            return result(
+              {
+                command: verb,
+                outcome: "failed",
+                plugin: id,
+                scope,
+                message: `Plugin "${id}" not found in installed plugins`,
+                failureCode: "not_installed",
+              },
+              false,
+            );
+          }
+          plugins.splice(at, 1);
+        }
+        return result(
+          {
+            command: verb,
+            outcome: "ok",
+            plugin: id,
+            pluginId: id,
+            scope,
+            message: `Successfully ${verb === "update" ? "updated" : `${verb}ed`} plugin: ${id}`,
+          },
           true,
         );
       }

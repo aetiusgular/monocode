@@ -3040,6 +3040,15 @@ fn github_pr_action_args(repo: &str, number: i64, action: &str) -> Result<Vec<St
         "merge" => vec!["pr", "merge", &number, "--repo", &repo, "--merge"],
         "squash" => vec!["pr", "merge", &number, "--repo", &repo, "--squash"],
         "rebase" => vec!["pr", "merge", &number, "--repo", &repo, "--rebase"],
+        // #33: GitHub merges once the required checks pass.
+        "auto-merge" => vec!["pr", "merge", &number, "--repo", &repo, "--auto", "--merge"],
+        "auto-squash" => vec![
+            "pr", "merge", &number, "--repo", &repo, "--auto", "--squash",
+        ],
+        "auto-rebase" => vec![
+            "pr", "merge", &number, "--repo", &repo, "--auto", "--rebase",
+        ],
+        "disable-auto" => vec!["pr", "merge", &number, "--repo", &repo, "--disable-auto"],
         "draft" => vec!["pr", "ready", &number, "--repo", &repo, "--undo"],
         "ready" => vec!["pr", "ready", &number, "--repo", &repo],
         "close" => vec!["pr", "close", &number, "--repo", &repo],
@@ -6162,8 +6171,226 @@ pub async fn open_path_with_default_app(path: String) -> Result<(), String> {
     .map_err(|error| error.to_string())?
 }
 
+// ---- #32: the diff a code review reads ----------------------------------
+
+/// Most bytes of patch a review is built from. The rest is cut and reported.
+const REVIEW_PATCH_MAX: usize = 2 * 1024 * 1024;
+/// Most untracked files a review includes, and the largest one.
+const REVIEW_UNTRACKED_MAX: usize = 50;
+const REVIEW_UNTRACKED_FILE_MAX: u64 = 256 * 1024;
+/// Git's empty tree, for a repository with no commits yet.
+const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitReviewPatch {
+    /// Unified diff of the working tree against HEAD, untracked text files
+    /// included as new files.
+    pub patch: String,
+    /// True when the patch was cut at the size limit or files were left out.
+    pub truncated: bool,
+    /// Untracked files left out: too many, too large, binary or not regular.
+    pub skipped: Vec<String>,
+}
+
+fn review_relative_ok(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains('\\')
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+/// A new-file patch for one untracked text file, or None when it is not a
+/// small regular text file inside the repository.
+fn untracked_file_patch(root: &Path, relative: &str) -> Option<String> {
+    if !review_relative_ok(relative) {
+        return None;
+    }
+    let mut current = root.to_path_buf();
+    for part in relative.split('/') {
+        current.push(part);
+        if std::fs::symlink_metadata(&current)
+            .map(|meta| meta.file_type().is_symlink())
+            .unwrap_or(true)
+        {
+            return None;
+        }
+    }
+    let meta = std::fs::metadata(&current).ok()?;
+    if !meta.is_file() || meta.len() > REVIEW_UNTRACKED_FILE_MAX {
+        return None;
+    }
+    let bytes = std::fs::read(&current).ok()?;
+    if bytes.contains(&0) {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let lines: Vec<&str> = text.lines().collect();
+    let mut patch = format!(
+        "diff --git a/{relative} b/{relative}\nnew file mode 100644\n--- /dev/null\n+++ b/{relative}\n@@ -0,0 +1,{} @@\n",
+        lines.len()
+    );
+    for line in lines {
+        patch.push('+');
+        patch.push_str(line);
+        patch.push('\n');
+    }
+    Some(patch)
+}
+
+pub(crate) fn git_review_patch_for(root: &Path) -> Result<GitReviewPatch, String> {
+    if git_run(root, &["rev-parse", "--is-inside-work-tree"]).is_none() {
+        return Err("This folder is not a git repository".into());
+    }
+    let base = if git_run(root, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_some() {
+        "HEAD"
+    } else {
+        EMPTY_TREE
+    };
+    let mut patch = git_run(
+        root,
+        &[
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "-U3",
+            base,
+            "--",
+            ".",
+        ],
+    )
+    .unwrap_or_default();
+    let mut truncated = false;
+    let mut skipped = Vec::new();
+    let untracked = git_output(root, &["ls-files", "-z", "--others", "--exclude-standard"])
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_default();
+    for (index, relative) in untracked.split('\0').filter(|p| !p.is_empty()).enumerate() {
+        if index >= REVIEW_UNTRACKED_MAX {
+            truncated = true;
+            skipped.push(relative.to_string());
+            continue;
+        }
+        match untracked_file_patch(root, relative) {
+            Some(file) => {
+                if !patch.is_empty() && !patch.ends_with('\n') {
+                    patch.push('\n');
+                }
+                patch.push_str(&file);
+            }
+            None => skipped.push(relative.to_string()),
+        }
+    }
+    if patch.len() > REVIEW_PATCH_MAX {
+        let mut cut = REVIEW_PATCH_MAX;
+        while !patch.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        // Cut at a file boundary when one is near, so no file is half shown.
+        if let Some(start) = patch[..cut].rfind("\ndiff --git ") {
+            cut = start + 1;
+        }
+        patch.truncate(cut);
+        truncated = true;
+    }
+    Ok(GitReviewPatch {
+        patch,
+        truncated,
+        skipped,
+    })
+}
+
+/// The working tree's changes against HEAD, for a code review (#32).
+#[tauri::command]
+pub async fn git_review_patch(cwd: String) -> Result<GitReviewPatch, String> {
+    tauri::async_runtime::spawn_blocking(move || git_review_patch_for(&expand_home(&cwd)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
+
+    fn review_repo(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("monocode-review-{label}-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        git_checked(&root, &["init", "-b", "main"]).unwrap();
+        root
+    }
+
+    fn review_commit(root: &Path) {
+        git_checked(root, &["add", "-A"]).unwrap();
+        git_checked(
+            root,
+            &[
+                "-c",
+                "user.name=T",
+                "-c",
+                "user.email=t@example.com",
+                "commit",
+                "-m",
+                "c",
+            ],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn review_patch_holds_tracked_and_untracked_changes() {
+        let root = review_repo("tracked");
+        std::fs::write(root.join("a.txt"), "one\ntwo\n").unwrap();
+        std::fs::write(root.join(".gitignore"), "secret.env\n").unwrap();
+        review_commit(&root);
+        std::fs::write(root.join("a.txt"), "one\nTWO\n").unwrap();
+        std::fs::write(root.join("new file.txt"), "hello\n").unwrap();
+        std::fs::write(root.join("secret.env"), "TOKEN=x\n").unwrap();
+        std::fs::write(root.join("blob.bin"), b"a\0b").unwrap();
+        let review = git_review_patch_for(&root).unwrap();
+        assert!(review.patch.contains("+TWO"));
+        assert!(review.patch.contains("+++ b/new file.txt"));
+        assert!(review.patch.contains("+hello"));
+        assert!(!review.patch.contains("TOKEN"));
+        assert_eq!(review.skipped, vec!["blob.bin"]);
+        assert!(!review.truncated);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn review_patch_works_before_the_first_commit() {
+        let root = review_repo("empty");
+        std::fs::write(root.join("first.txt"), "x\n").unwrap();
+        git_checked(&root, &["add", "first.txt"]).unwrap();
+        std::fs::write(root.join("loose.txt"), "y\n").unwrap();
+        let review = git_review_patch_for(&root).unwrap();
+        assert!(review.patch.contains("+++ b/first.txt"));
+        assert!(review.patch.contains("+++ b/loose.txt"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn review_patch_skips_links_and_refuses_non_repositories() {
+        let root = review_repo("links");
+        std::fs::write(root.join("a.txt"), "a\n").unwrap();
+        review_commit(&root);
+        let outside =
+            std::env::temp_dir().join(format!("monocode-review-outside-{}", Uuid::new_v4()));
+        std::fs::write(&outside, "outside secret\n").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, root.join("link.txt")).unwrap();
+        let review = git_review_patch_for(&root).unwrap();
+        assert!(!review.patch.contains("outside secret"));
+        assert!(!review_relative_ok("../x"));
+        assert!(!review_relative_ok("/etc/passwd"));
+        let plain = std::env::temp_dir().join(format!("monocode-review-plain-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&plain).unwrap();
+        assert!(git_review_patch_for(&plain).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(plain).unwrap();
+        std::fs::remove_file(outside).unwrap();
+    }
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::Arc;
@@ -8414,6 +8641,16 @@ mod tests {
             ["pr", "reopen", "42", "--repo", "acme/web"]
         );
         assert!(github_pr_action_args("acme/web", 42, "delete").is_err());
+        assert_eq!(
+            github_pr_action_args("acme/web", 42, "auto-squash").unwrap(),
+            ["pr", "merge", "42", "--repo", "acme/web", "--auto", "--squash"]
+        );
+        assert_eq!(
+            github_pr_action_args("acme/web", 42, "disable-auto").unwrap(),
+            ["pr", "merge", "42", "--repo", "acme/web", "--disable-auto"]
+        );
+        assert!(github_pr_action_args("acme/web", 42, "auto-merge --admin").is_err());
+        assert!(github_pr_action_args("acme/web", 0, "auto-merge").is_err());
         assert!(github_pr_action_args("acme/web", 0, "merge").is_err());
         assert!(github_pr_action_args("invalid", 42, "merge").is_err());
     }

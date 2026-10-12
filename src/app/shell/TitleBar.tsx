@@ -38,6 +38,7 @@ import { TabWidthMotion } from "./ClosingTab";
 import { FileTypeIcon } from "../../features/files/ui/FileTypeIcon";
 import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getPopOutHost, POP_OUT_NOTE } from "../model/windowTransfer";
 import { TerminalSpinner } from "../../features/sessions/ui/TerminalSpinner";
 import { TabLabel } from "../../shared/ui/TabLabel";
 import { WindowControls } from "./WindowControls";
@@ -945,6 +946,9 @@ function TitleBarComponent({
     ? runs?.find((run) => run.ids.includes(contextTab.id))?.key
     : undefined;
   const contextProject = contextRunKey ? projectActions(contextRunKey) : null;
+  const popOutHost = getPopOutHost();
+  const popOut =
+    contextTab && popOutHost ? popOutHost.check(contextTab.id) : null;
   const contextMenuItems: ExplorerMenuItem[] = contextTab
     ? [
         {
@@ -973,6 +977,18 @@ function TitleBarComponent({
           label: "Close Tabs to the Left",
           disabled: contextCloseIds?.left.length === 0,
         },
+        ...(popOut
+          ? [
+              { kind: "sep" as const },
+              {
+                kind: "item" as const,
+                id: "pop-out",
+                label: "Move to New Window",
+                disabled: !popOut.ok,
+                description: popOut.ok ? POP_OUT_NOTE : popOut.reason,
+              },
+            ]
+          : []),
         ...(contextProject
           ? [{ kind: "sep" as const }, ...projectMenuItems(contextProject)]
           : []),
@@ -1017,6 +1033,12 @@ function TitleBarComponent({
     if (contextProject && pickProjectAction(id, contextProject)) return;
     if (id === "close") {
       onClose(contextTab.id);
+      return;
+    }
+    if (id === "pop-out") {
+      void popOutHost?.popOut(contextTab.id).then((result) => {
+        if (!result.ok) console.warn("Move to New Window:", result.reason);
+      });
       return;
     }
     if (id === "archive") {

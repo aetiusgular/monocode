@@ -1,5 +1,38 @@
 import { invoke } from "@tauri-apps/api/core";
 import { parseClaudeMcpList, type McpConnection } from "./mcp";
+import { selectedProviderAccountId } from "../../providers/model/providerAccounts";
+import { runtimeProviderBinaryPath } from "../../providers/model/providerBinaryPaths";
+
+/**
+ * #7: the Codex home a session in this project runs on, so Settings → MCP
+ * lists that home's servers: the project's Codex account, and the configured
+ * Codex binary, which may be a wrapper script that sets `CODEX_HOME`.
+ */
+export function discoverArgs(cwd: string): {
+  cwd: string;
+  codexAccountId?: string;
+  codexBinary?: string;
+} {
+  let codexAccountId: string | undefined;
+  let codexBinary: string | undefined;
+  try {
+    const selected = selectedProviderAccountId("codex", cwd);
+    // The default account runs on the default home: nothing to send.
+    codexAccountId = selected && selected !== "default" ? selected : undefined;
+  } catch {
+    codexAccountId = undefined;
+  }
+  try {
+    codexBinary = runtimeProviderBinaryPath("codex") ?? undefined;
+  } catch {
+    codexBinary = undefined;
+  }
+  return {
+    cwd,
+    ...(codexAccountId ? { codexAccountId } : {}),
+    ...(codexBinary ? { codexBinary } : {}),
+  };
+}
 
 export type McpServerRow = McpConnection & { status: string };
 
@@ -72,7 +105,10 @@ export function loadMcpSettings(
 
 async function fetchMcpSettings(cwd: string): Promise<McpSettingsSnapshot> {
   try {
-    const configured = await invoke<McpConnection[]>("mcp_discover", { cwd });
+    const configured = await invoke<McpConnection[]>(
+      "mcp_discover",
+      discoverArgs(cwd),
+    );
     const servers = configured.map((server) => ({
       ...server,
       status: server.enabled === false ? "Disabled" : "Configured",

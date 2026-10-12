@@ -1,11 +1,11 @@
-import type { HarnessId } from "../../sessions/model/session";
+import type { HelperTarget } from "../../../integrations/harness/core/helperPrompt";
 import type { GitFileDiffKind, GitHistoryCommit } from "../../../platform/tauri/fs";
 import { GitChangesPanel } from "./GitChangesPanel";
 
 type Props = {
   cwd: string;
   enabled: boolean;
-  textHarness?: HarnessId;
+  textHarness?: HelperTarget;
   selectedPath?: string;
   selectedKind?: GitFileDiffKind;
   selectedSha?: string;

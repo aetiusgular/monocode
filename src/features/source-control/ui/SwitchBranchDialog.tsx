@@ -3,6 +3,7 @@ import { Loader, WandSparkles, X } from "../../../shared/ui/icons";
 import { useContext, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { generateCommitMessage } from "../../../integrations/harness";
+import type { HelperTarget } from "../../../integrations/harness/core/helperPrompt";
 import { LAYER } from "../../../shared/lib/layers";
 import { MOD } from "../../../platform/tauri/platform";
 
@@ -17,10 +18,13 @@ type Props = {
   onStash: () => void;
   onCommit: (message: string) => void;
   onCancel: () => void;
+  /** The session whose model writes the commit message (F6). */
+  textHarness?: HelperTarget;
 };
 
 export function SwitchBranchDialog({
   cwd,
+  textHarness,
   branch,
   creating = false,
   busy,
@@ -78,7 +82,7 @@ export function SwitchBranchDialog({
     try {
       const generated = await generateCommitMessage(
         cwd,
-        undefined,
+        textHarness,
         controller.signal,
       );
       if (!controller.signal.aborted) setMessage(generated);

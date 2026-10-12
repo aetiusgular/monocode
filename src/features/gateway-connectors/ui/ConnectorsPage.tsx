@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ToolLoadingSetting } from "./ConnectorTools";
 import { RefreshCw, Search } from "../../../shared/ui/icons";
 import { getCachedMcpSettings } from "../../settings/model/mcpSettingsCache";
 import { knownReportedMcpServerNames } from "../../session-tools/model/reportedMcpServers";
@@ -361,6 +362,7 @@ export function ConnectorsPage({ cwd }: { cwd: string }) {
         </ul>
       )}
 
+      <ToolLoadingSetting />
       <p className="pt-1 text-[12px] leading-relaxed text-content/40">
         Connectors run through Docker's MCP gateway, so Docker Desktop must be
         running. Each one is tested with a gateway dry run. Only connectors

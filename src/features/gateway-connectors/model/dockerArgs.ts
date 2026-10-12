@@ -208,6 +208,45 @@ export function profileConfigDelArgs(id: string, key: string): string[] {
  * tools, then exits. It may pull an image first; it never starts a server
  * for use.
  */
+/**
+ * A tool name the gateway's allowlist can name: `<server>.<tool>`, split at
+ * the first dot, so the server part may not contain one.
+ */
+const TOOL_NAME = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/;
+
+export const isToolName = (value: string): boolean => TOOL_NAME.test(value);
+
+/** Whether a server's tools can be switched one by one. */
+export const canSwitchTools = (server: string): boolean =>
+  isServerName(server) && !server.includes(".");
+
+/** One tool on or off in one of MonoCode's own profiles. */
+export function profileToolArgs(
+  id: string,
+  server: string,
+  tool: string,
+  on: boolean,
+): string[] {
+  check(isOwnProfileId(id), "MonoCode profile id", id);
+  check(canSwitchTools(server), "server name", server);
+  check(isToolName(tool), "tool name", tool);
+  return [
+    "mcp",
+    "profile",
+    "tools",
+    id,
+    on ? "--enable" : "--disable",
+    `${server}.${tool}`,
+  ];
+}
+
+/** Every tool of a server back on. There is no "all off" from here. */
+export function profileToolsResetArgs(id: string, server: string): string[] {
+  check(isOwnProfileId(id), "MonoCode profile id", id);
+  check(canSwitchTools(server), "server name", server);
+  return ["mcp", "profile", "tools", id, "--enable-all", server];
+}
+
 export function gatewayDryRunArgs(id: string): string[] {
   check(isOwnProfileId(id), "MonoCode profile id", id);
   return ["mcp", "gateway", "run", "--profile", id, "--dry-run", "--verbose"];
@@ -322,6 +361,22 @@ function allowedShape(args: readonly string[]): string | null {
     if (is("profile", "server", "remove", "*", "*"))
       return isOwnProfileId(args[4]) && isServerName(args[5])
         ? "profile-server-remove"
+        : null;
+    if (
+      (is("profile", "tools", "*", "--enable", "*") ||
+        is("profile", "tools", "*", "--disable", "*")) &&
+      isOwnProfileId(args[3])
+    ) {
+      const at = args[5].indexOf(".");
+      return at > 0 &&
+        canSwitchTools(args[5].slice(0, at)) &&
+        isToolName(args[5].slice(at + 1))
+        ? "profile-tools"
+        : null;
+    }
+    if (is("profile", "tools", "*", "--enable-all", "*"))
+      return isOwnProfileId(args[3]) && canSwitchTools(args[5])
+        ? "profile-tools-reset"
         : null;
     if (verb === "config" && isOwnProfileId(args[3] ?? "")) {
       const tail = args.slice(4);

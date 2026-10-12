@@ -208,6 +208,7 @@ import { parseRemotePath, remotePath, remoteProjectFor } from "../../features/co
 // [lane-3] imports
 import { exportConversationFromMenu as exportConversationFromMenu_l3 } from "../../features/conversation-export/model/exportConversation";
 // [lane-4] imports
+import type { HelperTarget as HelperTarget_l4 } from "../../integrations/harness/core/helperPrompt";
 // [lane-5] imports
 
 const MIN_WIDTH = 260;
@@ -312,7 +313,7 @@ type Props = {
   selectedDiffPath?: string;
   selectedDiffKind?: GitFileDiffKind;
   selectedCommitSha?: string;
-  textHarness?: HarnessId;
+  textHarness?: HarnessId | HelperTarget_l4;
   recents?: RecentProject[];
   busyProjectPaths?: Iterable<string>;
   liveAgents?: LiveAgent[];

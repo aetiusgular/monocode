@@ -354,6 +354,11 @@ export function buildClaudeSpawnArgs(input: {
   appendSystemPromptFile?: string;
   // [lane-3] spawn-input
   // [lane-4] spawn-input
+  /**
+   * #42: how connector tool definitions load, as `ENABLE_TOOL_SEARCH`.
+   * Unset leaves the variable alone.
+   */
+  toolLoading?: "auto" | "upfront";
   // [lane-5] spawn-input
 }): string[] {
   const args = [
@@ -388,7 +393,16 @@ export function buildClaudeSpawnArgs(input: {
     args.push(`--setting-sources=${CLAUDE_SETTING_SOURCES}`);
     args.push(
       "--settings",
-      JSON.stringify({ ...settings, env: CLAUDE_SESSION_ENV }),
+      JSON.stringify({
+        ...settings,
+        env: input.toolLoading
+          ? {
+              ...CLAUDE_SESSION_ENV,
+              ENABLE_TOOL_SEARCH:
+                input.toolLoading === "upfront" ? "false" : "auto",
+            }
+          : CLAUDE_SESSION_ENV,
+      }),
     );
   }
   if (input.model) args.push("--model", input.model);
@@ -1314,6 +1328,8 @@ export function claudeSettingsKey(input: {
   // [lane-2] settings-key-input
   // [lane-3] settings-key-input
   // [lane-4] settings-key-input
+  /** #42: connector tool loading, a launch-time `--settings` env value. */
+  toolLoading?: "auto" | "upfront";
   // [lane-5] settings-key-input
 }): string {
   const deniedTools = claudeToolDenyRules(input.deniedTools);
@@ -1347,6 +1363,7 @@ export function claudeSettingsKey(input: {
     // [lane-2] settings-key-parts
     // [lane-3] settings-key-parts
     // [lane-4] settings-key-parts
+    ...(input.toolLoading ? [`tool-loading:${input.toolLoading}`] : []),
     // [lane-5] settings-key-parts
   ].join("|");
 }

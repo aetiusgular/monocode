@@ -5,6 +5,7 @@ import { isFilesystemTab, type FilePaneTab } from "../../workspace/model/layout"
 import { isEqualOrInside, pathKey } from "../../../shared/lib/paths";
 import { isBlankSession } from "../../projects/model/projectReturn";
 import { newSession, sessionWorkCwd, type Session } from "../../sessions/model/session";
+import { loadWorktreeSettings } from "./worktreeSettings";
 
 export type Worktree = {
   path: string;
@@ -17,6 +18,10 @@ export type Worktree = {
   dirty: boolean | null;
   unpushed: number | null;
   sessionIds: string[];
+  /** Gitignored files copied in from `.worktreeinclude` when it was made. */
+  included?: string[];
+  /** Why some listed files were not copied, when any were not. */
+  includeNote?: string;
 };
 export type Worktrees = { worktrees: Worktree[]; defaultRoot: string };
 
@@ -29,11 +34,15 @@ export async function createWorktree(
   base: string,
   existing: boolean,
 ) {
+  // #30: the folder you set under Settings, Worktrees. Empty keeps the
+  // default folder beside the repository.
+  const { folder } = loadWorktreeSettings();
   const tree = await invoke<Worktree>("git_worktree_create", {
     cwd,
     branch,
     base,
     existing,
+    ...(folder ? { folder } : {}),
   });
   notifyGitChanged();
   return tree;
@@ -80,12 +89,18 @@ export function orchestrationWorktreeBranchName(id: string): string {
   return `mc/orch-${token || Date.now().toString(36)}`;
 }
 
-export function namedWorktreeBranch(fragment: string): string | null {
-  const clean = fragment
+/** The branch a named worktree gets: your prefix (Settings, Worktrees) and the name. */
+export function namedWorktreeBranch(
+  fragment: string,
+  prefix: string = loadWorktreeSettings().prefix,
+): string | null {
+  let clean = fragment
     .trim()
     .replace(/^(?:mc|monocode)\/+/, "")
     .replace(/^\/+|\/+$/g, "");
-  return clean ? `mc/${clean}` : null;
+  if (prefix && clean.startsWith(prefix)) clean = clean.slice(prefix.length);
+  clean = clean.replace(/^\/+/, "");
+  return clean ? `${prefix}${clean}` : null;
 }
 
 export async function removeWorktree(

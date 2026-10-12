@@ -431,12 +431,131 @@ pub struct McpConnection {
     enabled: bool,
 }
 
+/// Largest wrapper script read for its `CODEX_HOME` line.
+const MAX_WRAPPER_BYTES: u64 = 64 * 1024;
+
+/// The `CODEX_HOME` a wrapper script sets, read without running it.
+///
+/// MonoCode can be pointed at a script named `codex` that exports
+/// `CODEX_HOME` and execs the real binary. Only a small text file starting
+/// with `#!` is read. Only a literal path is taken, with a leading `~/`,
+/// `$HOME/` or `${HOME}/` expanded: anything else with `$` or a backtick is
+/// refused, so nothing in the script is ever evaluated. The last assignment
+/// wins, as in the shell. Returns `None` for a real binary.
+pub(crate) fn codex_home_from_wrapper(path: &Path, home: &Path) -> Option<PathBuf> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_WRAPPER_BYTES {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    if !bytes.starts_with(b"#!") {
+        return None;
+    }
+    let text = String::from_utf8(bytes).ok()?;
+    let mut found = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        if let Some(value) = codex_home_assignment(line) {
+            found = expand_wrapper_path(&value, home);
+        }
+    }
+    found
+}
+
+/// The value of a `CODEX_HOME=` word on one shell line, unquoted.
+fn codex_home_assignment(line: &str) -> Option<String> {
+    let mut rest = line;
+    loop {
+        let index = rest.find("CODEX_HOME=")?;
+        let before = &rest[..index];
+        let starts_word = before.is_empty() || before.ends_with(char::is_whitespace);
+        let value = &rest[index + "CODEX_HOME=".len()..];
+        if starts_word {
+            return Some(match value.chars().next() {
+                Some(quote @ ('"' | '\'')) => {
+                    let inner = &value[1..];
+                    inner[..inner.find(quote)?].to_string()
+                }
+                _ => value
+                    .split(|c: char| c.is_whitespace() || c == ';' || c == '&' || c == '|')
+                    .next()
+                    .unwrap_or("")
+                    .to_string(),
+            });
+        }
+        rest = value;
+    }
+}
+
+fn expand_wrapper_path(value: &str, home: &Path) -> Option<PathBuf> {
+    let value = value.trim();
+    let expanded = if let Some(rest) = value.strip_prefix("~/") {
+        home.join(rest)
+    } else if let Some(rest) = value
+        .strip_prefix("$HOME/")
+        .or_else(|| value.strip_prefix("${HOME}/"))
+    {
+        home.join(rest)
+    } else {
+        PathBuf::from(value)
+    };
+    let text = expanded.to_string_lossy();
+    if text.contains('$') || text.contains('`') || !expanded.is_absolute() {
+        return None;
+    }
+    Some(expanded)
+}
+
+/// Which Codex home discovery reads, in the order a session resolves it:
+/// a named account's folder, then the home a wrapper script sets, then
+/// MonoCode's own `CODEX_HOME`, then `~/.codex`.
+fn codex_home_for_session(
+    home: &Path,
+    account_dir: Option<PathBuf>,
+    wrapper: Option<&Path>,
+    env_home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(dir) = account_dir.filter(|dir| dir.is_dir()) {
+        return Some(dir);
+    }
+    if let Some(found) = wrapper.and_then(|path| codex_home_from_wrapper(path, home)) {
+        return Some(found);
+    }
+    env_home
+}
+
+/// Discover MCP servers for a project. `codex_account_id` and `codex_binary`
+/// are the Codex account and binary a session in that project uses, so the
+/// Codex rows come from the home that session runs on (#7).
 #[tauri::command]
-pub async fn mcp_discover(cwd: String) -> Result<Vec<McpConnection>, String> {
+pub async fn mcp_discover(
+    app: tauri::AppHandle,
+    cwd: String,
+    codex_account_id: Option<String>,
+    codex_binary: Option<String>,
+) -> Result<Vec<McpConnection>, String> {
+    // The default account has no folder of its own: the path call refuses it,
+    // and an invalid id is refused the same way.
+    let account_dir = codex_account_id
+        .as_deref()
+        .and_then(|id| crate::harness::provider_account_path(&app, "codex", id).ok());
     tauri::async_runtime::spawn_blocking(move || {
         let home = dirs_home().ok_or("Home directory not found")?;
         let project = expand_home(&cwd);
-        let codex_home = std::env::var_os("CODEX_HOME").map(PathBuf::from);
+        let wrapper = codex_binary
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(expand_home);
+        let codex_home = codex_home_for_session(
+            Path::new(&home),
+            account_dir,
+            wrapper.as_deref(),
+            std::env::var_os("CODEX_HOME").map(PathBuf::from),
+        );
         let desktop_config = claude_desktop_config(Path::new(&home));
         let opencode_config = std::env::var_os("OPENCODE_CONFIG").map(PathBuf::from);
         Ok(discover(
@@ -1172,6 +1291,123 @@ mod tests {
         );
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].name, "timeout");
+    }
+
+    fn wrapper_dir(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "monocode-mcp-wrapper-{label}-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn reads_codex_home_from_a_wrapper_script() {
+        let root = wrapper_dir("export");
+        let home = Path::new("/Users/me");
+        let script = root.join("codex");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\n# local home\nexport CODEX_HOME=/Users/tonyg/codex-local-test\nexec /opt/codex \"$@\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            codex_home_from_wrapper(&script, home),
+            Some(PathBuf::from("/Users/tonyg/codex-local-test"))
+        );
+        std::fs::write(
+            &script,
+            "#!/bin/zsh\nCODEX_HOME=\"$HOME/codex local\" exec codex \"$@\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            codex_home_from_wrapper(&script, home),
+            Some(PathBuf::from("/Users/me/codex local"))
+        );
+        std::fs::write(&script, "#!/bin/sh\nexec env CODEX_HOME='~/x' codex\n").unwrap();
+        assert_eq!(
+            codex_home_from_wrapper(&script, home),
+            Some(PathBuf::from("/Users/me/x"))
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn wrapper_reader_never_evaluates_anything() {
+        let root = wrapper_dir("eval");
+        let home = Path::new("/Users/me");
+        let script = root.join("codex");
+        for body in [
+            "#!/bin/sh\nexport CODEX_HOME=$(mktemp -d)\n",
+            "#!/bin/sh\nexport CODEX_HOME=`pwd`/home\n",
+            "#!/bin/sh\nexport CODEX_HOME=$OTHER/home\n",
+            "#!/bin/sh\nexport CODEX_HOME=relative/home\n",
+            "#!/bin/sh\n# export CODEX_HOME=/commented\n",
+            "#!/bin/sh\nexport MY_CODEX_HOME=/not/this\n",
+        ] {
+            std::fs::write(&script, body).unwrap();
+            assert_eq!(codex_home_from_wrapper(&script, home), None, "{body}");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn wrapper_reader_skips_binaries_and_large_files() {
+        let root = wrapper_dir("binary");
+        let home = Path::new("/Users/me");
+        let binary = root.join("codex");
+        std::fs::write(&binary, b"\x7fELF CODEX_HOME=/x").unwrap();
+        assert_eq!(codex_home_from_wrapper(&binary, home), None);
+        let mut big = b"#!/bin/sh\nexport CODEX_HOME=/x\n".to_vec();
+        big.resize((MAX_WRAPPER_BYTES + 1) as usize, b'#');
+        std::fs::write(&binary, big).unwrap();
+        assert_eq!(codex_home_from_wrapper(&binary, home), None);
+        assert_eq!(codex_home_from_wrapper(&root.join("missing"), home), None);
+        assert_eq!(codex_home_from_wrapper(&root, home), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn codex_home_prefers_account_then_wrapper_then_env() {
+        let root = wrapper_dir("order");
+        let home = Path::new("/Users/me");
+        let account = root.join("account");
+        std::fs::create_dir_all(&account).unwrap();
+        let script = root.join("codex");
+        std::fs::write(&script, "#!/bin/sh\nexport CODEX_HOME=/from/wrapper\n").unwrap();
+        let env = Some(PathBuf::from("/from/env"));
+        assert_eq!(
+            codex_home_for_session(home, Some(account.clone()), Some(&script), env.clone()),
+            Some(account.clone())
+        );
+        assert_eq!(
+            codex_home_for_session(home, Some(root.join("gone")), Some(&script), env.clone()),
+            Some(PathBuf::from("/from/wrapper"))
+        );
+        assert_eq!(codex_home_for_session(home, None, None, env.clone()), env);
+        assert_eq!(codex_home_for_session(home, None, None, None), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn discovery_reads_the_session_codex_home() {
+        let root = wrapper_dir("discover");
+        let home = root.join("home");
+        let local = root.join("codex-local-test");
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::write(
+            home.join(".codex/config.toml"),
+            "[mcp_servers.default_only]\ncommand = 'node'\n",
+        )
+        .unwrap();
+        std::fs::write(local.join("config.toml"), "model = 'qwen2.5:7b'\n").unwrap();
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let found = discover(&home, &project, Some(&local), &root.join("none.json"), None);
+        assert!(found.iter().all(|server| server.name != "default_only"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

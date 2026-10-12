@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { revealPath } from "../../../platform/tauri/fs";
+import { ServerLocalityTag } from "../../server-locality/ui/ServerLocalityTag";
 import { HarnessIcon } from "../../sessions/ui/HarnessIcon";
 import { SearchableProjectPicker } from "../../projects/ui/SearchableProjectPicker";
 import type { RecentProject } from "../../projects/model/recents";
@@ -552,8 +553,9 @@ function McpConnections({
                 <ProviderIcon provider={server.provider} />
               </span>
               <div className="min-w-0 flex-1">
-                <div className="text-[13px] font-medium text-content">
-                  {server.name}
+                <div className="flex items-center gap-2 text-[13px] font-medium text-content">
+                  <span className="truncate">{server.name}</span>
+                  <ServerLocalityTag server={{ name: server.name }} />
                 </div>
                 <div className="mt-1 text-[12px] leading-relaxed text-content/45">
                   {MCP_PROVIDER_LABELS[server.provider]} · {server.scope} ·{" "}

@@ -52,3 +52,157 @@ export function collectWindowTransfer(
     ...(projectTerminals.length > 0 ? { projectTerminals } : {}),
   };
 }
+
+/** Whether a tab can move to a window of its own, and if not, why. */
+export type PopOutCheck = { ok: true } | { ok: false; reason: string };
+
+/**
+ * Shown with the menu item. A window opened from a transfer does not save its
+ * own workspace, so its tabs are not reopened after a quit; the chats are
+ * saved as usual and stay in History.
+ */
+export const POP_OUT_NOTE =
+  "After a quit, tabs in the new window are not reopened. Their chats stay in History.";
+
+type PopOutSession = Pick<
+  Session,
+  | "id"
+  | "cwd"
+  | "blocks"
+  | "busy"
+  | "resendingEdited"
+  | "sendingQueuedMessageId"
+  | "queuedMessages"
+  | "backgroundTasks"
+  | "pendingSwitch"
+  | "worktreePreparing"
+  | "pendingQuestion"
+  | "orchestrationLeadId"
+>;
+
+/** Why a chat is not idle, or null when it is. */
+export function sessionNotIdle(session: PopOutSession): string | null {
+  if (
+    session.busy ||
+    session.resendingEdited ||
+    session.sendingQueuedMessageId
+  ) {
+    return "a turn is running";
+  }
+  if (session.queuedMessages?.length) return "messages are queued";
+  if (session.backgroundTasks?.length) return "background work is running";
+  if (session.pendingSwitch) return "a harness switch is pending";
+  if (session.worktreePreparing) return "its worktree is being made";
+  if (session.pendingQuestion) return "it is waiting for your answer";
+  if (
+    session.blocks.some(
+      (block) => block.approval && block.approval.decided === undefined,
+    )
+  ) {
+    return "it is waiting for an approval";
+  }
+  return null;
+}
+
+/**
+ * Rules for moving one tab to a new window. Only idle chats move: a chat is
+ * stopped here and bound again in the new window, which every harness
+ * supports between turns. Terminals, unsaved files, orchestration and remote
+ * chats belong to this window's processes and state, so a tab holding one
+ * stays. A window keeps at least one tab.
+ */
+export function popOutCheck(
+  tabs: WorkspaceTab[],
+  sessions: PopOutSession[],
+  tabId: string,
+  dirtyFiles: Set<string>,
+  isRemote: (cwd: string) => boolean = () => false,
+): PopOutCheck {
+  const tab = tabs.find((entry) => entry.id === tabId);
+  if (!tab) return { ok: false, reason: "This tab is gone." };
+  if (tabs.length < 2) {
+    return { ok: false, reason: "A window keeps at least one tab." };
+  }
+  const files = [
+    ...tab.editorPanes.flatMap((pane) => pane.files),
+    ...(tab.terminalPanes ?? []).flatMap((pane) => pane.files),
+  ];
+  if (files.some((file) => file.terminal)) {
+    return {
+      ok: false,
+      reason: "Close its terminals first. They run in this window.",
+    };
+  }
+  if (files.some((file) => dirtyFiles.has(file.id))) {
+    return { ok: false, reason: "Save its files first." };
+  }
+  const ids = new Set(leafIds(tab.layout));
+  for (const session of sessions) {
+    if (!ids.has(session.id)) continue;
+    if (session.orchestrationLeadId) {
+      return { ok: false, reason: "Orchestration chats stay in their window." };
+    }
+    if (isRemote(session.cwd)) {
+      return { ok: false, reason: "Remote chats stay in their window." };
+    }
+    const busy = sessionNotIdle(session);
+    if (busy) {
+      return {
+        ok: false,
+        reason: `Wait until the chat is idle: ${busy}.`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+/** What moving a tab needs from the window it leaves. */
+export type PopOutSteps = {
+  payload: WindowTransferPayload;
+  /** Stop a chat's harness processes. Idle, so no turn is cancelled. */
+  stopSession: (session: Session) => Promise<void>;
+  /** Hand the payload to the next window that opens. */
+  stage: (json: string) => Promise<void>;
+  openWindow: () => Promise<void>;
+  /** Take the tabs out of this window without asking again. */
+  closeTabs: (tabIds: string[]) => void;
+};
+
+/**
+ * Stop, then hand over, then open, then close here. A failure before the
+ * window opens leaves the tabs where they were; their chats start again on
+ * their next turn, bound to the same provider session.
+ */
+export async function popOutTabs(steps: PopOutSteps): Promise<PopOutCheck> {
+  const { payload } = steps;
+  for (const session of payload.sessions) {
+    await steps.stopSession(session).catch(() => undefined);
+  }
+  try {
+    await steps.stage(JSON.stringify(payload));
+    await steps.openWindow();
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `Could not open a new window: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  steps.closeTabs(payload.tabs.map((tab) => tab.id));
+  return { ok: true };
+}
+
+/** The title bar reaches the app through this, not through props. */
+export type PopOutHost = {
+  check: (tabId: string) => PopOutCheck;
+  popOut: (tabId: string) => Promise<PopOutCheck>;
+};
+
+let popOutHost: PopOutHost | null = null;
+
+export function setPopOutHost(host: PopOutHost | null): void {
+  popOutHost = host;
+}
+
+export function getPopOutHost(): PopOutHost | null {
+  return popOutHost;
+}

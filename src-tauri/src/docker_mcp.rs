@@ -194,6 +194,17 @@ fn allowed_timeout(args: &[String], home: Option<&Path>) -> Option<Duration> {
         {
             Some(DEFAULT_TIMEOUT)
         }
+        // A connector's tool allowlist: one tool on or off, or all back on.
+        ["mcp", "profile", "tools", id, "--enable" | "--disable", tool]
+            if is_own_profile_id(id) && is_tool_ref(tool) =>
+        {
+            Some(DEFAULT_TIMEOUT)
+        }
+        ["mcp", "profile", "tools", id, "--enable-all", server]
+            if is_own_profile_id(id) && is_server_name(server) && !server.contains('.') =>
+        {
+            Some(DEFAULT_TIMEOUT)
+        }
         ["mcp", "gateway", "run", "--profile", id, "--dry-run", "--verbose"]
             if is_own_profile_id(id) =>
         {
@@ -226,6 +237,22 @@ fn is_own_profile_id(value: &str) -> bool {
     is_profile_id(value)
         && value.len() > OWN_PROFILE_PREFIX.len()
         && value.starts_with(OWN_PROFILE_PREFIX)
+}
+
+/// `<server>.<tool>`: the gateway splits at the first dot, so the server
+/// part has none. A tool name is `^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`.
+fn is_tool_ref(value: &str) -> bool {
+    let Some((server, tool)) = value.split_once('.') else {
+        return false;
+    };
+    let bytes = tool.as_bytes();
+    is_server_name(server)
+        && !server.contains('.')
+        && (1..=128).contains(&bytes.len())
+        && (bytes[0].is_ascii_alphanumeric() || bytes[0] == b'_')
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
 }
 
 /// `^[a-z0-9][a-z0-9._-]{0,99}$`
@@ -662,5 +689,98 @@ mod tests {
             bounded(&"é".repeat(MAX_ERROR_CHARS + 10)).chars().count(),
             MAX_ERROR_CHARS
         );
+    }
+
+    #[test]
+    fn allows_one_tool_on_or_off_in_own_profiles() {
+        for flag in ["--enable", "--disable"] {
+            assert!(allowed(&[
+                "mcp",
+                "profile",
+                "tools",
+                "monocode_github",
+                flag,
+                "github.create_issue"
+            ]));
+            assert!(!allowed(&[
+                "mcp",
+                "profile",
+                "tools",
+                "research",
+                flag,
+                "github.create_issue"
+            ]));
+            for bad in [
+                "github",
+                ".create_issue",
+                "github.",
+                "github..create_issue",
+                "github.-x",
+                "github.a b",
+                "github.a;b",
+                "--all",
+                "Github.create_issue",
+            ] {
+                assert!(
+                    !allowed(&["mcp", "profile", "tools", "monocode_github", flag, bad]),
+                    "{bad}"
+                );
+            }
+        }
+        assert!(allowed(&[
+            "mcp",
+            "profile",
+            "tools",
+            "monocode_github",
+            "--disable",
+            "github.v2.list-repos_x"
+        ]));
+        assert!(!allowed(&[
+            "mcp",
+            "profile",
+            "tools",
+            "monocode_github",
+            "--disable",
+            &format!("github.{}", "a".repeat(129))
+        ]));
+    }
+
+    #[test]
+    fn allows_all_tools_back_on_but_never_all_off() {
+        assert!(allowed(&[
+            "mcp",
+            "profile",
+            "tools",
+            "monocode_github",
+            "--enable-all",
+            "github"
+        ]));
+        assert!(!allowed(&[
+            "mcp",
+            "profile",
+            "tools",
+            "monocode_github",
+            "--disable-all",
+            "github"
+        ]));
+        assert!(!allowed(&[
+            "mcp",
+            "profile",
+            "tools",
+            "monocode_github",
+            "--enable-all",
+            "git.hub"
+        ]));
+        assert!(!allowed(&["mcp", "profile", "tools", "monocode_github"]));
+        assert!(!allowed(&[
+            "mcp",
+            "profile",
+            "tools",
+            "monocode_github",
+            "--disable",
+            "github.a",
+            "--disable",
+            "github.b"
+        ]));
     }
 }

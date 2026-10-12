@@ -11,7 +11,7 @@ import {
   sessionCheckpointStatus,
   subscribeReviewChanged,
 } from "../../sessions/model/checkpoint";
-import type { HarnessId } from "../../sessions/model/session";
+import type { HelperTarget } from "../../../integrations/harness/core/helperPrompt";
 import { MonoSidebar, MonoSidebarHeader } from "./MonoSidebar";
 import {
   MonoProjectCommit,
@@ -46,7 +46,7 @@ export function MonoChangesPanel({
   cwd: string;
   request: MonoChangesRequest;
   color: string;
-  textHarness?: HarnessId;
+  textHarness?: HelperTarget;
   onClose: () => void;
   windowControls?: ReactNode;
 }) {

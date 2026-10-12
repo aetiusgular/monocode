@@ -109,6 +109,7 @@ import { backgroundItemsKey as backgroundItemsKey_l1 } from "../../core/backgrou
 import { agentsMdPluginConfig as agentsMdPluginConfig_l2 } from "../../../../features/project-context/model/instructions";
 // [lane-3] imports
 // [lane-4] imports
+import { loadClaudeToolLoading as loadClaudeToolLoading_l4 } from "../../../../features/gateway-connectors/model/toolLoading";
 // [lane-5] imports
 
 /**
@@ -2152,6 +2153,7 @@ function settingsKeyFor(input: HarnessSessionInput): string {
     // [lane-2] settings-key
     // [lane-3] settings-key
     // [lane-4] settings-key
+    toolLoading: loadClaudeToolLoading_l4(),
     // [lane-5] settings-key
   })}`;
 }
@@ -2240,6 +2242,7 @@ function launchOptions(
   appendSystemPromptFile?: string;
   // [lane-3] launch-type
   // [lane-4] launch-type
+  toolLoading?: "auto" | "upfront";
   // [lane-5] launch-type
 } {
   const native = nativeModelId(input.model);
@@ -2308,6 +2311,7 @@ function launchOptions(
       : {}),
     // [lane-3] launch-return
     // [lane-4] launch-return
+    toolLoading: loadClaudeToolLoading_l4(),
     // [lane-5] launch-return
   };
 }

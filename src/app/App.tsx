@@ -278,7 +278,6 @@ import {
   rewindHarnessLastTurn,
   forgetHarnessSession,
   generateHarnessTitle,
-  generateHarnessBranchName,
   migrateMonoCodexSession,
   isLiveHarness,
   latestTurnNeedsHarnessLogin,
@@ -842,6 +841,20 @@ import {
 import { claudeCliVersion as claudeCliVersion_l2 } from "../features/project-context/model/claudeVersion";
 // [lane-3] imports
 // [lane-4] imports
+import {
+  canRunHelper as canRunHelper_l4,
+  helperBranchName as helperBranchName_l4,
+  helperRouteForCheckout as helperRouteForCheckout_l4,
+  helperRouteForSession as helperRouteForSession_l4,
+  helperTitle as helperTitle_l4,
+} from "../integrations/harness/core/helperPrompt";
+import { setPrBarHost as setPrBarHost_l4 } from "../features/pr-bar/model/prBar";
+import {
+  collectWindowTransfer as collectWindowTransfer_l4,
+  popOutCheck as popOutCheck_l4,
+  popOutTabs as popOutTabs_l4,
+  setPopOutHost as setPopOutHost_l4,
+} from "./model/windowTransfer";
 // [lane-5] imports
 
 const SearchView = lazySurface(
@@ -7634,12 +7647,24 @@ function Workspace({
         }
         const titleMessage =
           harnessText || attachments.map((file) => file.name).join(", ");
-        void generateHarnessTitle(current.harness, {
-          sessionId,
-          cwd: workCwd,
-          message: titleMessage,
+        // F6: the title runs on this session's own account and model.
+        const titleRoute = helperRouteForSession_l4({
+          ...current,
           providerAccountId,
-        })
+        });
+        void (
+          canRunHelper_l4(titleRoute)
+            ? helperTitle_l4(titleRoute, {
+                cwd: workCwd,
+                message: titleMessage,
+              })
+            : generateHarnessTitle(current.harness, {
+                sessionId,
+                cwd: workCwd,
+                message: titleMessage,
+                providerAccountId,
+              })
+        )
           .then(async (generated) => {
             if (
               options?.refreshTitle &&
@@ -7756,8 +7781,10 @@ function Workspace({
 
           const branchMessage =
             harnessText || attachments.map((file) => file.name).join(", ");
-          void generateHarnessBranchName(
-            pickTextHarness(current.harness),
+          // F6: the branch name runs on this session's own account and
+          // model, and is skipped when its harness has no side prompt.
+          void helperBranchName_l4(
+            helperRouteForSession_l4({ ...current, providerAccountId }),
             workCwd,
             branchMessage,
           )
@@ -12852,6 +12879,84 @@ function Workspace({
   launchAutomationRef_l2.current = launchAutomation;
   // [lane-3] app-late
   // [lane-4] app-late
+  // #33: the PR bar sends CI repairs to, and archives, the chat that owns a
+  // checkout. It reaches the app through this host, not through props.
+  useEffect(() => {
+    setPrBarHost_l4({
+      submitRepair: async (sessionId, request) => {
+        const session = sessionsRef.current.find((s) => s.id === sessionId);
+        if (
+          !session ||
+          session.busy ||
+          session.pendingSwitch ||
+          isPreparingHandoff(session)
+        ) {
+          return false;
+        }
+        trackCiRepair(session.cwd, request, sessionId, (settle) =>
+          onSubmit(sessionId, request.text, [], {
+            ciRepair: request,
+            noteCard: undefined,
+            handoffCard: undefined,
+            onSettled: (outcome) => settle(outcome.status),
+          }),
+        );
+        return true;
+      },
+      archiveSession: (sessionId) => onArchiveHistorySession(sessionId, true),
+    });
+    return () => setPrBarHost_l4(null);
+  }, [onArchiveHistorySession, onSubmit]);
+  // #43: "Move to New Window" on a tab. Only idle chats move: each is
+  // stopped here and bound again by the window the payload opens.
+  useEffect(() => {
+    const check_l4 = (tabId: string) =>
+      popOutCheck_l4(
+        tabsRef.current,
+        sessionsRef.current,
+        tabId,
+        dirtyFilesRef.current,
+        isRemoteProjectPath,
+      );
+    setPopOutHost_l4({
+      check: check_l4,
+      popOut: async (tabId) => {
+        const allowed = check_l4(tabId);
+        if (!allowed.ok) return allowed;
+        const current = tabsRef.current;
+        const payload = collectWindowTransfer_l4(
+          current,
+          sessionsRef.current,
+          [tabId],
+          tabId,
+          dirtyFilesRef.current,
+          projectCwd,
+        );
+        if (!payload) return { ok: false, reason: "This tab is gone." };
+        const stay =
+          activeTabIdRef.current !== tabId
+            ? activeTabIdRef.current
+            : (current[current.findIndex((tab) => tab.id === tabId) + 1] ??
+                current[current.findIndex((tab) => tab.id === tabId) - 1])
+                ?.id;
+        if (!stay) return { ok: false, reason: "A window keeps at least one tab." };
+        return popOutTabs_l4({
+          payload,
+          stopSession: async (session) => {
+            await Promise.all(
+              sessionChildHarnesses(session).map((harness) =>
+                stopHarnessSession(harness, session.id),
+              ),
+            );
+          },
+          stage: (json) => invoke("stage_window_transfer", { payload: json }),
+          openWindow: () => invoke("open_new_window"),
+          closeTabs: (ids) => onCloseTabs(ids, stay, { confirmed: true }),
+        });
+      },
+    });
+    return () => setPopOutHost_l4(null);
+  }, [onCloseTabs, projectCwd]);
   // [lane-5] app-late
   const sessionPaneProps = {
     workspaceSwitchingSessionId: workspaceNavigation.pending
@@ -13207,7 +13312,10 @@ function Workspace({
               selectedCommitSha={
                 activeTab ? selectedCommitSha(activeTab) : undefined
               }
-              textHarness={pickTextHarness(active?.harness)}
+              textHarness={
+                helperRouteForCheckout_l4(sessions, gitCwd, active) ??
+                pickTextHarness(active?.harness)
+              }
               recents={recents}
               busyProjectPaths={busyProjectPaths}
               liveAgents={liveAgents}
@@ -13537,7 +13645,11 @@ function Workspace({
                       cwd={monoChanges.cwd}
                       request={monoChanges.request}
                       color={monoViewMono.color}
-                      textHarness={monoViewSession?.harness}
+                      textHarness={
+                        monoViewSession
+                          ? helperRouteForSession_l4(monoViewSession)
+                          : undefined
+                      }
                       onClose={onCloseMonoChanges}
                       windowControls={
                         monoCovers && !IS_MAC ? <WindowControls /> : undefined

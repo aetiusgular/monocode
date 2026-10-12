@@ -1,9 +1,17 @@
 //! `claude plugin` for the Plugins settings page and the per-chat plugin
-//! switches: list the installed plugins, and enable or disable one.
+//! switches: list the installed plugins, enable or disable one, install,
+//! update or uninstall one, and list, add, update or remove a marketplace.
 //!
 //! Only the argument shapes in `allowed` run. A plugin id must look
 //! like `name@marketplace`, a scope is one of `user`, `project` or `local`,
-//! and a project or local change runs in the project's own folder. The CLI is
+//! and a project or local change runs in the project's own folder.
+//!
+//! No shape carries `-y`/`--yes`. A plugin installed by running a command the
+//! marketplace declares is refused by Claude Code until that exact command is
+//! accepted, so MonoCode shows the command it reported and passes
+//! `--accept-command <sha256>` only after a click: that flag accepts that one
+//! command for that plugin and catalog, and nothing else. `--prune`, which
+//! needs `-y`, is never passed. The CLI is
 //! the same `claude` binary sessions start, run as the same provider account
 //! (`CLAUDE_CONFIG_DIR`), so the list is the one that account's sessions load.
 
@@ -20,11 +28,15 @@ use crate::harness::{
 
 const LIST_TIMEOUT: Duration = Duration::from_secs(60);
 const TOGGLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Installs, updates and marketplace changes can clone a git repository.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(180);
 const MAX_STDOUT_CHARS: usize = 1024 * 1024;
 const MAX_STDERR_CHARS: usize = 16 * 1024;
 const MAX_ERROR_CHARS: usize = 2000;
 const MAX_ID_CHARS: usize = 200;
 const MAX_ACCOUNT_ID_CHARS: usize = 80;
+const MAX_SOURCE_CHARS: usize = 2048;
+const MAX_MARKETPLACE_CHARS: usize = 100;
 
 #[derive(Serialize)]
 pub struct ClaudePluginOutput {
@@ -46,9 +58,10 @@ struct Shape {
 }
 
 /// Run one allowlisted `claude plugin` command as a Claude Code provider
-/// account. A list that fails is an error. An enable or disable returns its
-/// output either way, because `--json` prints the reason on stdout and exits 1
-/// (for example when the plugin is already in that state).
+/// account. A list that fails is an error. Every change returns its output
+/// either way, because `--json` prints the reason on stdout and exits 1 (for
+/// example when the plugin is already in that state, or when an install
+/// waits for its command to be accepted).
 #[tauri::command]
 pub async fn claude_plugin(
     app: AppHandle,
@@ -61,6 +74,7 @@ pub async fn claude_plugin(
     // A chat's folder can be `~` or start with it.
     let cwd = cwd.map(|dir| expand_home(&dir).to_string_lossy().into_owned());
     check_cwd(cwd.as_deref(), shape.needs_project)?;
+    check_source_path(&args)?;
     let account = account_for(account_id)?;
     let binary_path = host.runtime_binary_path("claude");
     tauri::async_runtime::spawn_blocking(move || {
@@ -108,6 +122,11 @@ fn allowed(args: &[String]) -> Option<Shape> {
         needs_project: matches!(scope, Some("project" | "local")),
         reports_failure: true,
     };
+    let fetch = |scope: Option<&str>| Shape {
+        timeout: FETCH_TIMEOUT,
+        needs_project: matches!(scope, Some("project" | "local")),
+        reports_failure: true,
+    };
     match args.as_slice() {
         ["plugin", "list", "--json"] | ["plugin", "list", "--json", "--available"] => Some(list),
         ["plugin", verb, "--scope", scope, "--json", id]
@@ -121,7 +140,113 @@ fn allowed(args: &[String]) -> Option<Shape> {
         ["plugin", verb, "--json", id] if is_toggle(verb) && is_synced(id) && is_plugin_id(id) => {
             Some(toggle(None))
         }
+        ["plugin", "install" | "update", "--scope", scope, "--json", id]
+        | ["plugin", "install" | "update", "--scope", scope, "--json", "--accept-command", _, id]
+            if is_scope(scope) && is_plugin_id(id) && !is_synced(id) && accept_hash_ok(&args) =>
+        {
+            Some(fetch(Some(scope)))
+        }
+        ["plugin", "uninstall", "--scope", scope, "--json", id]
+        | ["plugin", "uninstall", "--scope", scope, "--json", "--keep-data", id]
+            if is_scope(scope) && is_plugin_id(id) && !is_synced(id) =>
+        {
+            Some(toggle(Some(scope)))
+        }
+        ["plugin", "marketplace", "list", "--json"] => Some(list),
+        // Marketplaces are added to the user settings only, so a project's
+        // shared settings never gain one from here.
+        ["plugin", "marketplace", "add", "--scope", "user", "--json", source]
+            if is_marketplace_source(source) =>
+        {
+            Some(fetch(None))
+        }
+        ["plugin", "marketplace", "update", "--json", name] if is_marketplace_name(name) => {
+            Some(fetch(None))
+        }
+        ["plugin", "marketplace", "remove", "--json", name] if is_marketplace_name(name) => {
+            Some(toggle(None))
+        }
         _ => None,
+    }
+}
+
+/// `--accept-command` takes a sha256 Claude Code reported: 64 lowercase hex
+/// characters. Shapes without the flag pass.
+fn accept_hash_ok(args: &[&str]) -> bool {
+    match args.iter().position(|arg| *arg == "--accept-command") {
+        None => true,
+        Some(at) => args.get(at + 1).is_some_and(|hash| {
+            hash.len() == 64
+                && hash
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        }),
+    }
+}
+
+/// A marketplace's name, as `claude plugin marketplace list` prints it.
+fn is_marketplace_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_MARKETPLACE_CHARS
+        && !value.starts_with('-')
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+/// Where a marketplace comes from. Three forms, checked by syntax here:
+/// a GitHub `owner/repo`, an `https://` URL with a host and no user part, or
+/// an absolute path (which must also exist, see `check_source_path`). Git
+/// over ssh, `http://`, relative paths and anything starting with a dash are
+/// refused.
+fn is_marketplace_source(value: &str) -> bool {
+    if value.is_empty()
+        || value.len() > MAX_SOURCE_CHARS
+        || value.starts_with('-')
+        || value.chars().any(|c| c.is_control() || c.is_whitespace())
+    {
+        return false;
+    }
+    if value.starts_with('/') {
+        return !value.split('/').any(|part| part == "..");
+    }
+    if value.contains("://") {
+        return url::Url::parse(value).is_ok_and(|url| {
+            url.scheme() == "https"
+                && url.host_str().is_some_and(|host| !host.is_empty())
+                && url.username().is_empty()
+                && url.password().is_none()
+        });
+    }
+    let part = |text: &str| {
+        !text.is_empty()
+            && text != "."
+            && text != ".."
+            && text
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+    };
+    value
+        .split_once('/')
+        .is_some_and(|(owner, repo)| part(owner) && part(repo) && !owner.starts_with('-'))
+}
+
+/// A path source must name a folder or file that exists, and must not be a
+/// symbolic link, so what was reviewed is what gets read.
+fn check_source_path(args: &[String]) -> Result<(), String> {
+    let [_, _, verb, .., source] = args else {
+        return Ok(());
+    };
+    if verb != "add" || !source.starts_with('/') {
+        return Ok(());
+    }
+    let path = Path::new(source);
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            Err("claude_plugin: a marketplace path must not be a symbolic link".into())
+        }
+        Ok(_) => Ok(()),
+        Err(_) => Err(format!("Marketplace path does not exist: {source}")),
     }
 }
 
@@ -280,9 +405,20 @@ mod tests {
         assert!(shape(&[]).is_none());
         assert!(shape(&["plugin"]).is_none());
         assert!(shape(&["mcp", "list"]).is_none());
-        assert!(shape(&["plugin", "install", "--scope", "user", "--json", "a@b"]).is_none());
-        assert!(shape(&["plugin", "uninstall", "--scope", "user", "--json", "a@b"]).is_none());
-        assert!(shape(&["plugin", "update", "--scope", "user", "--json", "a@b"]).is_none());
+        assert!(shape(&["plugin", "install", "--json", "a@b"]).is_none());
+        assert!(shape(&["plugin", "install", "--scope", "user", "a@b"]).is_none());
+        assert!(shape(&["plugin", "install", "--scope", "managed", "--json", "a@b"]).is_none());
+        assert!(shape(&[
+            "plugin",
+            "uninstall",
+            "--scope",
+            "user",
+            "--json",
+            "--prune",
+            "a@b"
+        ])
+        .is_none());
+        assert!(shape(&["plugin", "update", "--json", "a@b"]).is_none());
         assert!(shape(&["plugin", "disable", "--all"]).is_none());
         assert!(shape(&["plugin", "disable", "--scope", "managed", "--json", "a@b"]).is_none());
         assert!(shape(&["plugin", "disable", "--scope", "user", "a@b"]).is_none());
@@ -349,5 +485,255 @@ mod tests {
             MAX_ERROR_CHARS
         );
         assert_eq!(bounded_to("abcdef", 3), "abc");
+    }
+
+    const HASH: &str = "4dfac0a00339d273c4d73168fd2ac0bddbcb6b706484954fdbfdc21457660b6f";
+
+    #[test]
+    fn allows_install_update_and_uninstall_at_a_scope() {
+        for verb in ["install", "update", "uninstall"] {
+            let user =
+                shape(&["plugin", verb, "--scope", "user", "--json", "hello@testmk"]).unwrap();
+            assert!(!user.needs_project);
+            assert!(user.reports_failure);
+            for scope in ["project", "local"] {
+                let project =
+                    shape(&["plugin", verb, "--scope", scope, "--json", "hello@testmk"]).unwrap();
+                assert!(project.needs_project);
+            }
+            assert!(shape(&["plugin", verb, "--scope", "user", "--json", "x@synced"]).is_none());
+            assert!(shape(&["plugin", verb, "--scope", "user", "--json", "--all@x"]).is_none());
+        }
+        assert_eq!(
+            shape(&["plugin", "install", "--scope", "user", "--json", "a@b"])
+                .unwrap()
+                .timeout,
+            FETCH_TIMEOUT
+        );
+        assert!(shape(&[
+            "plugin",
+            "uninstall",
+            "--scope",
+            "user",
+            "--json",
+            "--keep-data",
+            "a@b"
+        ])
+        .is_some());
+        assert!(shape(&[
+            "plugin",
+            "install",
+            "--scope",
+            "user",
+            "--json",
+            "--keep-data",
+            "a@b"
+        ])
+        .is_none());
+    }
+
+    #[test]
+    fn never_accepts_a_command_without_its_hash() {
+        for verb in ["install", "update"] {
+            assert!(shape(&[
+                "plugin",
+                verb,
+                "--scope",
+                "user",
+                "--json",
+                "--accept-command",
+                HASH,
+                "a@b"
+            ])
+            .is_some());
+            for bad in [
+                "",
+                "abc",
+                &HASH.to_uppercase(),
+                &format!("{HASH}0"),
+                &HASH[1..],
+                "--yes",
+            ] {
+                assert!(
+                    shape(&[
+                        "plugin",
+                        verb,
+                        "--scope",
+                        "user",
+                        "--json",
+                        "--accept-command",
+                        bad,
+                        "a@b"
+                    ])
+                    .is_none(),
+                    "{bad}"
+                );
+            }
+            for flag in ["-y", "--yes"] {
+                assert!(
+                    shape(&["plugin", verb, "--scope", "user", "--json", flag, "a@b"]).is_none()
+                );
+                assert!(
+                    shape(&["plugin", verb, "--scope", "user", flag, "--json", "a@b"]).is_none()
+                );
+            }
+        }
+        assert!(shape(&[
+            "plugin",
+            "uninstall",
+            "--scope",
+            "user",
+            "--json",
+            "--accept-command",
+            HASH,
+            "a@b"
+        ])
+        .is_none());
+    }
+
+    #[test]
+    fn allows_marketplace_list_add_update_and_remove() {
+        assert!(
+            !shape(&["plugin", "marketplace", "list", "--json"])
+                .unwrap()
+                .reports_failure
+        );
+        assert!(shape(&["plugin", "marketplace", "list"]).is_none());
+        let add = shape(&[
+            "plugin",
+            "marketplace",
+            "add",
+            "--scope",
+            "user",
+            "--json",
+            "owner/repo",
+        ])
+        .unwrap();
+        assert!(!add.needs_project);
+        assert!(add.reports_failure);
+        assert!(shape(&[
+            "plugin",
+            "marketplace",
+            "add",
+            "--scope",
+            "project",
+            "--json",
+            "owner/repo"
+        ])
+        .is_none());
+        assert!(shape(&["plugin", "marketplace", "add", "--json", "owner/repo"]).is_none());
+        assert!(shape(&[
+            "plugin",
+            "marketplace",
+            "add",
+            "--scope",
+            "user",
+            "--json",
+            "--claudeai"
+        ])
+        .is_none());
+        assert!(shape(&[
+            "plugin",
+            "marketplace",
+            "add",
+            "--scope",
+            "user",
+            "--json",
+            "a/b",
+            "--sparse",
+            "x"
+        ])
+        .is_none());
+        assert!(shape(&["plugin", "marketplace", "update", "--json", "testmk"]).is_some());
+        assert!(shape(&["plugin", "marketplace", "update"]).is_none());
+        assert!(shape(&["plugin", "marketplace", "update", "--json"]).is_none());
+        assert!(shape(&["plugin", "marketplace", "remove", "--json", "testmk"]).is_some());
+        assert!(shape(&["plugin", "marketplace", "remove", "--json", "--scope"]).is_none());
+        assert!(shape(&["plugin", "marketplace", "rm", "--json", "testmk"]).is_none());
+    }
+
+    #[test]
+    fn checks_marketplace_sources() {
+        for good in [
+            "anthropics/claude-plugins-official",
+            "a.b_c/d-e.f",
+            "https://github.com/owner/repo.git",
+            "https://example.com/marketplace.json",
+            "/Users/tony/my-marketplace",
+            "/tmp/mk",
+        ] {
+            assert!(is_marketplace_source(good), "{good}");
+        }
+        for bad in [
+            "",
+            "-x/y",
+            "--claudeai",
+            "owner",
+            "owner/repo/extra",
+            "../repo",
+            "./mk",
+            "mk",
+            "a b/c",
+            "/tmp/../etc",
+            "/tmp/a\nb",
+            "/tmp/a b",
+            "http://example.com/m.json",
+            "git@github.com:owner/repo.git",
+            "ssh://git@github.com/owner/repo",
+            "file:///etc/passwd",
+            "https://user:pw@example.com/m.json",
+            "https://user@example.com/m.json",
+            "https://",
+            "https://:443/x",
+            "owner/..",
+            "./x",
+        ] {
+            assert!(!is_marketplace_source(bad), "{bad}");
+        }
+        assert!(!is_marketplace_source(&format!(
+            "a/{}",
+            "b".repeat(MAX_SOURCE_CHARS)
+        )));
+    }
+
+    #[test]
+    fn checks_marketplace_names() {
+        assert!(is_marketplace_name("anthropic-plugin-directory"));
+        assert!(is_marketplace_name("a.b_c"));
+        assert!(!is_marketplace_name(""));
+        assert!(!is_marketplace_name("-x"));
+        assert!(!is_marketplace_name("a/b"));
+        assert!(!is_marketplace_name("a b"));
+        assert!(!is_marketplace_name(&"a".repeat(MAX_MARKETPLACE_CHARS + 1)));
+    }
+
+    #[test]
+    fn a_path_source_must_exist_and_not_be_a_link() {
+        let dir = std::env::temp_dir().join(format!("mc-mk-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let add = |source: &str| {
+            args(&[
+                "plugin",
+                "marketplace",
+                "add",
+                "--scope",
+                "user",
+                "--json",
+                source,
+            ])
+        };
+        assert!(check_source_path(&add(dir.to_str().unwrap())).is_ok());
+        assert!(check_source_path(&add("/no/such/marketplace/here")).is_err());
+        assert!(check_source_path(&add("owner/repo")).is_ok());
+        #[cfg(unix)]
+        {
+            let link = dir.with_extension("link");
+            let _ = std::fs::remove_file(&link);
+            std::os::unix::fs::symlink(&dir, &link).unwrap();
+            assert!(check_source_path(&add(link.to_str().unwrap())).is_err());
+            std::fs::remove_file(&link).unwrap();
+        }
+        assert!(check_source_path(&args(&["plugin", "list", "--json"])).is_ok());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

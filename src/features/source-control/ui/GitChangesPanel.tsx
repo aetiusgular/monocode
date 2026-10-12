@@ -63,7 +63,10 @@ import {
   type GitHistoryCommit,
   type GitPr,
 } from "../../../platform/tauri/fs";
-import type { HarnessId } from "../../sessions/model/session";
+import type { HelperTarget } from "../../../integrations/harness/core/helperPrompt";
+import { prContentFromRange } from "../model/prFallback";
+import { ReviewSection } from "../../code-review/ui/ReviewSection";
+import { PrBar } from "../../pr-bar/ui/PrBar";
 import { recordInboxSelfActivity } from "../../inbox/model/inboxSelfActivity";
 import {
   loadChangesView,
@@ -104,7 +107,7 @@ type AmendTarget = { branch: string | null; head: string | null };
 type Props = {
   cwd: string;
   enabled: boolean;
-  textHarness?: HarnessId;
+  textHarness?: HelperTarget;
   selectedPath?: string;
   selectedKind?: GitFileDiffKind;
   selectedSha?: string;
@@ -343,7 +346,7 @@ function ChangedFiles({
   onMutated,
 }: {
   cwd: string;
-  textHarness?: HarnessId;
+  textHarness?: HelperTarget;
   index: GitDiffIndex | null;
   files: GitChangedFile[];
   selected?: string;
@@ -659,7 +662,7 @@ function ChangedFiles({
 
   const openCreatedPr = async () => {
     const content = isRemoteProjectPath(cwd)
-      ? await remotePrContent(cwd)
+      ? prContentFromRange(await gitRangeContext(cwd))
       : await generatePrContent(cwd, textHarness);
     if (!content) throw new Error("Could not prepare pull request content");
     const url = await gitPrCreate(
@@ -842,6 +845,20 @@ function ChangedFiles({
             onCreatePr={() => void createPr()}
             onViewPr={() => {
               if (pr?.url) void openUrl(pr.url);
+            }}
+          />
+        ) : null}
+        {pr && pr.url && !isRemoteProjectPath(cwd) ? (
+          <PrBar cwd={cwd} pr={pr} owner={textHarness} />
+        ) : null}
+        {!isRemoteProjectPath(cwd) ? (
+          <ReviewSection
+            cwd={cwd}
+            owner={textHarness}
+            hasChanges={files.length > 0}
+            onOpenPath={(relative) => {
+              const file = files.find((entry) => entry.relative === relative);
+              if (file) onOpenFile(file.path, file.unstaged ? "unstaged" : "staged");
             }}
           />
         ) : null}
@@ -1228,23 +1245,6 @@ type ChangeDir = {
   /** Status shared by every descendant, or null when they differ. */
   status: string | null;
 };
-
-async function remotePrContent(cwd: string) {
-  const range = await gitRangeContext(cwd);
-  const commits = range.commitSummary.trim();
-  const firstCommit = commits
-    .split(/\r?\n/, 1)[0]
-    ?.replace(/^[0-9a-f]+\s+/i, "")
-    .trim();
-  const title = firstCommit || `Changes on ${range.head}`;
-  const body = [
-    commits && `## Commits\n\n${commits}`,
-    range.diffSummary.trim() && `## Changes\n\n${range.diffSummary.trim()}`,
-  ]
-    .filter(Boolean)
-    .join("\n\n");
-  return { title, body: body || title, base: range.base, head: range.head };
-}
 
 type ChangeRowProps = {
   files: GitChangedFile[];

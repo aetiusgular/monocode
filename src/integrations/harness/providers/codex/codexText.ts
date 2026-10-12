@@ -1,4 +1,7 @@
-import { modelsFor } from "../../../../features/sessions/model/models";
+import {
+  hasLiveCatalog,
+  modelsFor,
+} from "../../../../features/sessions/model/models";
 import {
   killChild,
   resolveCodexBinary,
@@ -58,7 +61,11 @@ function pickTextModel(requested?: string): string {
   const luna = models.find((model) =>
     /5\.6-luna/i.test(`${model.nativeId ?? ""} ${model.name} ${model.id}`),
   );
-  return luna?.nativeId ?? TEXT_MODEL;
+  if (luna?.nativeId) return luna.nativeId;
+  // A live catalog without the helper model belongs to a home that does not
+  // have it (a local provider, say). Ask for no model, so Codex uses the one
+  // its config names, instead of a model the home cannot serve (F6).
+  return hasLiveCatalog("codex") ? "" : TEXT_MODEL;
 }
 
 function pickTextEffort(
@@ -72,6 +79,9 @@ function pickTextEffort(
     (entry) => entry.id === "reasoningEffort",
   );
   const options = setting?.options?.map((option) => option.value) ?? [];
+  // No model, or a known model with no effort setting (a local model with
+  // reasoning off): send no effort rather than one it may reject (F6).
+  if (!modelId || (model && !setting)) return "";
   if (requested && (options.length === 0 || options.includes(requested))) {
     return requested;
   }
@@ -157,7 +167,7 @@ async function promptOnLive(input: TextPromptInput): Promise<string> {
         runtimeMode: TEXT_RUNTIME_MODE,
         prompt: input.prompt,
         model: session.model || undefined,
-        effort: session.effort,
+        effort: session.effort || undefined,
         serviceTier: session.serviceTier,
         intent: input.intent,
       }),

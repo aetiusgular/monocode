@@ -20,6 +20,12 @@ pub struct Worktree {
     pub dirty: Option<bool>,
     pub unpushed: Option<u64>,
     pub session_ids: Vec<String>,
+    /// Gitignored files copied in from `.worktreeinclude` when it was made (#30).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub included: Vec<String>,
+    /// Why some listed files were not copied, when any were not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_note: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -154,7 +160,178 @@ pub fn git_worktrees(cwd: String, store: State<'_, SessionStore>) -> Result<Work
     })
 }
 
-fn create(root: &Path, branch: &str, base: &str, existing: bool) -> Result<Worktree, String> {
+/// Where a new worktree goes: under the folder you set, in a subfolder named
+/// for the repository, or beside the repository by default. A folder must be
+/// absolute after `~` is expanded (#30).
+fn worktree_parent(main: &Path, folder: Option<&str>) -> Result<PathBuf, String> {
+    let Some(folder) = folder.map(str::trim).filter(|folder| !folder.is_empty()) else {
+        return Ok(default_root(main));
+    };
+    let base = expand_home(folder);
+    if !base.is_absolute() {
+        return Err("The worktree folder must be an absolute path".into());
+    }
+    if base
+        .components()
+        .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return Err("The worktree folder cannot contain ..".into());
+    }
+    let name = main.file_name().unwrap_or_default().to_string_lossy();
+    Ok(base.join(name.as_ref()))
+}
+
+/// Most files and bytes `.worktreeinclude` may copy into one new worktree.
+const MAX_INCLUDE_FILES: usize = 500;
+const MAX_INCLUDE_BYTES: u64 = 200 * 1024 * 1024;
+
+#[derive(Debug, Default, PartialEq)]
+struct IncludeReport {
+    copied: Vec<String>,
+    skipped: Vec<String>,
+    truncated: bool,
+}
+
+impl IncludeReport {
+    fn note(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if !self.skipped.is_empty() {
+            parts.push(format!(
+                "{} listed file{} not copied (a symbolic link, not a regular file, outside the repository, or already present)",
+                self.skipped.len(),
+                if self.skipped.len() == 1 { " was" } else { "s were" }
+            ));
+        }
+        if self.truncated {
+            parts.push(format!(
+                "copying stopped at {MAX_INCLUDE_FILES} files or {} MB",
+                MAX_INCLUDE_BYTES / (1024 * 1024)
+            ));
+        }
+        (!parts.is_empty()).then(|| parts.join("; "))
+    }
+}
+
+/// Untracked files under `source` that match `.worktreeinclude` and that the
+/// repository's own ignore rules also ignore. Git does the pattern matching;
+/// the file only feeds `--exclude-from`, so nothing in it is ever run.
+fn worktree_include_candidates(source: &Path) -> Result<Vec<String>, String> {
+    let include = source.join(".worktreeinclude");
+    match std::fs::symlink_metadata(&include) {
+        Ok(meta) if meta.is_file() => {}
+        _ => return Ok(Vec::new()),
+    }
+    let include_arg = format!("--exclude-from={}", path_to_js(&include));
+    let listed = git(
+        source,
+        &["ls-files", "-z", "--others", "--ignored", &include_arg],
+    )?;
+    let candidates: Vec<String> = listed
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if candidates.is_empty() {
+        return Ok(candidates);
+    }
+    // Keep only what the repository itself ignores: tracked or merely
+    // untracked files are already handled by git.
+    let mut command = Command::new("git");
+    crate::hide_window_console(&mut command);
+    let mut child = command
+        .arg("-C")
+        .arg(source)
+        .args(["check-ignore", "-z", "--stdin"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    {
+        use std::io::Write;
+        let mut stdin = child.stdin.take().ok_or("git check-ignore has no stdin")?;
+        for path in &candidates {
+            stdin
+                .write_all(path.as_bytes())
+                .and_then(|_| stdin.write_all(b"\0"))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    // check-ignore exits 1 when nothing is ignored.
+    let ignored: std::collections::HashSet<String> = String::from_utf8_lossy(&output.stdout)
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+        .collect();
+    Ok(candidates
+        .into_iter()
+        .filter(|path| ignored.contains(path))
+        .collect())
+}
+
+/// A repository-relative path that stays inside the repository: no absolute
+/// path, no `..`, no empty part. Names are taken literally otherwise.
+fn safe_relative(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains('\\')
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+/// Copy the gitignored files `.worktreeinclude` lists from the main working
+/// copy into a new worktree (#30). Never follows a symbolic link, never
+/// overwrites, never runs anything from the listed files.
+fn copy_worktree_include(source: &Path, target: &Path) -> Result<IncludeReport, String> {
+    let mut report = IncludeReport::default();
+    let mut bytes = 0u64;
+    for relative in worktree_include_candidates(source)? {
+        if !safe_relative(&relative)
+            || path_contains_symlink(source, &relative)
+            || path_contains_symlink(target, &relative)
+        {
+            report.skipped.push(relative);
+            continue;
+        }
+        let from = source.join(&relative);
+        let to = target.join(&relative);
+        let meta = match std::fs::symlink_metadata(&from) {
+            Ok(meta) if meta.is_file() => meta,
+            _ => {
+                report.skipped.push(relative);
+                continue;
+            }
+        };
+        if std::fs::symlink_metadata(&to).is_ok() {
+            report.skipped.push(relative);
+            continue;
+        }
+        if report.copied.len() >= MAX_INCLUDE_FILES || bytes + meta.len() > MAX_INCLUDE_BYTES {
+            report.truncated = true;
+            break;
+        }
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::copy(&from, &to).map_err(|e| e.to_string())?;
+        std::fs::set_permissions(&to, meta.permissions()).map_err(|e| e.to_string())?;
+        bytes += meta.len();
+        report.copied.push(relative);
+    }
+    Ok(report)
+}
+
+fn create(
+    root: &Path,
+    branch: &str,
+    base: &str,
+    existing: bool,
+    folder: Option<&str>,
+) -> Result<Worktree, String> {
     let branch = branch.trim();
     if branch.starts_with('-') || branch.starts_with('@') || branch.is_empty() {
         return Err("Enter a valid branch name".into());
@@ -168,7 +345,8 @@ fn create(root: &Path, branch: &str, base: &str, existing: bool) -> Result<Workt
         return Err("This branch already has a working copy. Select it from the picker.".into());
     }
     let main = trees.first().ok_or("No working copies found")?;
-    let parent = default_root(Path::new(&main.path));
+    let main_path = PathBuf::from(&main.path);
+    let parent = worktree_parent(&main_path, folder)?;
     let slug: String = branch
         .chars()
         .map(|c| {
@@ -221,12 +399,23 @@ fn create(root: &Path, branch: &str, base: &str, existing: bool) -> Result<Workt
             ],
         )?;
     }
-    list(root)?
+    let mut tree: Worktree = list(root)?
         .into_iter()
         .find(|tree| same_path(Path::new(&tree.path), &path))
         .ok_or_else(|| {
-            "Worktree created, but could not be found. Refresh the working copies.".into()
-        })
+            "Worktree created, but could not be found. Refresh the working copies.".to_string()
+        })?;
+    // The worktree exists now; a failed copy is reported, not fatal.
+    match copy_worktree_include(&main_path, &path) {
+        Ok(report) => {
+            tree.include_note = report.note();
+            tree.included = report.copied;
+        }
+        Err(error) => {
+            tree.include_note = Some(format!("Could not copy .worktreeinclude files: {error}"));
+        }
+    }
+    Ok(tree)
 }
 
 #[tauri::command(async)]
@@ -235,9 +424,16 @@ pub async fn git_worktree_create(
     branch: String,
     base: String,
     existing: bool,
+    folder: Option<String>,
 ) -> Result<Worktree, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        create(&expand_home(&cwd), &branch, &base, existing)
+        create(
+            &expand_home(&cwd),
+            &branch,
+            &base,
+            existing,
+            folder.as_deref(),
+        )
     })
     .await
     .map_err(|error| error.to_string())?
@@ -374,7 +570,7 @@ fn create_seeded(root: &Path, branch: &str) -> Result<Worktree, String> {
             ));
         }
     }
-    let tree = create(root, branch, "HEAD", branch_exists)?;
+    let tree = create(root, branch, "HEAD", branch_exists, None)?;
     if let Err(error) = copy_checkout_state(root, Path::new(&tree.path)) {
         let _ = remove(root, Path::new(&tree.path), true);
         if !branch_exists {
@@ -806,6 +1002,137 @@ mod tests {
         Repo(dir)
     }
 
+    fn commit_all(root: &Path, message: &str) {
+        git_checked(root, &["add", "-A"]).unwrap();
+        git_checked(
+            root,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                message,
+            ],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn copies_ignored_files_listed_in_worktreeinclude() {
+        let repo = repo();
+        let root = repo.0.join("repo");
+        std::fs::write(root.join(".gitignore"), ".env\nsecrets/\nbuild/\n").unwrap();
+        std::fs::write(root.join(".worktreeinclude"), ".env\nsecrets/\n").unwrap();
+        commit_all(&root, "ignore rules");
+        std::fs::write(root.join(".env"), "TOKEN=local").unwrap();
+        std::fs::create_dir_all(root.join("secrets/nested")).unwrap();
+        std::fs::write(root.join("secrets/nested/key name.txt"), "k").unwrap();
+        std::fs::create_dir_all(root.join("build")).unwrap();
+        std::fs::write(root.join("build/out.bin"), "big").unwrap();
+        std::fs::write(root.join("untracked.txt"), "not ignored").unwrap();
+
+        let tree = create(&root, "feature/include", "main", false, None).unwrap();
+        let path = Path::new(&tree.path);
+        assert_eq!(
+            std::fs::read_to_string(path.join(".env")).unwrap(),
+            "TOKEN=local"
+        );
+        assert!(path.join("secrets/nested/key name.txt").is_file());
+        // Ignored but not listed, and listed-but-not-ignored, stay behind.
+        assert!(!path.join("build/out.bin").exists());
+        assert!(!path.join("untracked.txt").exists());
+        let mut included = tree.included.clone();
+        included.sort();
+        assert_eq!(included, vec![".env", "secrets/nested/key name.txt"]);
+        assert!(tree.include_note.is_none());
+    }
+
+    #[test]
+    fn worktreeinclude_never_follows_links_or_leaves_the_repository() {
+        let repo = repo();
+        let root = repo.0.join("repo");
+        let outside = repo.0.join("outside-secret");
+        std::fs::write(&outside, "outside").unwrap();
+        std::fs::write(root.join(".gitignore"), "*.local\nlinked/\n").unwrap();
+        std::fs::write(
+            root.join(".worktreeinclude"),
+            "*.local\nlinked/\n../outside-secret\n/etc/passwd\n",
+        )
+        .unwrap();
+        commit_all(&root, "ignore rules");
+        std::fs::write(root.join("ok.local"), "fine").unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, root.join("link.local")).unwrap();
+            std::os::unix::fs::symlink(repo.0.as_path(), root.join("linked")).unwrap();
+        }
+        let tree = create(&root, "feature/links", "main", false, None).unwrap();
+        let path = Path::new(&tree.path);
+        assert!(path.join("ok.local").is_file());
+        assert!(!path.join("link.local").exists());
+        assert!(!path.join("linked").exists());
+        assert!(!repo.0.join("repo-worktrees/outside-secret").exists());
+        assert_eq!(tree.included, vec!["ok.local"]);
+    }
+
+    #[test]
+    fn worktree_without_include_file_copies_nothing() {
+        let repo = repo();
+        let root = repo.0.join("repo");
+        std::fs::write(root.join(".gitignore"), ".env\n").unwrap();
+        commit_all(&root, "ignore rules");
+        std::fs::write(root.join(".env"), "TOKEN=local").unwrap();
+        let tree = create(&root, "feature/none", "main", false, None).unwrap();
+        assert!(!Path::new(&tree.path).join(".env").exists());
+        assert!(tree.included.is_empty());
+    }
+
+    #[test]
+    fn safe_relative_refuses_escapes() {
+        assert!(safe_relative(".env"));
+        assert!(safe_relative("a/b c/-d"));
+        for bad in ["", "/etc/passwd", "../x", "a/../b", "a//b", "./a", "a\\b"] {
+            assert!(!safe_relative(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn worktree_folder_setting() {
+        let main = Path::new("/Users/me/code/app");
+        assert_eq!(
+            worktree_parent(main, None).unwrap(),
+            PathBuf::from("/Users/me/code/app-worktrees")
+        );
+        assert_eq!(
+            worktree_parent(main, Some("  ")).unwrap(),
+            PathBuf::from("/Users/me/code/app-worktrees")
+        );
+        assert_eq!(
+            worktree_parent(main, Some("/tmp/trees")).unwrap(),
+            PathBuf::from("/tmp/trees/app")
+        );
+        assert!(worktree_parent(main, Some("relative/trees")).is_err());
+        assert!(worktree_parent(main, Some("/tmp/../etc")).is_err());
+    }
+
+    #[test]
+    fn creates_worktrees_under_the_folder_you_set() {
+        let repo = repo();
+        let root = repo.0.join("repo");
+        let folder = repo.0.join("all trees");
+        let tree = create(
+            &root,
+            "feature/where",
+            "main",
+            false,
+            Some(&folder.to_string_lossy()),
+        )
+        .unwrap();
+        assert!(Path::new(&tree.path).starts_with(folder.join("repo")));
+    }
+
     #[test]
     fn parses_literal_paths_and_worktree_flags() {
         let trees = parse_worktrees("worktree /repo\0HEAD abc\0branch refs/heads/main\0\0worktree /a\nquoted\"path\0HEAD def\0detached\0locked reason\0prunable missing\0\0");
@@ -821,7 +1148,7 @@ mod tests {
         let root = repo.0.join("repo");
         std::fs::write(root.join("main-only"), "main change").unwrap();
         git_checked(&root, &["add", "main-only"]).unwrap();
-        let tree = create(&root, "feature/test", "main", false).unwrap();
+        let tree = create(&root, "feature/test", "main", false, None).unwrap();
         let path = Path::new(&tree.path);
         assert!(!path.join("main-only").exists());
         assert!(git(path, &["diff", "--cached", "--name-only"])
@@ -917,11 +1244,11 @@ mod tests {
         let repo = repo();
         let root = repo.0.join("repo");
         git_checked(&root, &["branch", "existing"]).unwrap();
-        let tree = create(&root, "existing", "HEAD", true).unwrap();
-        assert!(create(&root, "existing", "HEAD", true).is_err());
-        assert!(create(&root, "main", "HEAD", true).is_err());
-        assert!(create(&root, "bad name", "HEAD", false).is_err());
-        assert!(create(&root, "valid", "--help", false).is_err());
+        let tree = create(&root, "existing", "HEAD", true, None).unwrap();
+        assert!(create(&root, "existing", "HEAD", true, None).is_err());
+        assert!(create(&root, "main", "HEAD", true, None).is_err());
+        assert!(create(&root, "bad name", "HEAD", false, None).is_err());
+        assert!(create(&root, "valid", "--help", false, None).is_err());
         git_checked(&root, &["worktree", "lock", &tree.path]).unwrap();
         assert!(remove(&root, Path::new(&tree.path), true).is_err());
         assert!(remove(&root, &repo.0, true).is_err());
@@ -931,7 +1258,7 @@ mod tests {
     fn renames_only_temporary_worktree_branches() {
         let repo = repo();
         let root = repo.0.join("repo");
-        let tree = create(&root, "mc/12345678", "main", false).unwrap();
+        let tree = create(&root, "mc/12345678", "main", false, None).unwrap();
         let renamed = rename_branch(&root, Path::new(&tree.path), "mc/faster-worktrees").unwrap();
         assert_eq!(renamed.branch.as_deref(), Some("mc/faster-worktrees"));
         assert!(git(
@@ -941,7 +1268,7 @@ mod tests {
         .is_ok());
         assert!(rename_branch(&root, &root, "mc/nope").is_err());
 
-        let regular = create(&root, "feature/manual", "main", false).unwrap();
+        let regular = create(&root, "feature/manual", "main", false, None).unwrap();
         assert!(rename_branch(&root, Path::new(&regular.path), "mc/should-not-change").is_err());
     }
 
@@ -949,7 +1276,7 @@ mod tests {
     fn removal_preflight_is_read_only_and_rejects_blockers() {
         let repo = repo();
         let root = repo.0.join("repo");
-        let tree = create(&root, "feature", "main", false).unwrap();
+        let tree = create(&root, "feature", "main", false, None).unwrap();
         let path = Path::new(&tree.path);
         std::fs::write(path.join("keep-me"), "local changes").unwrap();
         assert!(check_removal(&root, path, true, true)
@@ -972,7 +1299,7 @@ mod tests {
     fn references_include_archived_sessions_and_directly_opened_worktrees() {
         let repo = repo();
         let root = repo.0.join("repo");
-        let tree = create(&root, "feature", "main", false).unwrap();
+        let tree = create(&root, "feature", "main", false, None).unwrap();
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.lock_conn().unwrap();
         for (id, cwd, worktree, archived) in [
@@ -999,7 +1326,7 @@ mod tests {
     fn removal_preserves_shared_archived_and_direct_sessions() {
         let repo = repo();
         let root = repo.0.join("repo").canonicalize().unwrap();
-        let tree = create(&root, "feature", "main", false).unwrap();
+        let tree = create(&root, "feature", "main", false, None).unwrap();
         let path = Path::new(&tree.path);
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.lock_conn().unwrap();
@@ -1085,7 +1412,7 @@ mod tests {
         for git_removed in [false, true] {
             let repo = repo();
             let root = repo.0.join("repo");
-            let tree = create(&root, "feature", "main", false).unwrap();
+            let tree = create(&root, "feature", "main", false, None).unwrap();
             let main = list(&root).unwrap().remove(0).path;
             let db = repo.0.join("sessions.db");
             {
@@ -1150,7 +1477,7 @@ mod tests {
     fn database_failures_keep_worktree_and_session_state_consistent() {
         let repo = repo();
         let root = repo.0.join("repo");
-        let tree = create(&root, "feature", "main", false).unwrap();
+        let tree = create(&root, "feature", "main", false, None).unwrap();
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.lock_conn().unwrap();
         conn.execute(

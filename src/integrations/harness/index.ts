@@ -218,4 +218,11 @@ export type { HarnessAdapter, TextPromptInput } from "./core/registry";
 // [lane-2] exports
 // [lane-3] exports
 // [lane-4] exports
+export {
+  helperRouteForCheckout,
+  helperRouteForSession,
+  isHelperRoute,
+  type HelperRoute,
+  type HelperTarget,
+} from "./core/helperPrompt";
 // [lane-5] exports

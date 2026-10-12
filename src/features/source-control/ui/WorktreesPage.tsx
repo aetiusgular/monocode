@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import { CreateWorktreeDialog } from "./CreateWorktreeDialog";
 import { DeleteWorktreeDialog } from "./DeleteWorktreeDialog";
+import { WorktreeSettingsFields, worktreeLocation } from "./WorktreeSettingsFields";
+import { useWorktreeSettings } from "../model/worktreeSettings";
 import { SearchableProjectPicker } from "../../projects/ui/SearchableProjectPicker";
 import {
   FolderOpen,
@@ -64,6 +66,7 @@ export function WorktreesPage({
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState<Worktree>();
   const [refreshingAfterFailure, setRefreshingAfterFailure] = useState(false);
+  const worktreeSettings = useWorktreeSettings();
   return (
     <div
       data-setting-id="project-worktrees"
@@ -228,9 +231,15 @@ export function WorktreesPage({
       )}
       {data && (
         <p className="break-all text-[11px] text-content/40">
-          New worktrees are created in {prettyCwd(data.defaultRoot)}.
+          New worktrees are created in{" "}
+          {prettyCwd(
+            worktreeLocation(worktreeSettings.folder, project, data.defaultRoot) ??
+              data.defaultRoot,
+          )}
+          .
         </p>
       )}
+      <WorktreeSettingsFields />
       {creating && (
         <CreateWorktreeDialog
           cwd={project}

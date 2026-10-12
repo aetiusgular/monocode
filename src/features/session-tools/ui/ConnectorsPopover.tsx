@@ -26,6 +26,9 @@ import {
   withReportedConnectorRows,
 } from "../model/connectors";
 import { useReportedMcpServers } from "../model/reportedMcpServers";
+import { noteHarnessServers } from "../../server-locality/model/sessionServers";
+import { ServerLocalityTag } from "../../server-locality/ui/ServerLocalityTag";
+import type { LocalityServer } from "../../server-locality/model/serverLocality";
 import {
   loadClaudeConnectors,
   loadingClaudeConnectors,
@@ -163,6 +166,8 @@ export function ConnectorsPopover({
       const settle = (servers?: HarnessMcpServer[]) => {
         if (servers) answers.set(target, servers);
         else answers.delete(target);
+        // #9: what the harness reported decides whether the session is local.
+        noteHarnessServers(harness, providerAccountId, cwd, servers);
         if (request.current !== current) return;
         setReported(servers ? { servers } : { failed: true });
         setAsking(false);
@@ -277,6 +282,22 @@ export function ConnectorsPopover({
     onDismiss("outside");
   };
   const checking = !answer.servers && !discovered;
+  // #9: what each row's locality is decided from. Reported servers carry
+  // their command or address; gateway rows are Docker gateway entries.
+  const localityServer = (name: string): LocalityServer => {
+    const reportedServer = answer.servers?.find((server) => server.name === name);
+    if (reportedServer) {
+      return {
+        name,
+        ...(reportedServer.command ? { command: reportedServer.command } : {}),
+        ...(reportedServer.url ? { url: reportedServer.url } : {}),
+      };
+    }
+    if (gatewayNames.has(name)) {
+      return { name, command: "docker", args: ["mcp", "gateway", "run"] };
+    }
+    return { name };
+  };
   const title = HARNESS_TITLE[harness];
   const caveat = connectorSwitchCaveat(harness);
   return (
@@ -328,6 +349,7 @@ export function ConnectorsPopover({
           rows={rows}
           gatewayNames={gatewayNames}
           onToggle={onToggle}
+          localityServer={localityServer}
         />
       ) : discovered?.error ? null : (
         <p className="px-2 py-2 text-[12px] text-content/50">
@@ -382,11 +404,13 @@ function ConnectorList({
   rows,
   gatewayNames,
   onToggle,
+  localityServer,
 }: {
   title: string;
   rows: ConnectorRow[];
   gatewayNames: ReadonlySet<string>;
   onToggle: (name: string, on: boolean) => void;
+  localityServer?: (name: string) => LocalityServer;
 }) {
   const [scroller, setScroller] = useState<HTMLDivElement | null>(null);
   const edges = useScrollEdges(scroller, rows.length);
@@ -430,6 +454,9 @@ function ConnectorList({
                     {row.detail}
                   </span>
                 </span>
+                {localityServer ? (
+                  <ServerLocalityTag server={localityServer(row.name)} />
+                ) : null}
                 <ConnectorSwitch
                   label={row.name}
                   on={row.enabled}

@@ -20,6 +20,11 @@ import {
   useClaudePlugins,
   type PluginContents,
 } from "../model/plugins";
+import {
+  InstallPluginForm,
+  MarketplacesSection,
+  PluginRowActions,
+} from "./PluginManager";
 
 const NOTE = "text-[11px] leading-4 text-content/45";
 
@@ -56,11 +61,13 @@ function PluginRow({
   pending,
   error,
   onToggle,
+  accountId,
 }: {
   plugin: ClaudePlugin;
   pending: boolean;
   error?: string;
   onToggle: (on: boolean) => void;
+  accountId?: string;
 }) {
   const [found, setFound] = useState<PluginContents | null>(null);
   useEffect(() => {
@@ -129,6 +136,7 @@ function PluginRow({
             {error}
           </p>
         ) : null}
+        <PluginRowActions plugin={plugin} accountId={accountId} />
       </div>
       {control.kind === "switch" ? (
         <ConnectorSwitch
@@ -213,7 +221,8 @@ export function PluginsPage({ cwd }: { cwd: string }) {
         ) : null
       ) : plugins.length === 0 ? (
         <p className="text-[12px] text-content/45">
-          No plugins installed. Install one with /plugin in Claude Code.
+          No plugins installed. Install one below, or with /plugin in Claude
+          Code.
         </p>
       ) : (
         <ul aria-label="Claude Code plugins" className="flex flex-col gap-2">
@@ -226,11 +235,14 @@ export function PluginsPage({ cwd }: { cwd: string }) {
                 pending={state.pending.includes(key)}
                 error={state.rowErrors[key]}
                 onToggle={(on) => void setPluginEnabled(plugin, on, accountId)}
+                accountId={accountId}
               />
             );
           })}
         </ul>
       )}
+      <InstallPluginForm cwd={cwd || undefined} accountId={accountId} />
+      <MarketplacesSection accountId={accountId} />
       {hasSynced ? (
         <p className={NOTE}>
           claude.ai plugins come from your claude.ai account. Turning one off

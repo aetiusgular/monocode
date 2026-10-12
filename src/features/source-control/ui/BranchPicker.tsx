@@ -1,3 +1,4 @@
+import type { HelperTarget } from "../../../integrations/harness/core/helperPrompt";
 import { Check, GitBranch, Plus, Search } from "../../../shared/ui/icons";
 import {
   useEffect,
@@ -34,6 +35,8 @@ type Props = {
   onClose?: () => void;
   onOpenChange?: (open: boolean) => void;
   popoverSide?: "top" | "bottom";
+  /** The session whose model writes a commit message before a switch (F6). */
+  textHarness?: HelperTarget;
 };
 
 const MENU_WIDTH = 280;
@@ -60,6 +63,7 @@ export function BranchPicker({
   onClose,
   onOpenChange,
   popoverSide = "top",
+  textHarness,
 }: Props) {
   const [open, setOpen] = useState(initialOpen);
   const [query, setQuery] = useState("");
@@ -321,6 +325,7 @@ export function BranchPicker({
       {blocked ? (
         <SwitchBranchDialog
           cwd={cwd}
+          textHarness={textHarness}
           branch={blocked.name}
           creating={blocked.kind === "create"}
           busy={blockedBusy}

@@ -35,7 +35,7 @@ import {
   notifyReviewChanged,
   type CheckpointFile,
 } from "../../sessions/model/checkpoint";
-import type { HarnessId } from "../../sessions/model/session";
+import type { HelperTarget } from "../../../integrations/harness/core/helperPrompt";
 import {
   loadChangesView,
   saveChangesView,
@@ -119,7 +119,7 @@ export function MonoProjectCommit({
   files: MonoProjectFile[];
   index: GitDiffIndex | null;
   reloadIndex: () => void;
-  textHarness?: HarnessId;
+  textHarness?: HelperTarget;
   onOpenFile: (path: string) => void;
 }) {
   const { pr, reload: reloadPr } = usePrStatus(root, index?.branch);

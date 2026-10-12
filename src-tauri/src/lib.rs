@@ -658,6 +658,7 @@ pub fn run() {
             sandbox_frame::sandbox_frame_put,
             sandbox_frame::sandbox_frame_release,
             // [lane-4] commands
+            fs::git_review_patch,
             // [lane-5] commands
         ])
         .build(tauri::generate_context!())

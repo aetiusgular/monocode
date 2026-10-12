@@ -1,3 +1,4 @@
+import { ConnectorToolsSection } from "./ConnectorTools";
 import { useEffect, useRef, useState } from "react";
 import { Modal } from "../../../shared/ui/Modal";
 import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
@@ -360,7 +361,12 @@ export function ConnectorDetail({
           </section>
         ) : null}
 
-        {entry.tools.length > 0 ? (
+        {connector ? (
+          <ConnectorToolsSection
+            profileId={connector.profileId}
+            server={connector.server}
+          />
+        ) : entry.tools.length > 0 ? (
           <section aria-label="Tools">
             <p className="pb-1 text-[12px] text-content/55">
               {entry.tools.length} {entry.tools.length === 1 ? "tool" : "tools"}{" "}
