@@ -419,6 +419,11 @@ export type Block = {
    */
   monoReaction?: string;
   // [lane-1] block-fields
+  /**
+   * On a user block: the id of MonoCode's own workspace checkpoint for the
+   * turn it started. Restoring files to before this turn reads it.
+   */
+  checkpointTurnId?: string;
   // [lane-2] block-fields
   // [lane-3] block-fields
   // [lane-4] block-fields
@@ -614,6 +619,13 @@ export type Session = {
    */
   pendingQuestion?: UserQuestionPrompt;
   // [lane-1] session-fields
+  /**
+   * Work the harness reports running beside the turn. Live only: never
+   * saved, and cleared when the turn stops streaming.
+   */
+  backgroundItems?: import("../../../integrations/harness/core/background").BackgroundItem[];
+  /** The prompt a chat rewind took back, for the composer. Not saved. */
+  rewoundPrompt?: import("../../rewind/model/turnRewind").RewoundPrompt;
   // [lane-2] session-fields
   // [lane-3] session-fields
   // [lane-4] session-fields

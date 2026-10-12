@@ -176,6 +176,16 @@ export type HarnessEvent =
   /** Provider token accounting for the active user turn. */
   | ({ type: "turn.metrics" } & TurnMetrics)
   // [lane-1] events
+  /**
+   * Everything the harness runs beside the turn, for the Running section.
+   * Unlike `background.updated`, it is sent while the agent works too.
+   */
+  | {
+      type: "background.items";
+      items: import("./background").BackgroundItem[];
+    }
+  /** MonoCode's own checkpoint for the turn the last user message started. */
+  | { type: "turn.checkpoint"; checkpointTurnId: string }
   // [lane-2] events
   // [lane-3] events
   // [lane-4] events

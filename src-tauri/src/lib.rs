@@ -62,6 +62,7 @@ mod windows;
 mod worktree_lifecycle;
 mod worktrees;
 // [lane-1] mods
+mod claude_sessions;
 // [lane-2] mods
 // [lane-3] mods
 mod sandbox_frame;
@@ -640,6 +641,9 @@ pub fn run() {
             project_logo::remove_project_logo,
             project_logo::forget_logo_file,
             // [lane-1] commands
+            checkpoint::session_checkpoint_restore_preview,
+            checkpoint::session_checkpoint_restore_turn,
+            claude_sessions::claude_sessions_list,
             // [lane-2] commands
             // [lane-3] commands
             sandbox_frame::sandbox_frame_put,

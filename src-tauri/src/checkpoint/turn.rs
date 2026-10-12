@@ -7,6 +7,9 @@ use std::io::Write;
 #[cfg(test)]
 mod tests;
 
+/// Restoring files to before any earlier turn of a session.
+mod rewind;
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RecordedTurn {

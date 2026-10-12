@@ -252,3 +252,63 @@ export function keepSessionChanges(
     }),
   );
 }
+
+/** One file a restore to before an earlier turn would change. */
+export type RestoreFile = {
+  path: string;
+  relative: string;
+  action: "restore" | "recreate" | "delete";
+  restorable: boolean;
+  reason?: string | null;
+};
+
+export type RestorePreview = {
+  turnId: string;
+  files: RestoreFile[];
+  /** Why the restore cannot run now, when it cannot. */
+  blocked?: string | null;
+};
+
+export type RestoreResult = {
+  restored: string[];
+  skipped: string[];
+  /** A commit of the folder just before the restore, to undo it by hand. */
+  backup: string;
+  backupRef: string;
+};
+
+/** What putting files back to before `turnId` would change. Read only. */
+export function previewRestoreSessionTurn(
+  sessionId: string,
+  cwd: string,
+  turnId: string,
+): Promise<RestorePreview> {
+  return enqueueCheckpoint(sessionId, () =>
+    invoke<RestorePreview>("session_checkpoint_restore_preview", {
+      sessionId,
+      cwd,
+      turnId,
+    }),
+  );
+}
+
+/**
+ * Puts every file back to how it was before `turnId`, after a backup commit
+ * of the folder as it is now. Refused while a turn runs in this folder, in
+ * this chat or another, and when the branch moved since that turn.
+ */
+export async function restoreSessionTurn(
+  sessionId: string,
+  cwd: string,
+  turnId: string,
+): Promise<RestoreResult> {
+  const result = await enqueueCheckpoint(sessionId, () =>
+    invoke<RestoreResult>("session_checkpoint_restore_turn", {
+      sessionId,
+      cwd,
+      turnId,
+    }),
+  );
+  notifyReviewChanged(sessionId);
+  return result;
+}

@@ -167,6 +167,8 @@ import {
 } from "../model/transcriptHighlights";
 import { ResearchLabel } from "../../research-mode/ui/ResearchLabel";
 // [lane-1] imports
+import type { TurnRewind as TurnRewind_l1 } from "../../rewind/model/turnRewind";
+import { TurnRewindMenu as TurnRewindMenu_l1 } from "../../rewind/ui/TurnRewindMenu";
 // [lane-2] imports
 // [lane-3] imports
 import {
@@ -286,6 +288,8 @@ type Props = {
   /** A worker's transcript: show the orchestrator's turns instead of hiding them. */
   managed?: boolean;
   // [lane-1] props
+  /** Rewind, restore and fork on each sent prompt, once the turn settles. */
+  turnRewind_l1?: TurnRewind_l1;
   // [lane-2] props
   // [lane-3] props
   // [lane-4] props
@@ -352,6 +356,7 @@ function AgentTranscriptComponent({
   onScrollerChange,
   managed = false,
   // [lane-1] destructure
+  turnRewind_l1,
   // [lane-2] destructure
   // [lane-3] destructure
   // [lane-4] destructure
@@ -1393,6 +1398,11 @@ function AgentTranscriptComponent({
                   item.block.id === editableUserBlockId
                 }
                 // [lane-1] block-pass
+                turnRewind_l1={
+                  settled && item.block.role === "user" && !item.block.draft
+                    ? turnRewind_l1
+                    : undefined
+                }
                 // [lane-2] block-pass
                 // [lane-3] block-pass
                 // [lane-4] block-pass
@@ -2272,6 +2282,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
   onEditLastTurn,
   editing = false,
   // [lane-1] block-destructure
+  turnRewind_l1,
   // [lane-2] block-destructure
   // [lane-3] block-destructure
   // [lane-4] block-destructure
@@ -2306,6 +2317,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
   onEditLastTurn?: () => void;
   editing?: boolean;
   // [lane-1] block-props
+  turnRewind_l1?: TurnRewind_l1;
   // [lane-2] block-props
   // [lane-3] block-props
   // [lane-4] block-props
@@ -2328,6 +2340,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
         onSaveNote={onSaveNote}
         onSendDraft={onSendDraft}
         onRemoveDraft={onRemoveDraft}
+        turnRewind={turnRewind_l1}
       />
     );
   }
@@ -2479,6 +2492,7 @@ function UserMessageBlock({
   onSaveNote,
   onSendDraft,
   onRemoveDraft,
+  turnRewind,
 }: {
   block: Block;
   layout: TranscriptLayout;
@@ -2488,6 +2502,8 @@ function UserMessageBlock({
   onRetryMessage?: (blockId: string) => void;
   visible: boolean;
   stickyIndex: number;
+  /** Rewind, restore and fork from this prompt. */
+  turnRewind?: TurnRewind_l1;
   onEdit?: () => void;
   editing?: boolean;
   cwd?: string;
@@ -2845,7 +2861,11 @@ function UserMessageBlock({
         </div>
         {deliveryControl}
         {!compactFollowUp &&
-        (text || block.attachments?.length || messageAt != null || onEdit) ? (
+        (text ||
+          block.attachments?.length ||
+          messageAt != null ||
+          onEdit ||
+          turnRewind) ? (
           <div className="user-message-actions flex items-center gap-1 px-3 pt-1">
             {text || block.attachments?.length ? (
               <CopyTurnButton
@@ -2856,6 +2876,9 @@ function UserMessageBlock({
             ) : null}
             {onEdit ? (
               <EditLastTurnButton onEdit={onEdit} editing={editing} />
+            ) : null}
+            {turnRewind && !block.draft ? (
+              <TurnRewindMenu_l1 rewind={turnRewind} blockId={block.id} />
             ) : null}
             {text && onSaveNote ? (
               <SaveNoteButton text={text} onSave={onSaveNote} />

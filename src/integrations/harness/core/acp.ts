@@ -1,3 +1,4 @@
+import type { HarnessLaunchMcpServer } from "./types";
 import {
   JsonRpcClient,
   type JsonRpcHandlers,
@@ -69,4 +70,54 @@ export class AcpClient {
   ): Promise<void> {
     return this.rpc.respondError(id as JsonRpcId, error);
   }
+}
+
+/** An ACP stdio MCP server, as `session/new`, `session/load` and `session/resume` take it. */
+export type AcpStdioMcpServer = {
+  name: string;
+  command: string;
+  args: string[];
+  env: Array<{ name: string; value: string }>;
+};
+
+const ACP_MCP_SERVER_NAME = /^[A-Za-z0-9_-]{1,100}$/;
+
+/**
+ * Change 8: the chat's Docker gateway connectors as ACP stdio servers, one
+ * each, sorted by name. A bad name, an empty command or a repeated name is
+ * left out. No environment is passed: the gateway reads its own.
+ */
+export function acpMcpServers(
+  servers: readonly HarnessLaunchMcpServer[] | undefined,
+): AcpStdioMcpServer[] {
+  const byName = new Map<string, AcpStdioMcpServer>();
+  for (const server of servers ?? []) {
+    if (!ACP_MCP_SERVER_NAME.test(server.name) || !server.command) continue;
+    if (byName.has(server.name)) continue;
+    byName.set(server.name, {
+      name: server.name,
+      command: server.command,
+      args: [...server.args],
+      env: [],
+    });
+  }
+  return [...byName.values()].sort((a, b) =>
+    a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+  );
+}
+
+/**
+ * What decides whether a running ACP session still has the right servers.
+ * A change means a restart that loads the same conversation with the new set.
+ */
+export function acpMcpKey(
+  servers: readonly HarnessLaunchMcpServer[] | undefined,
+): string {
+  return JSON.stringify(
+    acpMcpServers(servers).map((server) => [
+      server.name,
+      server.command,
+      server.args,
+    ]),
+  );
 }

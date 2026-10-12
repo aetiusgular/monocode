@@ -127,13 +127,37 @@ function release() {
   }, 500);
 }
 
+/**
+ * What a PTY runs instead of the login shell: a program and its arguments,
+ * passed as a list and never through a shell, and extra environment
+ * variables. The backend refuses reserved names such as PATH and HOME.
+ */
+export type PtyCommand = {
+  program: string;
+  args?: string[];
+  env?: Record<string, string>;
+};
+
 export async function spawnPty(
   id: string,
   cwd: string,
   cols: number,
   rows: number,
+  command?: PtyCommand,
 ): Promise<void> {
-  await invoke("pty_spawn", { id, cwd, cols, rows });
+  await invoke("pty_spawn", {
+    id,
+    cwd,
+    cols,
+    rows,
+    ...(command
+      ? {
+          program: command.program,
+          args: command.args ?? [],
+          env: command.env ?? {},
+        }
+      : {}),
+  });
 }
 
 export async function writePty(id: string, data: string): Promise<void> {

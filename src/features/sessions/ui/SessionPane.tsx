@@ -130,6 +130,15 @@ import {
 } from "../../session-panel";
 import { ToolImageGalleryHost } from "../../tool-images";
 // [lane-1] imports
+import {
+  takeRewoundPrompt as takeRewoundPrompt_l1,
+  turnRewindFor as turnRewindFor_l1,
+} from "../../rewind/model/turnRewind";
+import {
+  harnessOffersPickUp as harnessOffersPickUp_l1,
+  type PickUpTarget as PickUpTarget_l1,
+} from "../../session-import/model/pickUp";
+import type { HarnessSessionRow as HarnessSessionRow_l1 } from "../../session-import/model/types";
 // [lane-2] imports
 // [lane-3] imports
 // [lane-4] imports
@@ -278,6 +287,14 @@ export type SessionPaneProps = {
   /** Keeps this transcript mounted after the pane closes. */
   transcriptPool?: TranscriptPool;
   // [lane-1] props
+  /** Takes the chat back to before a prompt. Files stay as they are. */
+  onRewindChat_l1?: (sessionId: string, blockId: string) => Promise<void>;
+  /** Opens a new chat with the conversation up to the end of a turn. */
+  onForkTurn_l1?: (sessionId: string, blockId: string) => Promise<void>;
+  /** #45: opens a harness session from the terminal, bound to a chat. */
+  onPickUpSession_l1?: (sessionId: string, row: HarnessSessionRow_l1) => Promise<void>;
+  /** #45: harness session ids already bound to a chat, to that chat's id. */
+  pickUpBound_l1?: (harness: Session["harness"]) => ReadonlyMap<string, string>;
   // [lane-2] props
   // [lane-3] props
   // [lane-4] props
@@ -389,6 +406,10 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onPaneDragStart,
   transcriptPool,
   // [lane-1] destructure
+  onRewindChat_l1,
+  onForkTurn_l1,
+  onPickUpSession_l1,
+  pickUpBound_l1,
   // [lane-2] destructure
   // [lane-3] destructure
   // [lane-4] destructure
@@ -719,6 +740,76 @@ const LocalSessionPane = memo(function LocalSessionPane({
   const composerDockMotion = useComposerDockMotion(dockComposer);
   const draftRef = useRef<string | undefined>(getComposerDraft(session.id));
   // [lane-1] body
+  // A Mono's chat is a running conversation, and a remote one is driven from
+  // the other machine: neither offers rewind. Files restore works anywhere
+  // MonoCode took a checkpoint.
+  const rewindOffered_l1 =
+    !remote &&
+    !monoForSession(session.id) &&
+    !session.ephemeral &&
+    !session.worktreeRemoved &&
+    !session.inboxAsk &&
+    !monoTranscript.viewingOlderPage;
+  const turnRewind_l1 = useMemo(
+    () =>
+      rewindOffered_l1
+        ? turnRewindFor_l1(
+            session,
+            { sharedCheckout: reviewUndoLocked },
+            workCwd,
+            { onRewindChat: onRewindChat_l1, onFork: onForkTurn_l1 },
+          )
+        : undefined,
+    [
+      rewindOffered_l1,
+      session,
+      reviewUndoLocked,
+      workCwd,
+      onRewindChat_l1,
+      onForkTurn_l1,
+    ],
+  );
+  // The prompt a chat rewind took back goes back in the composer, once, and
+  // only when nothing has been typed there since.
+  useEffect(() => {
+    if (takeRewoundPrompt_l1(session.rewoundPrompt)) {
+      restorePromptRef.current?.(
+        session.rewoundPrompt!.text,
+        session.rewoundPrompt!.attachments,
+      );
+    }
+  }, [session.rewoundPrompt]);
+  // #45: a local chat on a harness that keeps its own sessions offers them.
+  const pickUp_l1 = useMemo<PickUpTarget_l1 | undefined>(
+    () =>
+      onPickUpSession_l1 &&
+      !remote &&
+      !monoForSession(session.id) &&
+      !session.ephemeral &&
+      !session.worktreeRemoved &&
+      !session.inboxAsk &&
+      harnessOffersPickUp_l1(session.harness)
+        ? {
+            harness: session.harness,
+            cwd: workCwd,
+            providerAccountId: session.providerAccountId,
+            bound: pickUpBound_l1?.(session.harness) ?? new Map(),
+            onPick: (row) => onPickUpSession_l1(session.id, row),
+          }
+        : undefined,
+    [
+      onPickUpSession_l1,
+      pickUpBound_l1,
+      remote,
+      session.id,
+      session.ephemeral,
+      session.worktreeRemoved,
+      session.inboxAsk,
+      session.harness,
+      session.providerAccountId,
+      workCwd,
+    ],
+  );
   // [lane-2] body
   // [lane-3] body
   // [lane-4] body
@@ -895,6 +986,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
         restorePromptRef.current = restore;
       }}
       // [lane-1] composer-props
+      pickUp_l1={pickUp_l1}
       // [lane-2] composer-props
       // [lane-3] composer-props
       // [lane-4] composer-props
@@ -1235,6 +1327,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                       )
                     }
                     // [lane-1] transcript-props
+                    turnRewind_l1={turnRewind_l1}
                     // [lane-2] transcript-props
                     // [lane-3] transcript-props
                     // [lane-4] transcript-props

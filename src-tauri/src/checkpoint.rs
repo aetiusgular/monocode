@@ -581,6 +581,38 @@ pub struct CheckpointApplyResult {
     pub already_applied: usize,
 }
 
+/// One file a restore to before an earlier turn would change.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreFile {
+    pub path: String,
+    pub relative: String,
+    /// "restore" its earlier contents, "recreate" it, or "delete" it.
+    pub action: String,
+    /// False when the file is not a regular file or sits behind a link.
+    pub restorable: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct RestorePreview {
+    pub turn_id: String,
+    pub files: Vec<RestoreFile>,
+    /// Why the restore cannot run now, when it cannot.
+    pub blocked: Option<String>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreResult {
+    pub restored: Vec<String>,
+    pub skipped: Vec<String>,
+    /// A commit of the folder as it was just before the restore.
+    pub backup: String,
+    pub backup_ref: String,
+}
+
 pub fn init(app: &AppHandle) -> Result<(), String> {
     let dir = app
         .path()
@@ -776,6 +808,41 @@ pub async fn session_checkpoint_undo(
     let store = store.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         store.exclusive(|store| store.undo(&session_id, &cwd, relative.as_deref()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// What restoring files to before an earlier turn would change. Read only.
+#[tauri::command]
+pub async fn session_checkpoint_restore_preview(
+    store: State<'_, CheckpointStore>,
+    session_id: String,
+    cwd: String,
+    turn_id: String,
+) -> Result<RestorePreview, String> {
+    validate_id(&session_id, "session")?;
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        store.exclusive(|store| store.restore_preview(&session_id, &cwd, &turn_id))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Puts every regular file back to how it was before an earlier turn, after
+/// a backup commit of the folder as it is now.
+#[tauri::command]
+pub async fn session_checkpoint_restore_turn(
+    store: State<'_, CheckpointStore>,
+    session_id: String,
+    cwd: String,
+    turn_id: String,
+) -> Result<RestoreResult, String> {
+    validate_id(&session_id, "session")?;
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        store.exclusive(|store| store.restore_to_turn(&session_id, &cwd, &turn_id))
     })
     .await
     .map_err(|e| e.to_string())?

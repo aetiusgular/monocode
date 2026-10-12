@@ -194,6 +194,15 @@ type Shared = {
   onTerminalMetaChange?: (fileId: string, patch: TerminalMetaPatch) => void;
   transcriptPool?: TranscriptPool;
   // [lane-1] props
+  onRewindChat_l1?: (sessionId: string, blockId: string) => Promise<void>;
+  onForkTurn_l1?: (sessionId: string, blockId: string) => Promise<void>;
+  onPickUpSession_l1?: (
+    sessionId: string,
+    row: import("../../session-import/model/types").HarnessSessionRow,
+  ) => Promise<void>;
+  pickUpBound_l1?: (
+    harness: import("../../sessions/model/session").HarnessId,
+  ) => ReadonlyMap<string, string>;
   // [lane-2] props
   // [lane-3] props
   // [lane-4] props
@@ -289,6 +298,10 @@ function PaneTreeComponent({
   onTerminalMetaChange,
   transcriptPool,
   // [lane-1] destructure
+  onRewindChat_l1,
+  onForkTurn_l1,
+  onPickUpSession_l1,
+  pickUpBound_l1,
   // [lane-2] destructure
   // [lane-3] destructure
   // [lane-4] destructure
@@ -586,6 +599,10 @@ function PaneTreeComponent({
                   onPaneDragStart={onPaneDragStart}
                   transcriptPool={transcriptPool}
                   // [lane-1] pane-props
+                  onRewindChat_l1={onRewindChat_l1}
+                  onForkTurn_l1={onForkTurn_l1}
+                  onPickUpSession_l1={onPickUpSession_l1}
+                  pickUpBound_l1={pickUpBound_l1}
                   // [lane-2] pane-props
                   // [lane-3] pane-props
                   // [lane-4] pane-props

@@ -7,7 +7,12 @@ import {
   isTaskListToolName,
   taskListFromToolInput,
 } from "../../../../features/sessions/model/taskList";
-import { AcpClient, type AcpHandlers } from "../../core/acp";
+import {
+  AcpClient,
+  acpMcpKey,
+  acpMcpServers,
+  type AcpHandlers,
+} from "../../core/acp";
 import {
   killChild,
   resolveCursorBinary,
@@ -70,6 +75,8 @@ type PendingToolEnrichment = {
 };
 
 type Live = {
+  /** Change 8: the gateway connectors this session was started with. */
+  mcpKey: string;
   subagents: AcpSubagents;
   acp: AcpClient;
   acpSessionId: string;
@@ -250,14 +257,16 @@ export function bindCursorSession(
 
 async function ensureLive(input: SendTurnInput): Promise<Live> {
   const existing = liveByThread.get(input.sessionId);
-  if (existing && existing.cwd === input.cwd) {
+  const mcpKey = acpMcpKey(input.gatewayConnectors);
+  if (existing && existing.cwd === input.cwd && existing.mcpKey === mcpKey) {
     existing.onEvent = input.onEvent;
     existing.runtimeMode = input.runtimeMode;
     existing.planning = input.intent === "plan";
     return existing;
   }
   if (existing) {
-    resumeByThread.delete(input.sessionId);
+    // Another set of connectors loads the same conversation again.
+    if (existing.cwd !== input.cwd) resumeByThread.delete(input.sessionId);
     await stopCursorSession(input.sessionId);
   }
 
@@ -331,7 +340,7 @@ async function ensureLive(input: SendTurnInput): Promise<Live> {
         setup = await acp.request<SessionSetupResult>("session/load", {
           sessionId: resume.acpSessionId,
           cwd: input.cwd,
-          mcpServers: [],
+          mcpServers: acpMcpServers(input.gatewayConnectors),
         });
         acpSessionId = resume.acpSessionId;
         didLoad = true;
@@ -347,13 +356,14 @@ async function ensureLive(input: SendTurnInput): Promise<Live> {
     if (!acpSessionId) {
       setup = await acp.request<SessionSetupResult>("session/new", {
         cwd: input.cwd,
-        mcpServers: [],
+        mcpServers: acpMcpServers(input.gatewayConnectors),
       });
       acpSessionId = setup.sessionId?.trim();
     }
     if (!acpSessionId) throw new Error("Cursor did not return a session id");
 
     const live: Live = {
+      mcpKey,
       subagents: new AcpSubagents(),
       acp,
       acpSessionId,

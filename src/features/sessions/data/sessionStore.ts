@@ -1105,6 +1105,14 @@ function sanitizeBlock(
     }
   }
   // [lane-1] sanitize-block
+  // The checkpoint store accepts letters, digits, "-" and "_" only.
+  if (
+    block.role === "user" &&
+    typeof block.checkpointTurnId === "string" &&
+    /^[A-Za-z0-9_-]{1,128}$/.test(block.checkpointTurnId)
+  ) {
+    next.checkpointTurnId = block.checkpointTurnId;
+  }
   // [lane-2] sanitize-block
   // [lane-3] sanitize-block
   // [lane-4] sanitize-block

@@ -237,6 +237,32 @@ export function applyHarnessEvent(
         },
       });
     // [lane-1] events
+    case "background.items": {
+      if (event.items.length === 0) {
+        if (!session.backgroundItems) return session;
+        const { backgroundItems: _cleared_l1, ...rest } = session;
+        return rest;
+      }
+      return { ...session, backgroundItems: event.items };
+    }
+    case "turn.checkpoint": {
+      // The turn's own user message: the latest one that is not still queued.
+      const index = lastMatchingBlock(
+        session.blocks,
+        (block) =>
+          block.role === "user" &&
+          !session.queuedMessages?.some(
+            (message) => message.blockId === block.id,
+          ),
+      );
+      if (index < 0 || session.blocks[index].checkpointTurnId) return session;
+      const blocks = session.blocks.slice();
+      blocks[index] = {
+        ...blocks[index],
+        checkpointTurnId: event.checkpointTurnId,
+      };
+      return { ...session, blocks };
+    }
     // [lane-2] events
     // [lane-3] events
     // [lane-4] events
@@ -542,8 +568,11 @@ export function appendSteerUser(
 }
 
 export function stopStreaming(session: Session, endedAt = Date.now()): Session {
-  const { backgroundTasks: _cleared, ...settled } =
-    settlePendingApprovals(session);
+  const {
+    backgroundTasks: _cleared,
+    backgroundItems: _clearedItems,
+    ...settled
+  } = settlePendingApprovals(session);
   return {
     ...settled,
     busy: false,

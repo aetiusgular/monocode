@@ -103,6 +103,8 @@ import type {
   SteerTurnInput,
 } from "../../core/types";
 // [lane-1] imports
+import { claudeBackgroundItems as claudeBackgroundItems_l1 } from "./claudeBackground";
+import { backgroundItemsKey as backgroundItemsKey_l1 } from "../../core/background";
 // [lane-2] imports
 // [lane-3] imports
 // [lane-4] imports
@@ -147,6 +149,10 @@ type LiveAgentTask = {
 type BackgroundTask = {
   description: string;
   toolUseId?: string;
+  /** Claude Code's `task_type`, which tells a subagent from a shell. */
+  taskType?: string;
+  /** When MonoCode first heard of it, epoch ms. */
+  startedAt?: number;
 };
 
 type Live = {
@@ -213,6 +219,8 @@ type Live = {
   manualCompaction: boolean;
   compactionConfirmed: boolean;
   // [lane-1] live
+  /** Last Running list sent to the UI, to skip repeats. */
+  backgroundItemsKey_l1: string;
   // [lane-2] live
   // [lane-3] live
   // [lane-4] live
@@ -750,6 +758,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     manualCompaction: false,
     compactionConfirmed: false,
     // [lane-1] live-init
+    backgroundItemsKey_l1: "",
     // [lane-2] live-init
     // [lane-3] live-init
     // [lane-4] live-init
@@ -1523,6 +1532,9 @@ function handleAgentLifecycle(
     live.backgroundTasks.set(started.taskId, {
       description: started.description,
       toolUseId: started.toolUseId,
+      taskType: started.taskType,
+      startedAt:
+        live.backgroundTasks.get(started.taskId)?.startedAt ?? Date.now(),
     });
     syncBackgroundWait(live);
     if (!isAgentTaskType(started.taskType)) return true;
@@ -1615,7 +1627,11 @@ function handleAgentLifecycle(
   }
   for (const row of allTasks) {
     if (!live.backgroundTasks.has(row.taskId)) {
-      live.backgroundTasks.set(row.taskId, { description: row.description });
+      live.backgroundTasks.set(row.taskId, {
+        description: row.description,
+        taskType: row.taskType,
+        startedAt: Date.now(),
+      });
     }
   }
   const liveTasks = allTasks.filter((task) => isAgentTaskType(task.taskType));
@@ -2033,6 +2049,17 @@ function syncBackgroundWait(live: Live): void {
     live.activeTurn && live.turnResultSeen && !live.cancelled
       ? [...live.backgroundTasks.values()].map((task) => task.description)
       : [];
+  // The Running section lists every task while it runs, not only once
+  // Claude has yielded. A cancelled turn has asked all of them to stop.
+  const items =
+    live.activeTurn && !live.cancelled
+      ? claudeBackgroundItems_l1(live.backgroundTasks)
+      : [];
+  const itemsKey = backgroundItemsKey_l1(items);
+  if (itemsKey !== live.backgroundItemsKey_l1) {
+    live.backgroundItemsKey_l1 = itemsKey;
+    if (!live.muteUpdates) live.onEvent({ type: "background.items", items });
+  }
   const key = waiting.join("\n");
   if (key === live.backgroundKey) return;
   live.backgroundKey = key;
@@ -2207,6 +2234,7 @@ function launchOptions(
   disabledMcpServers?: string[];
   gatewayConnectors?: HarnessSessionInput["gatewayConnectors"];
   // [lane-1] launch-type
+  forkSession?: boolean;
   // [lane-2] launch-type
   // [lane-3] launch-type
   // [lane-4] launch-type
@@ -2236,6 +2264,11 @@ function launchOptions(
     settings.enabledPlugins = enabledPlugins;
   }
   // [lane-1] launch-body
+  // A fork resumes the source conversation once, as a copy. Once Claude has
+  // bound the copy's own id, `resume` is that id and the fork is done.
+  const fork_l1 = forkByThread_l1.get(input.sessionId);
+  if (fork_l1 && fork_l1 !== resume) forkByThread_l1.delete(input.sessionId);
+  const forkSession_l1 = fork_l1 !== undefined && fork_l1 === resume;
   // [lane-2] launch-body
   // [lane-3] launch-body
   // [lane-4] launch-body
@@ -2264,6 +2297,7 @@ function launchOptions(
     disabledMcpServers: input.disabledMcpServers,
     gatewayConnectors: input.gatewayConnectors,
     // [lane-1] launch-return
+    ...(forkSession_l1 ? { forkSession: true } : {}),
     // [lane-2] launch-return
     // [lane-3] launch-return
     // [lane-4] launch-return
@@ -2281,6 +2315,92 @@ export function __claudeTestReset(): void {
   rewindByThread.clear();
 }
 // [lane-1] exports
+/**
+ * Chats waiting to start as a fork, by MonoCode session id, with the source
+ * Claude conversation they copy. In memory only: a fork must get its first
+ * prompt before the app restarts (see `prepareClaudeFork_l1`).
+ */
+const forkByThread_l1 = new Map<string, string>();
+
+/**
+ * Makes the next start of `threadId` a fork of another Claude conversation:
+ * `--resume <source> --fork-session`, and `--resume-session-at <at>` to copy
+ * it only up to an entry. The source conversation is never written to.
+ */
+export function prepareClaudeFork_l1(input: {
+  threadId: string;
+  providerSessionId: string;
+  cwd: string;
+  providerAccountId?: string;
+  at?: string;
+}): void {
+  const source = input.providerSessionId.trim();
+  if (!input.threadId || !source || !input.cwd.trim()) {
+    throw new Error("Nothing to fork: the chat has no Claude conversation");
+  }
+  if (liveByThread.has(input.threadId)) {
+    throw new Error("The new chat is already running");
+  }
+  forkByThread_l1.set(input.threadId, source);
+  resumeByThread.set(input.threadId, {
+    sessionId: source,
+    cwd: input.cwd,
+    providerAccountId: input.providerAccountId,
+  });
+  const at = input.at?.trim();
+  if (at && at !== CLAUDE_FIRST_TURN) {
+    rewindByThread.set(input.threadId, { providerSessionId: source, at });
+  } else {
+    rewindByThread.delete(input.threadId);
+  }
+}
+
+/** The adapter's `forkSession`: the copy binds its own id on its first start. */
+export async function forkClaudeSession_l1(input: {
+  sourceSessionId: string;
+  newSessionId: string;
+  providerSessionId: string;
+  cwd: string;
+  providerAccountId?: string;
+  boundary?: string;
+}): Promise<{ providerSessionId?: string }> {
+  if (liveByThread.get(input.sourceSessionId)?.activeTurn) {
+    throw new Error("Stop the current turn before forking");
+  }
+  prepareClaudeFork_l1({
+    threadId: input.newSessionId,
+    providerSessionId: input.providerSessionId,
+    cwd: input.cwd,
+    providerAccountId: input.providerAccountId,
+    at: input.boundary,
+  });
+  return {};
+}
+
+/** Test seam. */
+export function __claudeForkPending_l1(threadId: string): string | undefined {
+  return forkByThread_l1.get(threadId);
+}
+/**
+ * Stops one task Claude Code runs beside the turn, by its task id, with the
+ * same `stop_task` request a cancel sends for all of them. False when the
+ * session or the task is not live.
+ */
+export async function stopClaudeBackgroundTask_l1(
+  sessionId: string,
+  taskId: string,
+): Promise<boolean> {
+  const live = liveByThread.get(sessionId);
+  if (!live || live.exited || !live.backgroundTasks.has(taskId)) return false;
+  await writeJson(
+    sessionId,
+    buildControlRequest(nextControlId(live), {
+      subtype: "stop_task",
+      task_id: taskId,
+    }),
+  );
+  return true;
+}
 // [lane-2] exports
 // [lane-3] exports
 // [lane-4] exports

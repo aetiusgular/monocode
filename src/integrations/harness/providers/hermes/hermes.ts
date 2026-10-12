@@ -1,7 +1,12 @@
 import { TurnNotReadyError } from "../../core/types";
 import { nativeModelId } from "../../../../features/sessions/model/models";
 import type { RuntimeMode } from "../../../../features/sessions/model/session";
-import { AcpClient, type AcpHandlers } from "../../core/acp";
+import {
+  AcpClient,
+  acpMcpKey,
+  acpMcpServers,
+  type AcpHandlers,
+} from "../../core/acp";
 import { AcpSubagents } from "../../core/acpSubagents";
 import {
   killChild,
@@ -37,6 +42,8 @@ import type {
 } from "../../core/types";
 
 type Live = {
+  /** Change 8: the gateway connectors this session was started with. */
+  mcpKey: string;
   subagents: AcpSubagents;
   background: Map<string, HermesBackgroundDispatch>;
   acp: AcpClient;
@@ -181,14 +188,16 @@ export function bindHermesSession(
 
 async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   const existing = liveByThread.get(input.sessionId);
-  if (existing && existing.cwd === input.cwd) {
+  const mcpKey = acpMcpKey(input.gatewayConnectors);
+  if (existing && existing.cwd === input.cwd && existing.mcpKey === mcpKey) {
     existing.onEvent = input.onEvent;
     existing.runtimeMode = input.runtimeMode;
     existing.planning = input.intent === "plan";
     return existing;
   }
   if (existing) {
-    resumeByThread.delete(input.sessionId);
+    // Another set of connectors loads the same conversation again.
+    if (existing.cwd !== input.cwd) resumeByThread.delete(input.sessionId);
     await stopHermesSession(input.sessionId);
   }
 
@@ -283,7 +292,11 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       try {
         setup = await acp.request(
           "session/load",
-          { sessionId: resume.acpSessionId, cwd: input.cwd, mcpServers: [] },
+          {
+            sessionId: resume.acpSessionId,
+            cwd: input.cwd,
+            mcpServers: acpMcpServers(input.gatewayConnectors),
+          },
           SESSION_TIMEOUT_MS,
         );
         acpSessionId = hermesSessionId(setup) ?? resume.acpSessionId;
@@ -300,7 +313,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       try {
         setup = await acp.request(
           "session/new",
-          { cwd: input.cwd, mcpServers: [] },
+          { cwd: input.cwd, mcpServers: acpMcpServers(input.gatewayConnectors) },
           SESSION_TIMEOUT_MS,
         );
       } catch (error) {
@@ -312,6 +325,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       throw new Error("Hermes Agent did not return a session id");
 
     const live: Live = {
+      mcpKey,
       subagents: new AcpSubagents(),
       background: new Map(),
       acp,

@@ -26,6 +26,11 @@ import {
 } from "./claudeText";
 import { registerHarness, type HarnessAdapter } from "../../core/registry";
 // [lane-1] imports
+import {
+  forkClaudeSession_l1,
+  stopClaudeBackgroundTask_l1,
+} from "./claude";
+import { listClaudeSessions as listClaudeSessions_l1 } from "./claudeSessions";
 // [lane-2] imports
 // [lane-3] imports
 // [lane-4] imports
@@ -55,6 +60,17 @@ export const claudeAdapter: HarnessAdapter = {
   runTextPrompt: runClaudeTextPrompt,
   stopTextPrompt: stopClaudeTextPrompt,
   // [lane-1] adapter
+  stopBackgroundTask: stopClaudeBackgroundTask_l1,
+  forkSession: (input) =>
+    forkClaudeSession_l1({
+      sourceSessionId: input.source.sessionId,
+      newSessionId: input.newSessionId,
+      providerSessionId: input.providerSessionId,
+      cwd: input.source.cwd,
+      providerAccountId: input.source.providerAccountId,
+      boundary: input.boundary,
+    }),
+  listSessions: listClaudeSessions_l1,
   // [lane-2] adapter
   // [lane-3] adapter
   // [lane-4] adapter

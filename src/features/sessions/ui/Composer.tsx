@@ -254,6 +254,9 @@ import {
 import type { LastTurnRecall } from "../model/editLastTurn";
 import { useComposerAutocorrect } from "../../settings/model/displayPrefs";
 // [lane-1] imports
+import { PickUpMenuItem as PickUpMenuItem_l1 } from "../../session-import/ui/PickUpMenuItem";
+import { PickUpSessionPopover as PickUpSessionPopover_l1 } from "../../session-import/ui/PickUpSessionPopover";
+import type { PickUpTarget as PickUpTarget_l1 } from "../../session-import/model/pickUp";
 // [lane-2] imports
 // [lane-3] imports
 // [lane-4] imports
@@ -381,6 +384,8 @@ type Props = {
   ) => void;
   children?: ReactNode;
   // [lane-1] props
+  /** #45: offers the harness's own sessions for this folder, when set. */
+  pickUp_l1?: PickUpTarget_l1;
   // [lane-2] props
   // [lane-3] props
   // [lane-4] props
@@ -518,6 +523,7 @@ export function Composer({
   onRestorePromptReady,
   children,
   // [lane-1] destructure
+  pickUp_l1,
   // [lane-2] destructure
   // [lane-3] destructure
   // [lane-4] destructure
@@ -589,6 +595,7 @@ export function Composer({
     | "record-skill"
     | "plugins"
     // [lane-1] chat-list
+    | "pick-up"
     // [lane-2] chat-list
     // [lane-3] chat-list
     // [lane-4] chat-list
@@ -2464,6 +2471,15 @@ export function Composer({
                     />
                   ) : null}
                   {/* [lane-1] plus-menu */}
+                  {pickUp_l1 && !remote ? (
+                    <PickUpMenuItem_l1
+                      harness={pickUp_l1.harness}
+                      onOpen={() => {
+                        setPlusOpen(false);
+                        setChatList("pick-up");
+                      }}
+                    />
+                  ) : null}
                   {/* [lane-2] plus-menu */}
                   {/* [lane-3] plus-menu */}
                   {/* [lane-4] plus-menu */}
@@ -2724,6 +2740,16 @@ export function Composer({
                 />
               ) : null}
               {/* [lane-1] popovers */}
+              {chatList === "pick-up" && pickUp_l1 && !remote ? (
+                <PickUpSessionPopover_l1
+                  anchor={plusRef}
+                  target={pickUp_l1}
+                  onDismiss={(reason) => {
+                    setChatList(null);
+                    if (reason === "escape") ref.current?.focus();
+                  }}
+                />
+              ) : null}
               {/* [lane-2] popovers */}
               {/* [lane-3] popovers */}
               {/* [lane-4] popovers */}

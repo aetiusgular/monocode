@@ -345,6 +345,8 @@ export function buildClaudeSpawnArgs(input: {
    */
   gatewayConnectors?: HarnessLaunchMcpServer[];
   // [lane-1] spawn-input
+  /** With `resume`: copy the conversation into a new one (`--fork-session`). */
+  forkSession?: boolean;
   // [lane-2] spawn-input
   // [lane-3] spawn-input
   // [lane-4] spawn-input
@@ -415,6 +417,7 @@ export function buildClaudeSpawnArgs(input: {
   if (input.sessionId) args.push("--session-id", input.sessionId);
   if (input.maxTurns) args.push("--max-turns", String(input.maxTurns));
   // [lane-1] spawn-flags
+  if (input.resume && input.forkSession) args.push("--fork-session");
   // [lane-2] spawn-flags
   // [lane-3] spawn-flags
   // [lane-4] spawn-flags

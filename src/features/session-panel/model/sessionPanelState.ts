@@ -30,6 +30,7 @@ export type SessionPanelSection =
   | "used"
   | "facts"
   // [lane-1] section-ids
+  | "running"
   // [lane-2] section-ids
   // [lane-3] section-ids
   // [lane-4] section-ids
@@ -42,6 +43,7 @@ const SECTION_COLLAPSED_KEY: Record<SessionPanelSection, string> = {
   used: "monocode.sessionPanel.usedCollapsed",
   facts: "monocode.sessionPanel.factsCollapsed",
   // [lane-1] section-keys
+  running: "monocode.sessionPanel.runningCollapsed",
   // [lane-2] section-keys
   // [lane-3] section-keys
   // [lane-4] section-keys
@@ -55,6 +57,7 @@ export const SECTION_COLLAPSED_DEFAULT: Record<SessionPanelSection, boolean> = {
   used: false,
   facts: true,
   // [lane-1] section-defaults
+  running: false,
   // [lane-2] section-defaults
   // [lane-3] section-defaults
   // [lane-4] section-defaults

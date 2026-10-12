@@ -1823,6 +1823,45 @@ export function __codexTestResumeMap(): Map<string, Resume> {
   return resumeByThread;
 }
 // [lane-1] exports
+/**
+ * The adapter's `forkSession`: `thread/fork` on the source thread, through
+ * `lastTurnId` (inclusive) when given. Returns the new thread's id, which the
+ * new chat is bound to. The source thread is left as it was.
+ */
+export async function forkCodexSession_l1(input: {
+  source: HarnessSessionInput;
+  boundary?: string;
+}): Promise<{ providerSessionId?: string }> {
+  if (input.source.ephemeral) {
+    throw new Error("This chat keeps no Codex thread to fork");
+  }
+  const live = await ensureLive(input.source);
+  await live.turns.catch(() => undefined);
+  if (live.activeTurnId) {
+    throw new Error("Stop the current turn before forking");
+  }
+  const response = await live.rpc.request<unknown>("thread/fork", {
+    threadId: live.threadId,
+    ...(input.boundary ? { lastTurnId: input.boundary } : {}),
+  });
+  const thread = asRecord(asRecord(response)?.thread);
+  const id = stringField(thread, "id");
+  if (!id || id === live.threadId) {
+    throw new Error("Codex did not return a new thread for the fork");
+  }
+  return { providerSessionId: id };
+}
+/**
+ * The connection and thread of a live Codex session, for calls made beside
+ * the turn (background terminals, fork). Null when no app-server is up.
+ */
+export function codexLiveThread_l1(
+  sessionId: string,
+): { rpc: JsonRpcClient; threadId: string } | null {
+  const live = liveByThread.get(sessionId);
+  if (!live || !live.threadId) return null;
+  return { rpc: live.rpc, threadId: live.threadId };
+}
 // [lane-2] exports
 // [lane-3] exports
 // [lane-4] exports

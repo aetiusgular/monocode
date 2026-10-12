@@ -1,7 +1,12 @@
 import { nativeModelId } from "../../../../features/sessions/model/models";
 import { AcpSubagents } from "../../core/acpSubagents";
 import type { RuntimeMode } from "../../../../features/sessions/model/session";
-import { AcpClient, type AcpHandlers } from "../../core/acp";
+import {
+  AcpClient,
+  acpMcpKey,
+  acpMcpServers,
+  type AcpHandlers,
+} from "../../core/acp";
 import {
   killChild,
   resolveFxBinary,
@@ -36,6 +41,8 @@ type SessionSetupResult = {
 };
 
 type Live = {
+  /** Change 8: the gateway connectors this session was started with. */
+  mcpKey: string;
   subagents: AcpSubagents;
   acp: AcpClient;
   acpSessionId: string;
@@ -193,13 +200,15 @@ export function bindFxSession(
 
 async function ensureLive(input: SendTurnInput): Promise<Live> {
   const existing = liveByThread.get(input.sessionId);
-  if (existing && existing.cwd === input.cwd) {
+  const mcpKey = acpMcpKey(input.gatewayConnectors);
+  if (existing && existing.cwd === input.cwd && existing.mcpKey === mcpKey) {
     existing.onEvent = input.onEvent;
     existing.runtimeMode = input.runtimeMode;
     return existing;
   }
   if (existing) {
-    resumeByThread.delete(input.sessionId);
+    // Another set of connectors loads the same conversation again.
+    if (existing.cwd !== input.cwd) resumeByThread.delete(input.sessionId);
     await stopFxSession(input.sessionId);
   }
 
@@ -290,9 +299,14 @@ async function ensureLive(input: SendTurnInput): Promise<Live> {
 
     if (canLoad && resume) {
       try {
+        // ACP requires `cwd` here; the servers are this start's set.
         setup = await acp.request<SessionSetupResult>(
           "session/resume",
-          { sessionId: resume.acpSessionId },
+          {
+            sessionId: resume.acpSessionId,
+            cwd: input.cwd,
+            mcpServers: acpMcpServers(input.gatewayConnectors),
+          },
           SESSION_TIMEOUT_MS,
         );
         acpSessionId = sessionIdFromResult(setup) ?? resume.acpSessionId;
@@ -305,7 +319,7 @@ async function ensureLive(input: SendTurnInput): Promise<Live> {
             {
               sessionId: resume.acpSessionId,
               cwd: input.cwd,
-              mcpServers: [],
+              mcpServers: acpMcpServers(input.gatewayConnectors),
             },
             SESSION_TIMEOUT_MS,
           );
@@ -324,7 +338,7 @@ async function ensureLive(input: SendTurnInput): Promise<Live> {
     if (!acpSessionId) {
       setup = await acp.request<SessionSetupResult>(
         "session/new",
-        { cwd: input.cwd, mcpServers: [] },
+        { cwd: input.cwd, mcpServers: acpMcpServers(input.gatewayConnectors) },
         SESSION_TIMEOUT_MS,
       );
       acpSessionId = sessionIdFromResult(setup);
@@ -333,6 +347,7 @@ async function ensureLive(input: SendTurnInput): Promise<Live> {
 
     const configOptions = readConfigOptions(setup?.configOptions);
     const live: Live = {
+      mcpKey,
       subagents: new AcpSubagents(),
       acp,
       acpSessionId,

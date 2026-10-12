@@ -32,6 +32,7 @@ import { SessionPanelCloseButton } from "./SessionPanelToggle";
 import { UsedSection } from "./UsedSection";
 import type { SessionPanelControl } from "./useSessionPanel";
 // [lane-1] imports
+import { RunningSection as RunningSection_l1 } from "./RunningSection";
 // [lane-2] imports
 // [lane-3] imports
 // [lane-4] imports
@@ -49,6 +50,9 @@ type PanelSession = Pick<
   | "context"
   | "extraDirs"
   // [lane-1] panel-session
+  | "id"
+  | "busy"
+  | "backgroundItems"
   // [lane-2] panel-session
   // [lane-3] panel-session
   // [lane-4] panel-session
@@ -289,6 +293,15 @@ export function SessionPanelView({
           <OutputsSection files={outputs} onOpenFile={onOpenFile} />
           <UsedSection rows={rows} active={visible} onAction={act} />
           {/* [lane-1] sections */}
+          <RunningSection_l1
+            sessionId={session.id}
+            harness={session.harness}
+            blocks={session.blocks}
+            pushed={session.backgroundItems}
+            busy={session.busy}
+            active={visible}
+            onShowInChat={onShowInChat}
+          />
           {/* [lane-2] sections */}
           {/* [lane-3] sections */}
           {/* [lane-4] sections */}

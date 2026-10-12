@@ -124,7 +124,97 @@ impl Drop for PtyHost {
     }
 }
 
+/// What a PTY runs in place of the login shell: a program and its arguments,
+/// never a shell string, plus extra environment variables. MonoCode starts
+/// these itself (owned processes), so they run with the user's full rights.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PtyCommand {
+    program: String,
+    args: Vec<String>,
+    env: Vec<(String, String)>,
+}
+
+/// Names a caller may not set: the terminal identity and search path the PTY
+/// sets itself, and variables that load code into every process it starts.
+const RESERVED_ENV: &[&str] = &[
+    "PATH",
+    "HOME",
+    "PWD",
+    "TERM",
+    "TERM_PROGRAM",
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_FRAMEWORK_PATH",
+];
+
+const MAX_PTY_ARGS: usize = 256;
+const MAX_PTY_ENV: usize = 128;
+const MAX_PTY_FIELD: usize = 32 * 1024;
+
+fn valid_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c == '_' || c.is_ascii_alphabetic())
+        && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+        && name.len() <= 256
+}
+
+/// Checks a command before anything starts. The program and every argument
+/// are taken literally; nothing passes through a shell.
+pub(crate) fn pty_command(
+    program: Option<String>,
+    args: Option<Vec<String>>,
+    env: Option<HashMap<String, String>>,
+) -> Result<Option<PtyCommand>, String> {
+    let Some(program) = program else {
+        if args.as_ref().is_some_and(|args| !args.is_empty()) {
+            return Err("Terminal arguments need a program".into());
+        }
+        if env.as_ref().is_some_and(|env| !env.is_empty()) {
+            return Err("Terminal environment needs a program".into());
+        }
+        return Ok(None);
+    };
+    if program.trim().is_empty() || program.contains('\0') || program.len() > 4096 {
+        return Err("Invalid program for a terminal".into());
+    }
+    let args = args.unwrap_or_default();
+    if args.len() > MAX_PTY_ARGS
+        || args
+            .iter()
+            .any(|arg| arg.contains('\0') || arg.len() > MAX_PTY_FIELD)
+    {
+        return Err("Invalid arguments for a terminal".into());
+    }
+    let mut pairs: Vec<(String, String)> = env.unwrap_or_default().into_iter().collect();
+    pairs.sort();
+    if pairs.len() > MAX_PTY_ENV {
+        return Err("Too many environment variables for a terminal".into());
+    }
+    for (name, value) in &pairs {
+        if !valid_env_name(name) {
+            return Err(format!("Invalid environment variable name: {name}"));
+        }
+        if RESERVED_ENV
+            .iter()
+            .any(|reserved| reserved.eq_ignore_ascii_case(name))
+        {
+            return Err(format!("{name} cannot be set for a terminal"));
+        }
+        if value.contains('\0') || value.len() > MAX_PTY_FIELD {
+            return Err(format!("Invalid value for {name}"));
+        }
+    }
+    Ok(Some(PtyCommand {
+        program,
+        args,
+        env: pairs,
+    }))
+}
+
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn pty_spawn(
     app: AppHandle,
     host: State<PtyHost>,
@@ -132,8 +222,23 @@ pub fn pty_spawn(
     cwd: String,
     cols: u16,
     rows: u16,
+    program: Option<String>,
+    args: Option<Vec<String>>,
+    env: Option<HashMap<String, String>>,
 ) -> Result<(), String> {
-    let workdir = working_dir(&cwd);
+    let command = pty_command(program, args, env)?;
+    let workdir = match &command {
+        // A command runs where it was asked to, or not at all: falling back to
+        // the home folder would run project code somewhere else.
+        Some(_) => {
+            let path = expand_home(&cwd);
+            if !path.is_dir() {
+                return Err("The folder for this process does not exist".into());
+            }
+            path
+        }
+        None => working_dir(&cwd),
+    };
     let _reservation = crate::worktree_lifecycle::reserve_spawn(&workdir)?;
     if let Some(prev) = host.remove(&id) {
         terminate(prev.pid);
@@ -143,17 +248,17 @@ pub fn pty_spawn(
 
     #[cfg(unix)]
     {
-        spawn_unix(app, host, id, workdir, cols.max(2), rows.max(2))
+        spawn_unix(app, host, id, workdir, cols.max(2), rows.max(2), command)
     }
 
     #[cfg(windows)]
     {
-        spawn_windows(app, host, id, workdir, cols.max(2), rows.max(2))
+        spawn_windows(app, host, id, workdir, cols.max(2), rows.max(2), command)
     }
 
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = (app, cwd, cols, rows);
+        let _ = (app, cwd, cols, rows, command);
         Err("Terminals are not supported on this platform.".into())
     }
 }
@@ -249,13 +354,20 @@ fn spawn_unix(
     workdir: std::path::PathBuf,
     cols: u16,
     rows: u16,
+    command: Option<PtyCommand>,
 ) -> Result<(), String> {
     use std::fs::File;
     use std::os::unix::io::FromRawFd;
     use std::os::unix::process::CommandExt;
     use std::process::Command;
 
-    let (shell, args) = default_shell();
+    let (shell, args, extra_env) = match command {
+        Some(command) => (command.program, command.args, command.env),
+        None => {
+            let (shell, args) = default_shell();
+            (shell, args, Vec::new())
+        }
+    };
     let (master, slave) = open_pty(cols, rows)?;
 
     let mut cmd = Command::new(&shell);
@@ -273,6 +385,9 @@ fn spawn_unix(
         cmd.env("HOME", &home);
     }
     cmd.env("PWD", &workdir);
+    for (name, value) in &extra_env {
+        cmd.env(name, value);
+    }
 
     // setsid() already creates a new session and process group. Calling
     // process_group(0) first makes the child a group leader, so setsid()
@@ -378,10 +493,17 @@ fn spawn_windows(
     workdir: std::path::PathBuf,
     cols: u16,
     rows: u16,
+    command: Option<PtyCommand>,
 ) -> Result<(), String> {
     use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
-    let (shell, args) = default_shell();
+    let (shell, args, extra_env) = match command {
+        Some(command) => (command.program, command.args, command.env),
+        None => {
+            let (shell, args) = default_shell();
+            (shell, args, Vec::new())
+        }
+    };
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -405,6 +527,9 @@ fn spawn_windows(
         cmd.env("USERPROFILE", &home);
     }
     cmd.env("PWD", workdir.to_string_lossy().as_ref());
+    for (name, value) in &extra_env {
+        cmd.env(name, value);
+    }
 
     let mut child = crate::windows::spawn_pty(pair.slave.as_ref(), cmd)
         .map_err(|err| format!("Failed to start {shell}: {err}"))?;
@@ -854,5 +979,82 @@ mod tests {
         assert!(host.get("term").is_some());
         assert!(host.remove_if_pid("term", 42).is_some());
         assert!(host.get("term").is_none());
+    }
+
+    #[test]
+    fn pty_command_is_none_without_a_program() {
+        assert_eq!(pty_command(None, None, None), Ok(None));
+        assert_eq!(
+            pty_command(None, Some(vec![]), Some(HashMap::new())),
+            Ok(None)
+        );
+        assert!(pty_command(None, Some(vec!["-c".into()]), None).is_err());
+        let env = HashMap::from([("A".to_string(), "1".to_string())]);
+        assert!(pty_command(None, None, Some(env)).is_err());
+    }
+
+    #[test]
+    fn pty_command_takes_program_and_arguments_literally() {
+        let command = pty_command(
+            Some("npm".into()),
+            Some(vec![
+                "run".into(),
+                "dev; rm -rf ~".into(),
+                "-- $(id)".into(),
+            ]),
+            Some(HashMap::from([
+                ("PORT".to_string(), "5173".to_string()),
+                ("API_URL".to_string(), "http://localhost:1".to_string()),
+            ])),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(command.program, "npm");
+        assert_eq!(command.args, vec!["run", "dev; rm -rf ~", "-- $(id)"]);
+        // Sorted, so the same input always starts the same process.
+        assert_eq!(
+            command.env,
+            vec![
+                ("API_URL".to_string(), "http://localhost:1".to_string()),
+                ("PORT".to_string(), "5173".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn pty_command_refuses_bad_programs_and_arguments() {
+        assert!(pty_command(Some("".into()), None, None).is_err());
+        assert!(pty_command(Some("  ".into()), None, None).is_err());
+        assert!(pty_command(Some("np\0m".into()), None, None).is_err());
+        assert!(pty_command(Some("npm".into()), Some(vec!["a\0b".into()]), None).is_err());
+        let many = vec!["x".to_string(); MAX_PTY_ARGS + 1];
+        assert!(pty_command(Some("npm".into()), Some(many), None).is_err());
+    }
+
+    #[test]
+    fn pty_command_refuses_reserved_and_malformed_environment() {
+        for name in [
+            "PATH",
+            "path",
+            "HOME",
+            "LD_PRELOAD",
+            "DYLD_INSERT_LIBRARIES",
+            "TERM",
+        ] {
+            let env = HashMap::from([(name.to_string(), "x".to_string())]);
+            assert!(
+                pty_command(Some("npm".into()), None, Some(env)).is_err(),
+                "{name} should be refused"
+            );
+        }
+        for name in ["", "1ABC", "A=B", "A B", "A-B", "A\0"] {
+            let env = HashMap::from([(name.to_string(), "x".to_string())]);
+            assert!(
+                pty_command(Some("npm".into()), None, Some(env)).is_err(),
+                "{name:?} should be refused"
+            );
+        }
+        let env = HashMap::from([("OK".to_string(), "a\0b".to_string())]);
+        assert!(pty_command(Some("npm".into()), None, Some(env)).is_err());
     }
 }

@@ -1,7 +1,12 @@
 import { nativeModelId } from "../../../../features/sessions/model/models";
 import { AcpSubagents } from "../../core/acpSubagents";
 import type { RuntimeMode } from "../../../../features/sessions/model/session";
-import { AcpClient, type AcpHandlers } from "../../core/acp";
+import {
+  AcpClient,
+  acpMcpKey,
+  acpMcpServers,
+  type AcpHandlers,
+} from "../../core/acp";
 import {
   killChild,
   resolveAntigravityBinary,
@@ -38,6 +43,8 @@ type SessionSetupResult = {
 };
 
 type Live = {
+  /** Change 8: the gateway connectors this session was started with. */
+  mcpKey: string;
   threadId: string;
   /** Generation-scoped child id (`thread#n`): a recycled process can never
    *  deliver stdout to or take writes from a different generation. */
@@ -335,7 +342,12 @@ async function ensureLive(input: SendTurnInput, recycle: boolean): Promise<Live>
   const existing = liveByThread.get(input.sessionId);
   if (existing) {
     if (!recycle) return existing;
-    if (!existing.stale && existing.cwd === input.cwd) return existing;
+    if (
+      !existing.stale &&
+      existing.cwd === input.cwd &&
+      existing.mcpKey === acpMcpKey(input.gatewayConnectors)
+    )
+      return existing;
   }
   return queueLifecycle(input, recycle);
 }
@@ -358,7 +370,12 @@ function queueLifecycle(input: SendTurnInput, recycle: boolean): Promise<Live> {
     let live = liveByThread.get(input.sessionId);
     if (live) {
       if (!recycle) return live;
-      if (!live.stale && live.cwd === input.cwd) return live;
+      if (
+        !live.stale &&
+        live.cwd === input.cwd &&
+        live.mcpKey === acpMcpKey(input.gatewayConnectors)
+      )
+        return live;
       if (live.cwd !== input.cwd) resumeByThread.delete(input.sessionId);
       await teardownLive(live);
       live = undefined;
@@ -493,7 +510,11 @@ async function startLive(input: SendTurnInput, life: number): Promise<Live> {
       try {
         setup = await acp.request<SessionSetupResult>(
           "session/resume",
-          { sessionId: resume.acpSessionId, cwd: input.cwd, mcpServers: [] },
+          {
+            sessionId: resume.acpSessionId,
+            cwd: input.cwd,
+            mcpServers: acpMcpServers(input.gatewayConnectors),
+          },
           SESSION_TIMEOUT_MS,
         );
         acpSessionId = sessionIdFromResult(setup) ?? resume.acpSessionId;
@@ -512,7 +533,7 @@ async function startLive(input: SendTurnInput, life: number): Promise<Live> {
             {
               sessionId: resume.acpSessionId,
               cwd: input.cwd,
-              mcpServers: [],
+              mcpServers: acpMcpServers(input.gatewayConnectors),
             },
             SESSION_TIMEOUT_MS,
           );
@@ -533,7 +554,7 @@ async function startLive(input: SendTurnInput, life: number): Promise<Live> {
       const droppedBinding = canLoad && resume != null;
       setup = await acp.request<SessionSetupResult>(
         "session/new",
-        { cwd: input.cwd, mcpServers: [] },
+        { cwd: input.cwd, mcpServers: acpMcpServers(input.gatewayConnectors) },
         SESSION_TIMEOUT_MS,
       );
       acpSessionId = sessionIdFromResult(setup);
@@ -549,6 +570,7 @@ async function startLive(input: SendTurnInput, life: number): Promise<Live> {
 
     const configOptions = readConfigOptions(setup?.configOptions);
     const live: Live = {
+      mcpKey: acpMcpKey(input.gatewayConnectors),
       threadId: input.sessionId,
       childKey,
       subagents: new AcpSubagents(),

@@ -1,7 +1,12 @@
 import { nativeModelId } from "../../../../features/sessions/model/models";
 import { AcpSubagents } from "../../core/acpSubagents";
 import type { RuntimeMode } from "../../../../features/sessions/model/session";
-import { AcpClient, type AcpHandlers } from "../../core/acp";
+import {
+  AcpClient,
+  acpMcpKey,
+  acpMcpServers,
+  type AcpHandlers,
+} from "../../core/acp";
 import {
   killChild,
   resolveGrokBinary,
@@ -40,6 +45,8 @@ import type {
 import { questionPromptTitle, type UserQuestionReply } from "../../../../features/sessions/model/userQuestion";
 
 type Live = {
+  /** Change 8: the gateway connectors this session was started with. */
+  mcpKey: string;
   subagents: AcpSubagents;
   acp: AcpClient;
   acpSessionId: string;
@@ -219,11 +226,13 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   const wantPlanning = input.intent === "plan";
   const wantFullAccess = input.runtimeMode === "full-access" && !wantPlanning;
   const existing = liveByThread.get(input.sessionId);
+  const mcpKey = acpMcpKey(input.gatewayConnectors);
   if (
     existing &&
     existing.cwd === input.cwd &&
     existing.fullAccess === wantFullAccess &&
-    existing.planning === wantPlanning
+    existing.planning === wantPlanning &&
+    existing.mcpKey === mcpKey
   ) {
     existing.onEvent = input.onEvent;
     existing.runtimeMode = input.runtimeMode;
@@ -337,9 +346,14 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
 
     if (canLoad && resume) {
       try {
+        // ACP requires `cwd` here; the servers are this start's set.
         setup = await acp.request(
           "session/resume",
-          { sessionId: resume.acpSessionId },
+          {
+            sessionId: resume.acpSessionId,
+            cwd: input.cwd,
+            mcpServers: acpMcpServers(input.gatewayConnectors),
+          },
           SESSION_TIMEOUT_MS,
         );
         acpSessionId = sessionIdFromResult(setup) ?? resume.acpSessionId;
@@ -352,7 +366,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
             {
               sessionId: resume.acpSessionId,
               cwd: input.cwd,
-              mcpServers: [],
+              mcpServers: acpMcpServers(input.gatewayConnectors),
             },
             SESSION_TIMEOUT_MS,
           );
@@ -372,7 +386,11 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       try {
         setup = await acp.request(
           "session/new",
-          grokSessionNewParams(input.cwd, input.runtimeMode),
+          grokSessionNewParams(
+            input.cwd,
+            input.runtimeMode,
+            acpMcpServers(input.gatewayConnectors),
+          ),
           SESSION_TIMEOUT_MS,
         );
       } catch (error) {
@@ -384,6 +402,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       throw new Error("Grok Build did not return a session id");
 
     const live: Live = {
+      mcpKey,
       subagents: new AcpSubagents(),
       acp,
       acpSessionId,

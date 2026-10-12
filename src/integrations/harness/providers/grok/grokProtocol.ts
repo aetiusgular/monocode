@@ -122,8 +122,10 @@ export function grokTextSpawnArgs(): string[] {
 export function grokSessionNewParams(
   cwd: string,
   runtimeMode: RuntimeMode,
+  /** Change 8: the chat's gateway connectors as ACP stdio servers. */
+  mcpServers: readonly unknown[] = [],
 ): Record<string, unknown> {
-  const params: Record<string, unknown> = { cwd, mcpServers: [] };
+  const params: Record<string, unknown> = { cwd, mcpServers: [...mcpServers] };
   if (runtimeMode === "full-access") {
     params._meta = { yoloMode: true };
   } else if (runtimeMode === "auto") {

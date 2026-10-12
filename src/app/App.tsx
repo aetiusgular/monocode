@@ -815,6 +815,16 @@ import {
   type ResumedWorkspace,
 } from "./model/appLifecycle";
 // [lane-1] imports
+import { rewindOptions as rewindOptions_l1 } from "../features/rewind/model/rewind";
+import { applyChatRewind as applyChatRewind_l1 } from "../features/rewind/model/turnRewind";
+import { forkSessionAt as forkSessionAt_l1 } from "../features/rewind/model/forkSession";
+import { forkHarnessSession_l1 } from "../integrations/harness/core/registry";
+import { readHarnessSessionTurns_l1 } from "../integrations/harness/core/registry";
+import {
+  boundProviderSessions as boundProviderSessions_l1,
+  pickedUpSession as pickedUpSession_l1,
+} from "../features/session-import/model/sessionImport";
+import type { HarnessSessionRow as HarnessSessionRow_l1 } from "../features/session-import/model/types";
 // [lane-2] imports
 // [lane-3] imports
 // [lane-4] imports
@@ -7919,6 +7929,10 @@ function Workspace({
           }
           return;
         }
+        // F4: the turn's user message keeps its checkpoint id. Routed like a
+        // harness event, so an edited resend tags its new message once accepted.
+        if (checkpointTurnId)
+          routeTurnEvent({ type: "turn.checkpoint", checkpointTurnId });
         let buildSucceeded = false;
         try {
           const prepared = await prepareAttachments(attachments);
@@ -12560,6 +12574,204 @@ function Workspace({
   });
 
   // [lane-1] app-late
+  /**
+   * #34: takes the chat back to before a prompt, at any earlier turn the
+   * harness can cut to. The harness forgets it first; only then is the
+   * transcript cut, so a refused rewind leaves the chat as it was.
+   */
+  const onRewindChat_l1 = useCallback(
+    async (sessionId: string, blockId: string) => {
+      const current = sessionsRef.current.find(
+        (session) => session.id === sessionId,
+      );
+      if (!current) return;
+      const options = rewindOptions_l1(current, blockId);
+      if (!options) return;
+      if (!options.chat.enabled) {
+        throw new Error(options.chat.reason ?? "This chat cannot be rewound");
+      }
+      const workCwd = sessionWorkCwd(current);
+      await rewindHarnessLastTurn({
+        harness: current.harness,
+        sessionId,
+        cwd: workCwd,
+        model: current.model,
+        modelSettings: current.modelSettings,
+        providerAccountId: current.providerAccountId,
+        runtimeMode: current.runtimeMode,
+        ephemeral: current.ephemeral === true,
+        ...sessionToolsInput(current, workCwd),
+        ...(options.chat.providerTurnId
+          ? { providerTurnId: options.chat.providerTurnId }
+          : {}),
+        onEvent: (event) => enqueueHarnessEvent(sessionId, event),
+      });
+      setSessions((prev) =>
+        prev.map((session) =>
+          session.id === sessionId
+            ? applyChatRewind_l1(
+                session,
+                // Recomputed on the latest state, in case it moved meanwhile.
+                rewindOptions_l1(session, blockId) ?? options,
+              )
+            : session,
+        ),
+      );
+    },
+    [enqueueHarnessEvent],
+  );
+
+  /**
+   * #34: a new chat beside this one with the conversation up to the end of
+   * the turn. Native on Claude Code and Codex; otherwise, or when the native
+   * call fails, seeded with the transcript and labelled approximate.
+   */
+  const onForkTurn_l1 = useCallback(
+    async (sourceId: string, blockId: string) => {
+      const source = sessionsRef.current.find(
+        (session) => session.id === sourceId,
+      );
+      if (!source || source.worktreeRemoved) return;
+      const options = rewindOptions_l1(source, blockId);
+      if (!options) return;
+      if (!options.fork.enabled) {
+        throw new Error(options.fork.reason ?? "This chat cannot be forked");
+      }
+      const workCwd = sessionWorkCwd(source);
+      const base = {
+        ...newSession(
+          source.harness,
+          source.cwd,
+          source.model,
+          source.runtimeMode,
+        ),
+        worktreeCwd: source.worktreeCwd,
+        branch: source.branch,
+        modelSettings: source.modelSettings,
+        providerAccountId: source.providerAccountId,
+      };
+      const forked = await forkSessionAt_l1({
+        source,
+        options,
+        base,
+        sourceInput: {
+          sessionId: sourceId,
+          cwd: workCwd,
+          model: source.model,
+          modelSettings: source.modelSettings,
+          providerAccountId: source.providerAccountId,
+          runtimeMode: source.runtimeMode,
+          ephemeral: source.ephemeral === true,
+          ...sessionToolsInput(source, workCwd),
+          onEvent: (event) => enqueueHarnessEvent(sourceId, event),
+        },
+        nativeFork: (input) => forkHarnessSession_l1(source.harness, input),
+      });
+      if (forked.session.providerSessionId) {
+        bindHarnessSession(
+          forked.session.harness,
+          forked.session.id,
+          forked.session.providerSessionId,
+          sessionWorkCwd(forked.session),
+          forked.session.providerAccountId,
+          forked.session.blocks,
+        );
+      }
+      openSessionBeside(sourceId, forked.session, source.cwd, true);
+    },
+    [enqueueHarnessEvent, openSessionBeside],
+  );
+
+  /** #45: harness session ids already bound to a chat, open or saved. */
+  const pickUpBound_l1 = useCallback(
+    (harness: HarnessId) =>
+      boundProviderSessions_l1(harness, sessionsRef.current, history),
+    // `sessions` so the map is rebuilt when a chat binds a new id.
+    [history, sessions],
+  );
+
+  /**
+   * #45: continues a session the harness recorded in this folder, from the
+   * terminal or an earlier chat. One already bound to a chat opens that chat.
+   * Otherwise a new chat is bound to the session's id, with its earlier turns
+   * as text where the harness can replay them. Nothing is sent.
+   */
+  const onPickUpSession_l1 = useCallback(
+    async (sourceId: string, row: HarnessSessionRow_l1) => {
+      const source = sessionsRef.current.find(
+        (session) => session.id === sourceId,
+      );
+      if (!source || source.worktreeRemoved) return;
+      const boundTo = () =>
+        boundProviderSessions_l1(
+          source.harness,
+          sessionsRef.current,
+          history,
+        ).get(row.id);
+      const already = boundTo();
+      if (already) {
+        await onSelectHistorySession(already);
+        return;
+      }
+      const workCwd = sessionWorkCwd(source);
+      let imported: Awaited<ReturnType<typeof readHarnessSessionTurns_l1>> =
+        null;
+      let reason: string | undefined;
+      try {
+        imported = await readHarnessSessionTurns_l1(source.harness, {
+          cwd: workCwd,
+          providerAccountId: source.providerAccountId,
+          providerSessionId: row.id,
+        });
+      } catch (error) {
+        reason = `${HARNESS_TITLE[source.harness]} did not return them: ${
+          error instanceof Error ? error.message : String(error)
+        }`;
+      }
+      // Bound by another chat while the turns were read.
+      const meanwhile = boundTo();
+      if (meanwhile) {
+        await onSelectHistorySession(meanwhile);
+        return;
+      }
+      const session = pickedUpSession_l1({
+        base: {
+          ...newSession(
+            source.harness,
+            source.cwd,
+            source.model,
+            source.runtimeMode,
+          ),
+          worktreeCwd: source.worktreeCwd,
+          branch: source.branch,
+          modelSettings: source.modelSettings,
+          providerAccountId: source.providerAccountId,
+        },
+        row,
+        harnessLabel: HARNESS_TITLE[source.harness],
+        history: imported,
+        ...(reason ? { reason } : {}),
+      });
+      bindHarnessSession(
+        session.harness,
+        session.id,
+        row.id,
+        sessionWorkCwd(session),
+        session.providerAccountId,
+        session.blocks,
+      );
+      if (replaceBlankPaneWithSession(session)) return;
+      const nextSessions = [...sessionsRef.current, session];
+      sessionsRef.current = nextSessions;
+      setSessions(nextSessions);
+      const tab = newTab(session.id);
+      appendTab(tab, session.cwd);
+      setActiveTabId(tab.id);
+      setProjectTerminalFocused(false);
+      setComposerFocused(true);
+    },
+    [history, onSelectHistorySession, replaceBlankPaneWithSession, appendTab],
+  );
   // [lane-2] app-late
   // [lane-3] app-late
   // [lane-4] app-late
@@ -12623,6 +12835,10 @@ function Workspace({
     onBtwModelChange,
     onNewTerminal: onNewTerminalInSession,
     // [lane-1] pane-props
+    onRewindChat_l1,
+    onForkTurn_l1,
+    onPickUpSession_l1,
+    pickUpBound_l1,
     // [lane-2] pane-props
     // [lane-3] pane-props
     // [lane-4] pane-props
