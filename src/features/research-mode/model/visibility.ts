@@ -1,9 +1,10 @@
 import type { HarnessId } from "../../sessions/model/session";
+import { harnessCan } from "../../../integrations/harness/core/capabilities";
 import { canResearch, type ResearchTool } from "./searchTools";
 
 /** Research mode wraps the prompt for these harnesses only. */
 export function harnessSupportsResearch(harness: HarnessId): boolean {
-  return harness === "claude" || harness === "codex";
+  return harnessCan(harness, "research");
 }
 
 /**

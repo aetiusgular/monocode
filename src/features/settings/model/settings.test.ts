@@ -610,6 +610,7 @@ describe("settings navigation", () => {
       "keybindings",
       "chat",
       "providers",
+      "models",
       "mcp",
       "connectors",
       "skills",

@@ -33,7 +33,19 @@ export type AgentModel = {
   settings?: ModelSetting[];
   /** Context window, when the harness catalog reports one. */
   contextWindow?: number;
+  // Traits a catalog reported. For a local model these are the catalog's
+  // defaults, not facts; read them through `modelTraits`, where your settings
+  // under Settings, Models win.
+  /** Reads images. */
+  vision?: boolean;
+  /** How well the model calls tools. */
+  tools?: ToolCalling;
+  /** Slow enough that helper timeouts should stretch. */
+  slow?: boolean;
 };
+
+/** How well a model calls tools. `unknown` counts as not able. */
+export type ToolCalling = "reliable" | "weak" | "none" | "unknown";
 
 export const MODELS: AgentModel[] = [
   {

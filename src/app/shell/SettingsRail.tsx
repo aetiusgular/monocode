@@ -1,4 +1,5 @@
 import {
+  AiIdea,
   Archive,
   ArrowLeft,
   Bot,
@@ -31,6 +32,7 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   voice: Mic,
   chat: MessageSquare,
   providers: Bot,
+  models: AiIdea,
   mcp: Globe,
   connectors: DashboardSquare,
   skills: Sparkles,

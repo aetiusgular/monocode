@@ -1,4 +1,5 @@
 import type { HarnessId } from "../../sessions/model/session";
+import { harnessCan } from "../../../integrations/harness/core/capabilities";
 import { isPluginId, type ClaudePlugin } from "./pluginCli";
 
 /** Bounds what a saved session can put in a launch setting. */
@@ -15,7 +16,7 @@ export const OPEN_PLUGINS_SETTINGS_EVENT = "monocode:open-plugins-settings";
  * (https://code.claude.com/docs/en/plugins/loading#find-where-a-plugin-is-enabled).
  */
 export function harnessSupportsPluginSwitches(harness: HarnessId): boolean {
-  return harness === "claude";
+  return harnessCan(harness, "pluginSwitches");
 }
 
 /** A stored list read back from disk: valid, unique, bounded plugin ids. */

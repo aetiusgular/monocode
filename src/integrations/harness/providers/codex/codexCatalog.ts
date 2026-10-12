@@ -199,13 +199,30 @@ function parseModel(raw: unknown): AgentModel | null {
     stringField(rec, "displayName") ?? stringField(rec, "name") ?? nativeId,
   );
   const settings = parseModelSettings(rec);
+  const vision = parseVision(rec);
   return {
     id: `codex:${nativeId}`,
     harness: "codex",
     name,
     nativeId,
     ...(settings.length > 0 ? { settings } : {}),
+    ...(vision !== undefined ? { vision } : {}),
   };
+}
+
+/**
+ * `inputModalities` from the model list: image input means vision. Absent or
+ * malformed leaves it unknown. On a local home this can be Codex's fallback
+ * metadata, which claims image input; Settings, Models overrides it.
+ */
+export function parseVision(rec: Record<string, unknown>): boolean | undefined {
+  const modalities = rec.inputModalities;
+  if (!Array.isArray(modalities)) return undefined;
+  const names = modalities.filter(
+    (entry): entry is string => typeof entry === "string",
+  );
+  if (names.length === 0) return undefined;
+  return names.some((entry) => entry.toLowerCase() === "image");
 }
 
 function parseModelSettings(rec: Record<string, unknown>): ModelSetting[] {

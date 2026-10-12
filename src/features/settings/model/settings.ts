@@ -25,6 +25,7 @@ export type SettingsSectionId =
   | "voice"
   | "chat"
   | "providers"
+  | "models"
   | "mcp"
   | "connectors"
   | "skills"
@@ -113,6 +114,15 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
       "Provider accounts, agent CLIs MonoCode can drive, and the model new sessions start with.",
     keywords:
       "account sign in login model harness claude codex gemini cli default hooks",
+  },
+  {
+    id: "models",
+    group: "agents",
+    label: "Models",
+    description:
+      "What MonoCode may assume about each model: images, tool calls, speed and context window.",
+    keywords:
+      "local model traits vision images tool calling slow context window ollama qwen capability",
   },
   {
     id: "mcp",

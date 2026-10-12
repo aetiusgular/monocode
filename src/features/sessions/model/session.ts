@@ -16,6 +16,7 @@ import {
   resolveModel,
 } from "./models";
 import { loadProjectProviderSettings } from "./projectProviders";
+import { harnessCan } from "../../../integrations/harness/core/capabilities";
 
 export type HarnessId =
   | "claude"
@@ -637,17 +638,17 @@ export const HARNESS_TITLE: Record<HarnessId, string> = {
 
 /** fx ACP rejects attachment prompt blocks. */
 export function harnessSupportsAttachments(id: HarnessId): boolean {
-  return id !== "fx";
+  return harnessCan(id, "attachments");
 }
 
 /** Harnesses MonoCode can hand extra working directories to. */
 export function harnessSupportsExtraDirs(id: HarnessId): boolean {
-  return id === "claude" || id === "codex";
+  return harnessCan(id, "extraDirs");
 }
 
 /** Harnesses that can leave out one MCP server for a single conversation. */
 export function harnessSupportsConnectorSwitches(id: HarnessId): boolean {
-  return id === "claude" || id === "codex";
+  return harnessCan(id, "connectorSwitches");
 }
 
 /**
@@ -655,7 +656,7 @@ export function harnessSupportsConnectorSwitches(id: HarnessId): boolean {
  * rule for. The others either do not ask or do not say what they ask about.
  */
 export function harnessSupportsToolAccess(id: HarnessId): boolean {
-  return id === "claude" || id === "codex";
+  return harnessCan(id, "namedApprovals");
 }
 
 /**
@@ -664,7 +665,7 @@ export function harnessSupportsToolAccess(id: HarnessId): boolean {
  * passes `/name` through to them and cannot hold one back.
  */
 export function harnessSupportsSkillSwitches(id: HarnessId): boolean {
-  return id !== "pi" && id !== "omp";
+  return harnessCan(id, "skillSwitches");
 }
 
 export function newSession(
