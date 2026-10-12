@@ -14,6 +14,7 @@ import {
   claudeAiDuplicates,
   explicitlyOnClaudeAi,
   gatewaySessionInput,
+  harnessTakesGatewayConnectors,
   launchableConnectors,
   serviceKey,
   setClaudeAiExplicitlyOn,
@@ -134,6 +135,28 @@ describe("which connectors a session starts", () => {
       gatewaySessionInput({ harness: "claude" }, "remote://box/repo", STATE, [])
         .servers,
     ).toEqual([]);
+  });
+});
+
+describe("which harnesses take gateway connectors", () => {
+  it("follows the capability table: Claude Code and Codex only, for now", () => {
+    const all = [
+      "claude",
+      "codex",
+      "cursor",
+      "grok",
+      "opencode",
+      "pi",
+      "omp",
+      "fx",
+      "hermes",
+      "antigravity",
+      "devin",
+    ] as const;
+    expect(all.filter((id) => harnessTakesGatewayConnectors(id))).toEqual([
+      "claude",
+      "codex",
+    ]);
   });
 });
 

@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { harnessCan } from "../../../integrations/harness/core/capabilities";
 import type { HarnessLaunchMcpServer } from "../../../integrations/harness/core/types";
 import { REMOTE_PATH_PREFIX } from "../../../shared/lib/remotePaths";
 import type { HarnessId } from "../../sessions/model/session";
@@ -14,7 +15,7 @@ const CLAUDE_AI_PREFIX = "claude.ai ";
 
 /** Harnesses whose sessions get gateway connectors at launch. */
 export function harnessTakesGatewayConnectors(harness: HarnessId): boolean {
-  return harness === "claude" || harness === "codex";
+  return harnessCan(harness, "mcpInject");
 }
 
 /**

@@ -2,7 +2,7 @@ import type { Session } from "../../sessions/model/session";
 import type { Locality } from "../../server-locality/model/locality";
 import { providerForAccount, findModelProvider } from "./modelProviders";
 import { providerLocality } from "./providerLocality";
-import { harnessTakesModelProvider } from "./providerCapability";
+import { harnessCan } from "../../../integrations/harness/core/capabilities";
 
 export type SessionProviderInput = Pick<Session, "harness"> &
   Partial<Pick<Session, "modelProvider" | "providerAccountId">>;
@@ -16,7 +16,7 @@ export type SessionProviderInput = Pick<Session, "harness"> &
 export function sessionModelProvider(
   session: SessionProviderInput,
 ): string | undefined {
-  if (!harnessTakesModelProvider(session.harness)) return undefined;
+  if (!harnessCan(session.harness, "modelProvider")) return undefined;
   if (session.modelProvider) return session.modelProvider;
   return providerForAccount(session.providerAccountId)?.id;
 }
@@ -26,7 +26,7 @@ export function sessionProviderLocality(
   session: SessionProviderInput,
 ): Locality {
   if (session.harness === "claude") return "hosted";
-  if (!harnessTakesModelProvider(session.harness)) return "unknown";
+  if (!harnessCan(session.harness, "modelProvider")) return "unknown";
   return providerLocality(sessionModelProvider(session));
 }
 
@@ -47,7 +47,7 @@ export function sessionProviderLabel(
  * known to run on another provider.
  */
 export function autoModeAllowed(session: SessionProviderInput): boolean {
-  if (!harnessTakesModelProvider(session.harness)) return true;
+  if (!harnessCan(session.harness, "modelProvider")) return true;
   const id = sessionModelProvider(session);
   return !id || id === "openai";
 }

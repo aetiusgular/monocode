@@ -1,9 +1,14 @@
 /**
  * How Claude Code loads connector tool definitions, set through the
  * `ENABLE_TOOL_SEARCH` variable in the `--settings` env MonoCode already
- * passes. Read in Claude Code 2.1.292 (12 Oct 2026): unset defers MCP tool
+ * passes. Read in Claude Code 2.1.292 (12 Oct 2026): unset defers tool
  * definitions behind a search tool, `auto` defers them only when they are
  * large, and a false value loads every definition up front.
+ *
+ * Session 9 ran it on 2.1.292 and 2.1.296 with a base URL that is not
+ * Anthropic's: unset and "false" sent all 29 tools, and "true" sent 13 and a
+ * search tool. Deferral covers Claude Code's built-in tools too, not only
+ * connectors. Through Anthropic's own API the default is not seen yet.
  *
  * Claude Code only. No other harness has a known equivalent; there the lever
  * is fewer tools: the per-tool switches on each connector and the per-chat
@@ -23,12 +28,12 @@ export const TOOL_LOADING_CHOICES: {
   {
     value: "default",
     label: "On demand (Claude Code's default)",
-    note: "Tool definitions load when the model searches for them. Least context used.",
+    note: "Claude Code decides. On Anthropic's API it can hold tool definitions back, its own tools included, until the model searches for them.",
   },
   {
     value: "auto",
     label: "Automatic",
-    note: "Claude Code loads them up front when they are small and on demand when they are large.",
+    note: "Claude Code sends definitions up front when they are small and holds them back, its own tools included, when they are large.",
   },
   {
     value: "upfront",

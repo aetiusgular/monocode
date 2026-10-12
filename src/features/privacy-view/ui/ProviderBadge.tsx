@@ -12,7 +12,7 @@ import {
 } from "../../model-setup/model/sessionProvider";
 import { urlHost } from "../../model-setup/model/loopback";
 import type { Locality } from "../../server-locality/model/locality";
-import { harnessTakesModelProvider } from "../../model-setup/model/providerCapability";
+import { harnessCan } from "../../../integrations/harness/core/capabilities";
 
 export type ProviderChoice = {
   id: string;
@@ -80,7 +80,7 @@ export function ProviderBadge({
   const entries = useModelProviders();
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
-  if (!harnessTakesModelProvider(session.harness)) return null;
+  if (!harnessCan(session.harness, "modelProvider")) return null;
   const current = sessionModelProvider(session);
   const locality = providerLocality(current);
   const label = sessionProviderLabel(session) ?? "Home default";

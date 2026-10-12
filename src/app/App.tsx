@@ -856,6 +856,7 @@ import {
   setPopOutHost as setPopOutHost_l4,
 } from "./model/windowTransfer";
 // [lane-5] imports
+import { forgetSiteRules as forgetSiteRules_l5 } from "../features/browser-tools/model/siteRules";
 
 const SearchView = lazySurface(
   async () => {
@@ -5757,7 +5758,10 @@ function Workspace({
   const onDeleteHistorySession = useCallback(
     (sessionId: string) =>
       onRemoveHistorySession(sessionId, "delete").then((removed) => {
-        if (removed) forgetSessionContext_l2(sessionId);
+        if (removed) {
+          forgetSessionContext_l2(sessionId);
+          forgetSiteRules_l5("chat", sessionId);
+        }
         return removed;
       }),
     [onRemoveHistorySession],
@@ -5808,6 +5812,7 @@ function Workspace({
       for (const sessionId of sessionIds) {
         if (!(await onRemoveHistorySession(sessionId, "delete", true))) break;
         forgetSessionContext_l2(sessionId);
+        forgetSiteRules_l5("chat", sessionId);
       }
     },
     [onRemoveHistorySession],

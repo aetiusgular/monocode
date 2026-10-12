@@ -87,6 +87,17 @@ describe("harness capability table", () => {
     expect(HARNESSES.length - sandboxed.length).toBe(10);
   });
 
+  it("takes a model provider per chat on Codex only", () => {
+    const takes = HARNESSES.filter((id) => harnessCan(id, "modelProvider"));
+    expect(takes).toEqual(["codex"]);
+  });
+
+  it("leaves prompt suggestions off until one is seen to arrive", () => {
+    for (const id of HARNESSES) {
+      expect(harnessCan(id, "promptSuggestions"), id).toBe(false);
+    }
+  });
+
   it("sets native upgrades only for Claude Code and Codex", () => {
     for (const id of HARNESSES) {
       const caps = harnessCapabilities(id);

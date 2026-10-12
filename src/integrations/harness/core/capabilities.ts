@@ -63,6 +63,8 @@ export type HarnessCapabilities = {
   promptSuggestions: boolean;
   /** The harness runs commands in its own sandbox. */
   sandboxed: boolean;
+  /** A model provider can be picked per chat (`modelProvider` on Codex's `thread/start`). */
+  modelProvider: boolean;
   /** MonoCode can steer a running turn. */
   steer: boolean;
   /** MonoCode can ask the harness to compact its context. */
@@ -96,6 +98,7 @@ export const BASELINE: HarnessCapabilities = {
   namedApprovals: false,
   promptSuggestions: false,
   sandboxed: false,
+  modelProvider: false,
   steer: true,
   compact: false,
   textPrompt: false,
@@ -110,13 +113,15 @@ export const BASELINE: HarnessCapabilities = {
 const CAPABILITIES: Record<HarnessId, HarnessCapabilities> = {
   claude: {
     ...BASELINE,
-    // `--append-system-prompt` at launch. Check 2 (step 3c, section 13) has
-    // not run in MonoCode's spawn shape; set "none" if it fails.
+    // `--append-system-prompt` at launch. Check 2 passed in session 9 (2.1.292
+    // and 2.1.296): kept after `--resume` and a compaction, fixed when the
+    // session is created.
     instructions: "system",
     // `--resume-session-at` at any recorded entry. Boundaries are lost
     // across a compaction and after an app restart.
     rewind: "anyTurn",
-    // `--fork-session` with `--resume`. Check 6 has not run.
+    // `--fork-session` with `--resume`, and `--resume-session-at`. Check 6
+    // passed in session 9.
     fork: "atTurn",
     backgroundList: true,
     backgroundStop: true,
@@ -124,9 +129,10 @@ const CAPABILITIES: Record<HarnessId, HarnessCapabilities> = {
     // Transcript files only. No documented CLI list.
     listSessions: "files",
     namedApprovals: true,
-    // `--prompt-suggestions` is documented for `--print`, which MonoCode's
-    // spawn does not pass. Not checked.
-    promptSuggestions: true,
+    // `--prompt-suggestions` is accepted without `--print` but sent no
+    // suggestion in session 9's run on 2.1.292 and 2.1.296, with or without
+    // `-p`. Off until one is seen to arrive.
+    promptSuggestions: false,
     compact: true,
     textPrompt: true,
     extraDirs: true,
@@ -136,20 +142,23 @@ const CAPABILITIES: Record<HarnessId, HarnessCapabilities> = {
   },
   codex: {
     ...BASELINE,
-    // `developerInstructions` on `thread/start`. Check 3 has not run.
+    // `developerInstructions` on `thread/start`. Check 3 passed in session 9;
+    // `thread/resume` ignores a new value.
     instructions: "session",
-    // `thread/revert`, paginated threads only. Check 4 decides whether the
-    // local home has it; set "lastTurn" if it fails.
+    // `thread/revert`. Check 4 passed in session 9 on a home set up like the
+    // local one; set "lastTurn" if session 7 sees it fail on the Mac.
     rewind: "anyTurn",
-    // `thread/fork` with `lastTurnId`. Check 5 has not run.
+    // `thread/fork` with `lastTurnId`. Check 5 passed in session 9.
     fork: "atTurn",
     // `thread/backgroundTerminals/list` and `/terminate`, experimental.
+    // Both answered in session 9 on 0.161.0.
     backgroundList: true,
     backgroundStop: true,
     mcpInject: true,
     listSessions: "native",
     namedApprovals: true,
     sandboxed: true,
+    modelProvider: true,
     compact: true,
     textPrompt: true,
     extraDirs: true,
@@ -179,6 +188,9 @@ const CAPABILITIES: Record<HarnessId, HarnessCapabilities> = {
     textPrompt: true,
     skillSwitches: false,
   },
+  // Grok Build, fx and Hermes take client MCP servers on `session/new` by
+  // their source (step 3c, section 5), and lane 1 built it. `mcpInject` stays
+  // off until one is installed and seen to load a gateway connector.
   fx: { ...BASELINE, steer: false, attachments: false },
   hermes: { ...BASELINE },
   antigravity: { ...BASELINE, steer: false },
