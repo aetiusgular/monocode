@@ -142,6 +142,7 @@ import type { HarnessSessionRow as HarnessSessionRow_l1 } from "../../session-im
 // [lane-2] imports
 import { useSuggestedPrompts as useSuggestedPrompts_l2 } from "../../suggested-prompts/hooks/useSuggestedPrompts";
 // [lane-3] imports
+import { VerifyCard as VerifyCard_l3 } from "../../verify/ui/VerifyCard";
 // [lane-4] imports
 // [lane-5] imports
 
@@ -1350,6 +1351,16 @@ const LocalSessionPane = memo(function LocalSessionPane({
                     turnRewind_l1={turnRewind_l1}
                     // [lane-2] transcript-props
                     // [lane-3] transcript-props
+                    latestTurnVerify_l3={
+                      agent ? undefined : (
+                        <VerifyCard_l3
+                          sessionId={session.id}
+                          blocks={session.blocks}
+                          busy={!!session.busy}
+                          onSend={(text) => onSubmit(session.id, text, [])}
+                        />
+                      )
+                    }
                     // [lane-4] transcript-props
                     // [lane-5] transcript-props
                   />

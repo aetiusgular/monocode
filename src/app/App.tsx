@@ -840,6 +840,9 @@ import {
 } from "../features/project-context/model/instructions";
 import { claudeCliVersion as claudeCliVersion_l2 } from "../features/project-context/model/claudeVersion";
 // [lane-3] imports
+import { newAppPreviewTab as newAppPreviewTab_l3 } from "../features/workspace/model/layout";
+import { setPreviewHost as setPreviewHost_l3 } from "../features/app-preview/model/previewHost";
+import { useVerifyAfterTurns as useVerifyAfterTurns_l3 } from "../features/verify/model/useVerifyAfterTurns";
 // [lane-4] imports
 import {
   canRunHelper as canRunHelper_l4,
@@ -12896,6 +12899,34 @@ function Workspace({
   const launchAutomationRef_l2 = useRef(launchAutomation);
   launchAutomationRef_l2.current = launchAutomation;
   // [lane-3] app-late
+  // #38a: verify after turns that changed files while a preview runs, and
+  // stop a deleted chat's preview.
+  useVerifyAfterTurns_l3(sessions, (sessionId, text) =>
+    onSubmit(sessionId, text, []),
+  );
+  // #37: the session panel opens a chat's preview in the editor area.
+  useEffect(() => {
+    setPreviewHost_l3({
+      openPane: (sessionId) => {
+        const session = sessionsRef.current.find((s) => s.id === sessionId);
+        const tab = tabsRef.current.find(
+          (entry) => entry.id === activeTabIdRef.current,
+        );
+        if (!session || !tab) return;
+        const file = {
+          ...newAppPreviewTab_l3(session.id, sessionWorkCwd(session)),
+          ...(session.worktreeCwd ? { projectCwd: session.cwd } : {}),
+        };
+        setTabs((prev) =>
+          prev.map((entry) =>
+            entry.id === tab.id ? openEditorTab(entry, file) : entry,
+          ),
+        );
+        setComposerFocused(false);
+      },
+    });
+    return () => setPreviewHost_l3(null);
+  }, []);
   // [lane-4] app-late
   // #33: the PR bar sends CI repairs to, and archives, the chat that owns a
   // checkout. It reaches the app through this host, not through props.

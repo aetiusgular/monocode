@@ -304,6 +304,8 @@ type Props = {
   turnRewind_l1?: TurnRewind_l1;
   // [lane-2] props
   // [lane-3] props
+  /** #38a: the verify card, under the latest turn once it settles. */
+  latestTurnVerify_l3?: ReactNode;
   // [lane-4] props
   // [lane-5] props
 };
@@ -371,6 +373,7 @@ function AgentTranscriptComponent({
   turnRewind_l1,
   // [lane-2] destructure
   // [lane-3] destructure
+  latestTurnVerify_l3,
   // [lane-4] destructure
   // [lane-5] destructure
 }: Props) {
@@ -1621,6 +1624,7 @@ function AgentTranscriptComponent({
               {isLastTurn && latestTurnAccessory && !parked
                 ? latestTurnAccessory
                 : null}
+              {isLastTurn && settled && !parked ? latestTurnVerify_l3 : null}
               {settled &&
               !reactedOnly &&
               (durationMs != null ||

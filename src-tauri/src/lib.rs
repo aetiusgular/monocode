@@ -67,6 +67,7 @@ mod claude_sessions;
 mod env_store;
 mod project_context;
 // [lane-3] mods
+mod preview;
 mod sandbox_frame;
 // [lane-4] mods
 // [lane-5] mods
@@ -658,6 +659,10 @@ pub fn run() {
             // [lane-3] commands
             sandbox_frame::sandbox_frame_put,
             sandbox_frame::sandbox_frame_release,
+            preview::preview_read_config,
+            preview::preview_resolve_cwd,
+            preview::preview_free_port,
+            preview::preview_probe,
             // [lane-4] commands
             fs::git_review_patch,
             // [lane-5] commands

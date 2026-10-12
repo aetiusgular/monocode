@@ -120,6 +120,9 @@ const APP_ACTIONS: &[&str] = &[
     "automations.update",
     "automations.run",
     "automations.remove",
+    "preview.status",
+    "preview.logs",
+    "preview.restart",
     "chat.card",
 ];
 const APP_USAGE: &str = r#"MonoCode app access — use in a thread enabled by /operator.
@@ -277,6 +280,12 @@ Actions:
                   saved in supervised or auto-accept-edits, no wider than
                   this chat's mode; the user starts any other.
   automations.remove  {"id":"..."}  Waits for the user to confirm.
+  preview.status  {}  This chat's preview server: its address, its command,
+                  and whether it answers. MonoCode runs it; never start another.
+  preview.logs    {"lines":40}  The newest lines of its output. Add
+                  "errorsOnly":true for error lines only. At most 200 lines.
+  preview.restart {}  Stop and start the command the user confirmed. It never
+                  starts a different command, or one the user has not started.
   chat.card      Mono or habit only. Post a card to the Mono's chat:
                   {"type":"pr","repo":"owner/repo","number":123,"note":"..."}
                   {"type":"session","sessionId":"...","note":"..."}
@@ -737,6 +746,18 @@ mod tests {
         assert!(create.contains("every 30m"));
         // Small enough for a 16k window.
         assert!(text.len() < 2_500, "{}", text.len());
+    }
+
+    #[test]
+    fn preview_help_is_its_own_group_and_says_it_never_starts_a_server() {
+        let text = app_action_help("preview").unwrap();
+        for action in ["preview.status", "preview.logs", "preview.restart"] {
+            assert!(text.contains(action), "group help omits {action}");
+        }
+        assert!(!text.contains("automations.run"));
+        let restart = app_action_help("preview.restart").unwrap();
+        assert!(restart.contains("never"));
+        assert!(text.len() < 1_500, "{}", text.len());
     }
 
     #[test]

@@ -8,6 +8,7 @@ import {
 } from "../../project-context/model/projectContext";
 import { instructionParts } from "../../project-context/model/instructions";
 import { memoryPart } from "../../project-memory/model/projectMemory";
+import { previewPreamblePart } from "../../app-preview/model/previewPreamble";
 import {
   isLocal,
   sessionIsLocal,
@@ -139,6 +140,9 @@ export async function gatherPreambleParts(
     ? memoryPart(memory.text, { local, today })
     : undefined;
   if (mem) parts.push(mem);
+  // #37: one line for a preview server MonoCode runs for this chat.
+  const preview = previewPreamblePart(session.id);
+  if (preview) parts.push(preview);
   return parts;
 }
 

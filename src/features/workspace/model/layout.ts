@@ -55,6 +55,11 @@ export type SessionChangesSource = {
   sessionId: string;
 };
 
+/** #37: a chat's preview server, framed in the editor area. */
+export type AppPreviewTabSource = {
+  sessionId: string;
+};
+
 export type FilePaneTab = {
   id: string;
   path: string;
@@ -79,6 +84,8 @@ export type FilePaneTab = {
   foreground?: string;
   /** Temporary tab: the next preview open in its pane replaces it. */
   preview?: boolean;
+  /** #37: a chat's running app, on localhost. Live only — not persisted. */
+  appPreview?: AppPreviewTabSource;
 };
 
 export type EditorPane = {
@@ -430,12 +437,33 @@ export function isAgentTab(
   return !!file.agent;
 }
 
+export function isAppPreviewTab(
+  file: FilePaneTab,
+): file is FilePaneTab & { appPreview: AppPreviewTabSource } {
+  return !!file.appPreview;
+}
+
+/** #37: the editor tab that frames a chat's preview server. */
+export function newAppPreviewTab(
+  sessionId: string,
+  cwd: string,
+  title = "Preview",
+): FilePaneTab {
+  return {
+    id: crypto.randomUUID(),
+    path: title,
+    cwd,
+    appPreview: { sessionId },
+  };
+}
+
 export function isVirtualDocumentTab(file: FilePaneTab): boolean {
   return (
     isPlanTab(file) ||
     isReleaseNotesTab(file) ||
     isCommitTab(file) ||
-    isAgentTab(file)
+    isAgentTab(file) ||
+    isAppPreviewTab(file)
   );
 }
 
@@ -514,6 +542,7 @@ export function isSessionChangesTab(
 export function editorTabKey(file: FilePaneTab): string {
   if (file.terminal) return `terminal:${file.id}`;
   if (file.agent) return `agent:${file.agent.sessionId}`;
+  if (file.appPreview) return `app-preview:${file.appPreview.sessionId}`;
   if (file.plan) return `plan:${file.plan.blockId}`;
   if (file.releaseNotes) return `release-notes:${file.releaseNotes.version}`;
   if (file.commit) return `commit:${file.cwd}:${file.commit.sha}`;
@@ -543,6 +572,7 @@ export function isPreviewableTab(file: FilePaneTab): boolean {
   return (
     !file.terminal &&
     !file.agent &&
+    !file.appPreview &&
     !file.plan &&
     !file.releaseNotes &&
     !file.changes

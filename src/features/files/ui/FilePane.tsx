@@ -8,6 +8,7 @@ import {
 import { SurfaceTabs } from "../../workspace/ui/SurfaceTabs";
 import {
   isAgentTab,
+  isAppPreviewTab,
   isChangesTab,
   isCommitTab,
   isPlanTab,
@@ -36,6 +37,10 @@ import { PdfFileView } from "./PdfFileView";
 import { ReleaseNotesSurface } from "../../../app/ui/ReleaseNotesSurface";
 import { isRemoteProjectPath } from "../../projects/model/recents";
 
+const AppPreviewPane = lazySurface(async () => {
+  const module = await import("../../app-preview/ui/AppPreviewPane");
+  return { default: module.AppPreviewPane };
+});
 const CommitDiff = lazySurface(async () => {
   const module = await import("../../source-control/ui/CommitDiff");
   return { default: module.CommitDiff };
@@ -184,7 +189,9 @@ function FilePaneComponent({
                   : "hidden"
               }
             >
-              {isAgentTab(file) ? (
+              {isAppPreviewTab(file) ? (
+                <AppPreviewPane sessionId={file.appPreview.sessionId} />
+              ) : isAgentTab(file) ? (
                 <AgentTabView
                   title={file.path}
                   session={sessions.find(

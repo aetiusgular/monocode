@@ -49,6 +49,9 @@ const ACTION_LABELS: Record<string, string> = {
   "automations.run": "Run an automation",
   "automations.remove": "Propose removing an automation",
   // [lane-3] labels
+  "preview.status": "Check the preview",
+  "preview.logs": "Read the preview's output",
+  "preview.restart": "Restart the preview",
   // [lane-4] labels
   // [lane-5] labels
 };

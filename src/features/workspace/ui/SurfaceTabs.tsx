@@ -14,6 +14,7 @@ import {
 } from "../../../platform/tauri/fs";
 import {
   isAgentTab,
+  isAppPreviewTab,
   isChangesTab,
   isCommitTab,
   isFilesystemTab,
@@ -151,6 +152,16 @@ export function surfaceTabPresentation(
       label: name,
       iconName: "AGENT",
       tooltip: `${name} — orchestration agent`,
+    };
+  }
+
+  if (isAppPreviewTab(file)) {
+    const name = file.path.trim() || "Preview";
+    return {
+      name,
+      label: name,
+      iconName: "index.html",
+      tooltip: `${name} — this chat's app on localhost`,
     };
   }
 

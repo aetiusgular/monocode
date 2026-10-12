@@ -184,6 +184,15 @@ export function collectTurnDocuments(
     .map((entry) => entry.file);
 }
 
+/**
+ * #38a: whether a settled turn changed any file through a write or edit tool
+ * that landed. Any file counts, not only documents. Edits a shell command
+ * made are not seen here.
+ */
+export function turnWroteFiles(blocks: readonly Block[]): boolean {
+  return writeCalls(blocks).some((block) => writeLanded(block, false));
+}
+
 /** The cards to show now, and how many more the "+N more" row stands for. */
 export function documentCardWindow<T>(
   files: readonly T[],

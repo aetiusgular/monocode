@@ -63,6 +63,11 @@ export type SandboxView = {
   profile?: string;
   writable: string;
   network: string;
+  /**
+   * #37: something MonoCode itself runs for this chat outside any sandbox,
+   * such as a preview server. Its presence makes the chat unsandboxed.
+   */
+  outside?: string;
 };
 
 export type PrivacyView = {
@@ -174,6 +179,8 @@ export function privacyView(
     gatewayServers?: readonly HarnessLaunchMcpServer[];
     /** MonoCode's own outbound calls that are switched on. */
     outboundOn?: (id: OutboundCallId) => boolean;
+    /** #37: a preview server MonoCode runs for this chat. */
+    previewServer?: { command: string };
   } = {},
 ): PrivacyView {
   const destinations: Destination[] = [modelDestination(session)];
@@ -211,8 +218,15 @@ export function privacyView(
       ? `${away.label}${away.detail ? ` (${away.detail})` : ""} is ${away.locality === "hosted" ? "hosted" : "not known to be local"}`
       : "Its model, home or tools are not all known to be local";
   }
+  const sandbox = sandboxView(session);
   return {
-    sandbox: sandboxView(session),
+    sandbox: input.previewServer
+      ? {
+          ...sandbox,
+          sandboxed: false,
+          outside: `MonoCode runs a preview server for this chat (${input.previewServer.command}). It runs the project's code with your full rights and reloads as files change.`,
+        }
+      : sandbox,
     destinations,
     networkLog: networkLog(session.blocks),
     private: isPrivate,

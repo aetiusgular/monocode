@@ -454,6 +454,8 @@ describe("the session panel", () => {
     expect(sections()).toEqual([
       "Outputs",
       "Used in this session",
+      // #37: every chat with a project folder can start a preview.
+      "Dev server",
       "Sandbox and privacy",
       "Session",
     ]);
@@ -464,6 +466,8 @@ describe("the session panel", () => {
       "Preview",
       "Outputs",
       "Used in this session",
+      // #37: every chat with a project folder can start a preview.
+      "Dev server",
       "Sandbox and privacy",
       "Session",
     ]);

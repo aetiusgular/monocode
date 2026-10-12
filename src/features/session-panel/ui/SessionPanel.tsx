@@ -36,6 +36,7 @@ import { RunningSection as RunningSection_l1 } from "./RunningSection";
 // [lane-2] imports
 import { ContextSection as ContextSection_l2 } from "../../session-preamble/ui/ContextSection";
 // [lane-3] imports
+import { PreviewServerSection as PreviewServerSection_l3 } from "../../app-preview/ui/PreviewServerSection";
 // [lane-4] imports
 // [lane-5] imports
 import {
@@ -322,6 +323,11 @@ export function SessionPanelView({
             session={session}
           />
           {/* [lane-3] sections */}
+          <PreviewServerSection_l3
+            sessionId={session.id}
+            project={session.cwd}
+            workCwd={workCwd}
+          />
           {/* [lane-4] sections */}
           {/* [lane-5] sections */}
           <SessionPrivacySection_l5 session={session} />

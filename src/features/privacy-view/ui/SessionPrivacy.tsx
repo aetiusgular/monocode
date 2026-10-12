@@ -1,4 +1,10 @@
-import { useMemo } from "react";
+import { useMemo, useSyncExternalStore } from "react";
+import {
+  isPreviewLive,
+  previewForSession,
+  previewsVersion,
+  subscribePreviews,
+} from "../../app-preview/model/previewStore";
 import { sessionWorkCwd } from "../../sessions/model/session";
 import { gatewaySessionInput } from "../../gateway-connectors/model/sessionGateway";
 import { useModelProviders } from "../../model-setup/model/modelProviders";
@@ -16,6 +22,10 @@ export type PrivacyPanelSession = PrivacySession & { id?: string };
 export function usePrivacyView(session: PrivacyPanelSession) {
   const providers = useModelProviders();
   const outbound = useOutboundCalls();
+  // #37: a running preview server makes the chat unsandboxed.
+  useSyncExternalStore(subscribePreviews, previewsVersion, previewsVersion);
+  const preview = session.id ? previewForSession(session.id) : undefined;
+  const previewCommand = isPreviewLive(preview) ? preview?.command : undefined;
   // Blocks change on every streamed token; only the network log reads them,
   // so the rest is keyed on the fields that decide the routes.
   const routeKey = JSON.stringify([
@@ -43,11 +53,15 @@ export function usePrivacyView(session: PrivacyPanelSession) {
     }
     return privacyView(
       { ...session, blocks: [] },
-      { gatewayServers, outboundOn: (id) => outbound[id] !== false },
+      {
+        gatewayServers,
+        outboundOn: (id) => outbound[id] !== false,
+        ...(previewCommand ? { previewServer: { command: previewCommand } } : {}),
+      },
     );
     // providers: the model route reads the provider list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeKey, providers, outbound]);
+  }, [routeKey, providers, outbound, previewCommand]);
   const log = useMemo(() => networkLog(session.blocks), [session.blocks]);
   return useMemo(() => ({ ...routes, networkLog: log }), [routes, log]);
 }

@@ -5,6 +5,7 @@ import {
 import {
   closeLeaf,
   isAgentTab,
+  isAppPreviewTab,
   isTerminalTab,
   leafIds,
   newTab,
@@ -171,13 +172,17 @@ function parseProjectReturnTargets(raw: unknown): ProjectReturnMemory {
  * cost the whole workspace tab on restore, so the pane is closed here instead.
  */
 function withoutAgentTabs(tabs: WorkspaceTab[]): WorkspaceTab[] {
+  // #37: a preview tab frames a server that a restart has stopped; it is
+  // live only, like an agent tab.
+  const liveOnly = (file: FilePaneTab) =>
+    isAgentTab(file) || isAppPreviewTab(file);
   return tabs.flatMap((tab) => {
-    if (!tab.editorPanes.some((pane) => pane.files.some(isAgentTab)))
+    if (!tab.editorPanes.some((pane) => pane.files.some(liveOnly)))
       return [tab];
     let remaining: WorkspaceTab | null = tab;
     const panes: EditorPane[] = [];
     for (const pane of tab.editorPanes) {
-      const files = pane.files.filter((file) => !isAgentTab(file));
+      const files = pane.files.filter((file) => !liveOnly(file));
       if (files.length === pane.files.length) {
         panes.push(pane);
       } else if (files.length === 0) {

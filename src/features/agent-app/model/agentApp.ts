@@ -249,6 +249,10 @@ const FIELDS = new Map<string, readonly string[]>([
   ["automations.run", ["id"]],
   ["automations.remove", ["id"]],
   // [lane-3] fields
+  // #37: the calling chat's preview server.
+  ["preview.status", []],
+  ["preview.logs", ["lines", "errorsOnly"]],
+  ["preview.restart", []],
   // [lane-4] fields
   // [lane-5] fields
 ]);
@@ -996,6 +1000,11 @@ export async function handleAgentApp(
       await import("../../automations/model/agentAutomations")
     ).handleAutomationAction(source, action, input, host);
   // [lane-3] routes
+  // #37. A dynamic import keeps the file's import block untouched.
+  if (action.startsWith("preview."))
+    return (
+      await import("../../app-preview/model/previewActions")
+    ).handlePreviewAction(source, action, input);
   // [lane-4] routes
   // [lane-5] routes
   if (action === "chat.card") {

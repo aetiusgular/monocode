@@ -99,6 +99,14 @@ export function PrivacySection({ view }: { view: PrivacyView }) {
             Not sandboxed. Commands run with your full rights.
           </p>
         ) : null}
+        {sandbox.outside ? (
+          <p
+            className="text-[11px] leading-4 text-amber-500"
+            data-outside-sandbox
+          >
+            {sandbox.outside}
+          </p>
+        ) : null}
         <dl className="flex flex-col">
           <Fact label="Mode" value={sandbox.mode} />
           {sandbox.profile ? (
