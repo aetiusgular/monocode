@@ -56,6 +56,7 @@ vi.mock("../../sessions/ui/AgentTranscript", () => ({
 }));
 vi.mock("../../sessions/ui/SessionReview", () => ({
   SessionReview: () => null,
+  SessionChangesButton: () => null,
 }));
 vi.mock("../../orchestration/model/orchestration", async (original) => ({
   ...(await original<

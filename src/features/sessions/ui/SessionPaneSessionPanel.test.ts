@@ -13,7 +13,10 @@ const probes = vi.hoisted(() => ({
 vi.mock("./Composer", () => ({ Composer: () => null }));
 vi.mock("../../monos/ui/MonoComposer", () => ({ MonoComposer: () => null }));
 vi.mock("./AgentTranscript", () => ({ AgentTranscript: () => null }));
-vi.mock("./SessionReview", () => ({ SessionReview: () => null }));
+vi.mock("./SessionReview", () => ({
+  SessionReview: () => null,
+  SessionChangesButton: () => null,
+}));
 vi.mock("../../orchestration/model/orchestration", async (original) => ({
   ...(await original<
     typeof import("../../orchestration/model/orchestration")
