@@ -4577,6 +4577,31 @@ fn git_output(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
     None
 }
 
+/// `git_output` with the repository's `core.fsmonitor` turned off. A file
+/// monitor is a command named in `.git/config`, which an agent can write, so
+/// a call that only reads must not start it (security review, finding F7).
+fn git_output_no_fsmonitor(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
+    let output = git_cmd_for_args(args)
+        .arg("--no-pager")
+        .arg("-c")
+        .arg("core.fsmonitor=false")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .ok()?;
+    if git_status_ok(&output.status, args) {
+        return Some(output.stdout);
+    }
+    None
+}
+
+fn git_run_no_fsmonitor(root: &Path, args: &[&str]) -> Option<String> {
+    git_output_no_fsmonitor(root, args).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+}
+
 /// Queued 8 KiB chunks allowed between the git reader and the consumer.
 ///
 /// `max_bytes` caps the buffer being built, not what the reader can run ahead:
@@ -6241,15 +6266,16 @@ fn untracked_file_patch(root: &Path, relative: &str) -> Option<String> {
 }
 
 pub(crate) fn git_review_patch_for(root: &Path) -> Result<GitReviewPatch, String> {
-    if git_run(root, &["rev-parse", "--is-inside-work-tree"]).is_none() {
+    if git_run_no_fsmonitor(root, &["rev-parse", "--is-inside-work-tree"]).is_none() {
         return Err("This folder is not a git repository".into());
     }
-    let base = if git_run(root, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_some() {
-        "HEAD"
-    } else {
-        EMPTY_TREE
-    };
-    let mut patch = git_run(
+    let base =
+        if git_run_no_fsmonitor(root, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_some() {
+            "HEAD"
+        } else {
+            EMPTY_TREE
+        };
+    let mut patch = git_run_no_fsmonitor(
         root,
         &[
             "diff",
@@ -6265,9 +6291,10 @@ pub(crate) fn git_review_patch_for(root: &Path) -> Result<GitReviewPatch, String
     .unwrap_or_default();
     let mut truncated = false;
     let mut skipped = Vec::new();
-    let untracked = git_output(root, &["ls-files", "-z", "--others", "--exclude-standard"])
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-        .unwrap_or_default();
+    let untracked =
+        git_output_no_fsmonitor(root, &["ls-files", "-z", "--others", "--exclude-standard"])
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .unwrap_or_default();
     for (index, relative) in untracked.split('\0').filter(|p| !p.is_empty()).enumerate() {
         if index >= REVIEW_UNTRACKED_MAX {
             truncated = true;
@@ -6355,6 +6382,43 @@ mod tests {
         assert!(!review.patch.contains("TOKEN"));
         assert_eq!(review.skipped, vec!["blob.bin"]);
         assert!(!review.truncated);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn review_patch_never_starts_the_repositorys_file_monitor() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = review_repo("fsmonitor");
+        std::fs::write(root.join("a.txt"), "one\n").unwrap();
+        review_commit(&root);
+        let marker = root.with_extension("fsmonitor-ran");
+        let _ = std::fs::remove_file(&marker);
+        let hook = root.with_extension("fsmonitor.sh");
+        std::fs::write(
+            &hook,
+            format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git_checked(
+            &root,
+            &["config", "core.fsmonitor", &hook.to_string_lossy()],
+        )
+        .unwrap();
+        std::fs::write(root.join("a.txt"), "two\n").unwrap();
+        // Plain git runs it, so the test can see a monitor start.
+        let _ = git_run(&root, &["diff", "HEAD"]);
+        let ran_plain = marker.exists();
+        let _ = std::fs::remove_file(&marker);
+        let review = git_review_patch_for(&root).unwrap();
+        assert!(review.patch.contains("+two"));
+        assert!(!marker.exists(), "the review started core.fsmonitor");
+        assert!(
+            ran_plain,
+            "the hook never ran under plain git, so this test checks nothing"
+        );
+        let _ = std::fs::remove_file(&hook);
         std::fs::remove_dir_all(root).unwrap();
     }
 

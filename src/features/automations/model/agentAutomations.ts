@@ -166,6 +166,27 @@ function bool(input: Record<string, unknown>, key: string) {
   return value;
 }
 
+const MODE_RANK: Record<RuntimeMode, number> = {
+  supervised: 0,
+  "auto-accept-edits": 1,
+  auto: 2,
+  "full-access": 3,
+};
+
+/**
+ * Whether an agent in a chat with `caller` mode may start an automation saved
+ * with `target` mode. Only Supervised and Auto-accept edits runs, and never a
+ * mode wider than the caller's.
+ */
+export function agentMayRunInMode(
+  target: RuntimeMode,
+  caller: RuntimeMode | undefined,
+): boolean {
+  if (target === "auto" || target === "full-access") return false;
+  const callerRank = MODE_RANK[caller ?? "supervised"] ?? 0;
+  return (MODE_RANK[target] ?? 99) <= callerRank;
+}
+
 function runtimeMode(input: Record<string, unknown>): RuntimeMode | undefined {
   const value = input.runtimeMode;
   if (value == null) return undefined;
@@ -343,6 +364,13 @@ export async function handleAutomationAction(
         existing.lastRunStatus === "running"
       )
         throw new Error("That automation is already running.");
+      // An agent may start a run only in a mode no wider than its own chat's,
+      // and never in Auto or Full access: text it read must not raise its own
+      // access through a saved automation (security review, finding F2).
+      if (!agentMayRunInMode(existing.runtimeMode, source.runtimeMode))
+        throw new Error(
+          `That automation runs in ${existing.runtimeMode}, which an agent cannot start from a ${source.runtimeMode} chat. Ask the user to start it with Run now on the Automations page.`,
+        );
       if (!host.runAutomation)
         throw new Error("Automations cannot be run from this window.");
       await host.runAutomation(existing.id);

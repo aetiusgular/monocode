@@ -11,6 +11,11 @@ const { runPrompt, context } = vi.hoisted(() => ({
   })),
 }));
 vi.mock("./availability", () => ({ isHarnessAvailable: () => true }));
+// This project already agreed to send changes to a helper harness (F3).
+vi.mock("../../../features/code-review/model/reviewConsent", () => ({
+  reviewConsented: () => true,
+  recordReviewConsent: vi.fn(),
+}));
 vi.mock("../../../platform/tauri/fs", () => ({
   gitStagedContext: context,
   gitRangeContext: vi.fn(),

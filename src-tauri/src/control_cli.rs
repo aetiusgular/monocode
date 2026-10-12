@@ -273,7 +273,9 @@ Actions:
   automations.update  {"id":"...","schedule":"daily 18:00","enabled":false}
                   Any of name, prompt, schedule, runtimeMode, workspaceMode,
                   keepAwake, enabled. Waits for the user, like create.
-  automations.run     {"id":"..."}  Start a saved automation now, once.
+  automations.run     {"id":"..."}  Start a saved automation now, once. Only one
+                  saved in supervised or auto-accept-edits, no wider than
+                  this chat's mode; the user starts any other.
   automations.remove  {"id":"..."}  Waits for the user to confirm.
   chat.card      Mono or habit only. Post a card to the Mono's chat:
                   {"type":"pr","repo":"owner/repo","number":123,"note":"..."}

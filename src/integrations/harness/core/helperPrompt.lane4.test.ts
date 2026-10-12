@@ -14,6 +14,11 @@ const { stagedContext, rangeContext } = vi.hoisted(() => ({
     diffPatch: "LOCAL_ONLY_DIFF",
   })),
 }));
+// This project already agreed to send changes to a helper harness (F3).
+vi.mock("../../../features/code-review/model/reviewConsent", () => ({
+  reviewConsented: () => true,
+  recordReviewConsent: vi.fn(),
+}));
 vi.mock("../../../platform/tauri/fs", () => ({
   gitStagedContext: stagedContext,
   gitRangeContext: rangeContext,

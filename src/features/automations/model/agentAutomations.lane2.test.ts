@@ -245,7 +245,7 @@ describe("automations.* app actions", () => {
       "automations.run",
       { id: "auto-1" },
       { ...host, runAutomation },
-      deps(),
+      deps([saved({ runtimeMode: "supervised" })]),
     );
     expect(runAutomation).toHaveBeenCalledWith("auto-1");
     await expect(
@@ -254,9 +254,44 @@ describe("automations.* app actions", () => {
         "automations.run",
         { id: "auto-1" },
         { ...host, runAutomation },
-        deps([saved({ lastRunStatus: "running" })]),
+        deps([
+          saved({ runtimeMode: "supervised", lastRunStatus: "running" }),
+        ]),
       ),
     ).rejects.toThrow(/already running/);
+  });
+
+  it("never lets an agent start a run wider than its own chat", async () => {
+    const runAutomation = vi.fn(async () => {});
+    for (const runtimeMode of ["auto", "full-access"] as const) {
+      await expect(
+        handleAutomationAction(
+          { ...source, runtimeMode: "full-access" } as Session,
+          "automations.run",
+          { id: "auto-1" },
+          { ...host, runAutomation },
+          deps([saved({ runtimeMode })]),
+        ),
+      ).rejects.toThrow(/Run now on the Automations page/);
+    }
+    await expect(
+      handleAutomationAction(
+        source,
+        "automations.run",
+        { id: "auto-1" },
+        { ...host, runAutomation },
+        deps([saved({ runtimeMode: "auto-accept-edits" })]),
+      ),
+    ).rejects.toThrow(/cannot start from a supervised chat/);
+    expect(runAutomation).not.toHaveBeenCalled();
+    await handleAutomationAction(
+      { ...source, runtimeMode: "auto-accept-edits" } as Session,
+      "automations.run",
+      { id: "auto-1" },
+      { ...host, runAutomation },
+      deps([saved({ runtimeMode: "auto-accept-edits" })]),
+    );
+    expect(runAutomation).toHaveBeenCalledTimes(1);
   });
 
   it("refuses a habit run and a thread with no project", async () => {

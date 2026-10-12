@@ -287,13 +287,28 @@ pub fn remove_var(
 
 /// The main checkout of a git worktree: its `.git` file names
 /// `<main>/.git/worktrees/<name>`. Read, never run.
+///
+/// The `.git` file alone is not trusted: an agent or an unpacked archive can
+/// write one naming any project. Git's own back-link must agree:
+/// `<main>/.git/worktrees/<name>/gitdir` must name this folder's `.git`.
 fn main_checkout(dir: &Path) -> Option<PathBuf> {
-    let text = std::fs::read_to_string(dir.join(".git")).ok()?;
+    let dot_git_file = dir.join(".git");
+    if !std::fs::symlink_metadata(&dot_git_file).ok()?.is_file() {
+        return None;
+    }
+    let text = std::fs::read_to_string(&dot_git_file).ok()?;
     let gitdir = text
         .lines()
         .find_map(|line| line.strip_prefix("gitdir:"))?
         .trim();
     let gitdir = PathBuf::from(gitdir);
+    // The check uses resolved paths; the project key keeps the path as written.
+    let resolved = std::fs::canonicalize(&gitdir).ok()?;
+    let back = std::fs::read_to_string(resolved.join("gitdir")).ok()?;
+    let back = std::fs::canonicalize(PathBuf::from(back.trim())).ok()?;
+    if back != std::fs::canonicalize(&dot_git_file).ok()? {
+        return None;
+    }
     let worktrees = gitdir.parent()?;
     if worktrees.file_name()? != "worktrees" {
         return None;
@@ -516,6 +531,12 @@ mod tests {
             format!("gitdir: {}\n", main.join(".git/worktrees/wt").display()),
         )
         .unwrap();
+        // Git's back-link from the main checkout to this worktree.
+        std::fs::write(
+            main.join(".git/worktrees/wt/gitdir"),
+            format!("{}\n", worktree.join(".git").display()),
+        )
+        .unwrap();
         let project = main.to_string_lossy().into_owned();
         set_var(&path, &secrets, None, "REGION", "eu", false).unwrap();
         set_var(&path, &secrets, None, "SHARED", "global", false).unwrap();
@@ -537,6 +558,41 @@ mod tests {
                 ("SHARED".to_string(), "global".to_string())
             ]
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_forged_git_file_does_not_reach_another_projects_values() {
+        let dir = temp();
+        let path = dir.join(FILE);
+        let secrets = Memory::default();
+        let main = dir.join("secret-proj");
+        std::fs::create_dir_all(main.join(".git/worktrees/x")).unwrap();
+        let project = main.to_string_lossy().into_owned();
+        set_var(&path, &secrets, Some(&project), "TOKEN", "s3cret", true).unwrap();
+        let file = load_file(&path);
+        // A folder with a `.git` file naming the project, and no back-link.
+        let forged = dir.join("downloads");
+        std::fs::create_dir_all(&forged).unwrap();
+        std::fs::write(
+            forged.join(".git"),
+            format!("gitdir: {}\n", main.join(".git/worktrees/x").display()),
+        )
+        .unwrap();
+        assert!(resolve(&file, &secrets, &forged).is_empty());
+        // A back-link that names a different worktree does not count either.
+        let real = dir.join("real-wt");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join(".git"), "gitdir: elsewhere\n").unwrap();
+        std::fs::write(
+            main.join(".git/worktrees/x/gitdir"),
+            format!("{}\n", real.join(".git").display()),
+        )
+        .unwrap();
+        assert!(resolve(&file, &secrets, &forged).is_empty());
+        // A gitdir path that does not exist gives nothing.
+        std::fs::write(forged.join(".git"), "gitdir: /no/such/.git/worktrees/x\n").unwrap();
+        assert!(resolve(&file, &secrets, &forged).is_empty());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

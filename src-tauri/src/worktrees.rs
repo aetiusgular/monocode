@@ -38,7 +38,11 @@ pub struct Worktrees {
 fn git(root: &Path, args: &[&str]) -> Result<String, String> {
     let mut command = Command::new("git");
     crate::hide_window_console(&mut command);
+    // `core.fsmonitor` names a command in `.git/config`, which an agent can
+    // write; listing files must not start it (security review, finding F7).
     let output = command
+        .arg("-c")
+        .arg("core.fsmonitor=false")
         .arg("-C")
         .arg(root)
         .args(args)
