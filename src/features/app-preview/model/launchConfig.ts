@@ -52,7 +52,8 @@ export type PreviewCandidate = {
 export type PreviewConfigFiles = {
   launchJson?: string | null;
   packageJson?: string | null;
-  npmrc?: string | null;
+  /** SHA-256 of the project's `.npmrc`, from Rust. Its text never comes here. */
+  npmrcSha256?: string | null;
   lockfiles?: string[];
   skipped?: string[];
 };
@@ -95,6 +96,12 @@ const RESERVED_ENV = new Set([
   "GIT_CONFIG_GLOBAL",
   "GIT_CONFIG_SYSTEM",
   "ZDOTDIR",
+  "IFS",
+  "JAVA_TOOL_OPTIONS",
+  "_JAVA_OPTIONS",
+  "JDK_JAVA_OPTIONS",
+  "DOTNET_STARTUP_HOOKS",
+  "GCONV_PATH",
 ]);
 
 /** Prefixes refused for the same reason: every DYLD_ and LD_ name, npm's own
@@ -355,7 +362,9 @@ export function previewCandidates(files: PreviewConfigFiles): PreviewCandidates 
   // An .npmrc that is there but could not be read (a link out of the project,
   // too large, not text) cannot be fingerprinted, and npm would still read
   // it. Nothing is offered until it is fixed.
-  const npmrcSkipped = (files.skipped ?? []).some((reason) => reason.startsWith(".npmrc"));
+  const npmrcSkipped =
+    (files.skipped ?? []).some((reason) => reason.startsWith(".npmrc")) ||
+    (typeof files.npmrcSha256 === "string" && !/^[0-9a-f]{64}$/.test(files.npmrcSha256));
   if (npmrcSkipped)
     return {
       candidates: [],
@@ -366,8 +375,7 @@ export function previewCandidates(files: PreviewConfigFiles): PreviewCandidates 
         ...scripts.problems,
       ],
     };
-  const npmrcHash =
-    typeof files.npmrc === "string" ? sha256Hex(files.npmrc) : undefined;
+  const npmrcHash = typeof files.npmrcSha256 === "string" ? files.npmrcSha256 : undefined;
   const all = [...launch.candidates, ...scripts.candidates].map((candidate) =>
     npmrcHash ? { ...candidate, npmrcHash } : candidate,
   );

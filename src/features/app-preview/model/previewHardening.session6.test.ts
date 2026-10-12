@@ -73,6 +73,9 @@ describe("finding 6: launch.json may not set names that load code", () => {
       "GIT_SSH_COMMAND",
       "GIT_CONFIG_COUNT",
       "YARN_RC_FILENAME",
+      "JAVA_TOOL_OPTIONS",
+      "DOTNET_STARTUP_HOOKS",
+      "IFS",
     ])
       expect(reservedEnvName(name), name).toBe(true);
     for (const name of ["NODE_ENV", "DEBUG", "PORT", "VITE_API_URL", "ENVIRONMENT"])
@@ -110,18 +113,21 @@ describe("finding 1: what npm runs around the script is part of the command", ()
   it("hashes the project's .npmrc into every candidate, and never shows it", () => {
     const base = { packageJson: pkg({ dev: "vite" }) };
     const none = previewCandidates(base).candidates[0];
-    const one = previewCandidates({ ...base, npmrc: "registry=https://r.example/\n" })
+    const one = previewCandidates({ ...base, npmrcSha256: sha256Hex("registry=a\n") })
       .candidates[0];
     const two = previewCandidates({
       ...base,
-      npmrc: "registry=https://r.example/\nnode-options=--require ./x.js\n",
+      npmrcSha256: sha256Hex("registry=a\nnode-options=--require ./x.js\n"),
     }).candidates[0];
+    // Anything that is not a SHA-256 in hex fails closed: nothing is offered.
+    expect(previewCandidates({ ...base, npmrcSha256: "node-options=x" }).candidates).toEqual(
+      [],
+    );
     expect(none.npmrcHash).toBeUndefined();
     expect(one.npmrcHash).toMatch(/^[0-9a-f]{64}$/);
     expect(previewFingerprint(one)).not.toBe(previewFingerprint(none));
     expect(previewFingerprint(two)).not.toBe(previewFingerprint(one));
     const text = previewConfirmText(two);
-    expect(JSON.stringify(text)).not.toContain("node-options");
     expect(text.npmrc).toMatch(/\.npmrc/);
   });
 

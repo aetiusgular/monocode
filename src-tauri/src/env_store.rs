@@ -584,7 +584,9 @@ mod tests {
         let plain = resolve_plain(&file, &project);
         let names: Vec<&str> = plain.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(names, vec!["API_URL", "REGION"]);
-        assert!(plain.iter().all(|(_, value)| value != "ghp_x" && value != "hunter2"));
+        assert!(plain
+            .iter()
+            .all(|(_, value)| value != "ghp_x" && value != "hunter2"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

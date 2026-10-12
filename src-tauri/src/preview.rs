@@ -48,10 +48,11 @@ pub struct PreviewConfigFiles {
     pub launch_json: Option<String>,
     /// `package.json`, when present and inside the project.
     pub package_json: Option<String>,
-    /// The project's `.npmrc`, when present and inside the project. npm reads
-    /// it when it runs a script, so the webview hashes it into the preview's
-    /// fingerprint. Never shown: it can hold a registry token.
-    pub npmrc: Option<String>,
+    /// SHA-256, in hex, of the project's `.npmrc`, when present and inside
+    /// the project. npm reads it when it runs a script, so it goes into the
+    /// preview's fingerprint. Only the hash crosses to the webview: the file
+    /// can hold a registry token.
+    pub npmrc_sha256: Option<String>,
     /// The lockfiles found at the root, by name.
     pub lockfiles: Vec<String>,
     /// Files that were present but not read, with the reason.
@@ -164,7 +165,13 @@ pub fn read_config_files(root: &str) -> Result<PreviewConfigFiles, String> {
     let mut skipped = Vec::new();
     let launch_json = read_config(&root, ".claude/launch.json", &mut skipped);
     let package_json = read_config(&root, "package.json", &mut skipped);
-    let npmrc = read_config(&root, ".npmrc", &mut skipped);
+    let npmrc_sha256 = read_config(&root, ".npmrc", &mut skipped).map(|text| {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(text.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    });
     let lockfiles = LOCKFILES
         .iter()
         .filter(|name| root.join(name).is_file())
@@ -173,7 +180,7 @@ pub fn read_config_files(root: &str) -> Result<PreviewConfigFiles, String> {
     Ok(PreviewConfigFiles {
         launch_json,
         package_json,
-        npmrc,
+        npmrc_sha256,
         lockfiles,
         skipped,
     })
@@ -435,13 +442,19 @@ mod tests {
         assert!(files.package_json.unwrap().contains("vite"));
         assert_eq!(files.lockfiles, vec!["pnpm-lock.yaml".to_string()]);
         assert!(files.skipped.is_empty());
-        assert!(files.npmrc.is_none());
-        fs::write(root.join(".npmrc"), "node-options=--require ./x.js\n").unwrap();
+        assert!(files.npmrc_sha256.is_none());
+        fs::write(root.join(".npmrc"), "//r.example/:_authToken=npm_secret\n").unwrap();
         let files = read_config_files(root.to_str().unwrap()).unwrap();
-        assert_eq!(
-            files.npmrc.as_deref(),
-            Some("node-options=--require ./x.js\n")
-        );
+        let hash = files.npmrc_sha256.clone().unwrap();
+        assert_eq!(hash.len(), 64);
+        assert!(hash.bytes().all(|b| b.is_ascii_hexdigit()));
+        // The token never leaves Rust: only the hash is serialised.
+        let json = serde_json::to_string(&files).unwrap();
+        assert!(!json.contains("npm_secret"), "{json}");
+        assert!(json.contains("\"npmrcSha256\""), "{json}");
+        fs::write(root.join(".npmrc"), "//r.example/:_authToken=other\n").unwrap();
+        let changed = read_config_files(root.to_str().unwrap()).unwrap();
+        assert_ne!(changed.npmrc_sha256.unwrap(), hash);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -453,9 +466,12 @@ mod tests {
         fs::write(outside.join("npmrc"), "script-shell=/tmp/x\n").unwrap();
         std::os::unix::fs::symlink(outside.join("npmrc"), root.join(".npmrc")).unwrap();
         let files = read_config_files(root.to_str().unwrap()).unwrap();
-        assert!(files.npmrc.is_none());
+        assert!(files.npmrc_sha256.is_none());
         assert!(
-            files.skipped.iter().any(|reason| reason.starts_with(".npmrc")),
+            files
+                .skipped
+                .iter()
+                .any(|reason| reason.starts_with(".npmrc")),
             "{:?}",
             files.skipped
         );

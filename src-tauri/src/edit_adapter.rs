@@ -261,34 +261,69 @@ impl Request {
 
 type Failure = (u16, String);
 
-/// Before each read, the time left until `deadline`, as the socket's read
-/// timeout. Past it, the request fails.
-fn arm(stream: &TcpStream, deadline: Instant) -> Result<(), Failure> {
-    let left = deadline.saturating_duration_since(Instant::now());
-    if left.is_zero() {
-        return Err((408, "request timed out".into()));
+/// The socket, with a deadline re-armed before every single `recv`. A
+/// buffered `read_until` or `read_exact` makes many reads; arming once per
+/// call would give each of them the full timeout, so a client sending one
+/// byte at a time could hold a slot far past the deadline.
+struct Armed<'a> {
+    stream: &'a TcpStream,
+    deadline: std::cell::Cell<Instant>,
+}
+
+impl<'a> Armed<'a> {
+    fn new(stream: &'a TcpStream, deadline: Instant) -> Self {
+        Self {
+            stream,
+            deadline: std::cell::Cell::new(deadline),
+        }
     }
-    stream
-        .set_read_timeout(Some(left.min(Duration::from_secs(60))))
-        .map_err(|_| (400, "socket".to_string()))
+
+    fn expired(&self) -> bool {
+        Instant::now() >= self.deadline.get()
+    }
+}
+
+impl Read for Armed<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let left = self
+            .deadline
+            .get()
+            .saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        self.stream
+            .set_read_timeout(Some(left.min(Duration::from_secs(60))))?;
+        let mut stream = self.stream;
+        stream.read(buf)
+    }
+}
+
+type Reader<'a> = BufReader<Armed<'a>>;
+
+/// A read error: past the deadline it is a timeout, else a bad request.
+fn read_failure(reader: &Reader, what: &str) -> Failure {
+    if reader.get_ref().expired() {
+        (408, "request timed out".into())
+    } else {
+        (400, what.to_string())
+    }
 }
 
 /// The request line and headers, nothing of the body.
-fn read_head(
-    reader: &mut BufReader<&TcpStream>,
-    stream: &TcpStream,
-    deadline: Instant,
-) -> Result<Request, Failure> {
+fn read_head(reader: &mut Reader) -> Result<Request, Failure> {
     let bad = |m: &str| (400, m.to_string());
     let mut head = Vec::new();
     loop {
-        arm(stream, deadline)?;
         let mut line = Vec::new();
-        let n = reader
+        let read = reader
             .by_ref()
             .take((MAX_HEAD_BYTES + 1 - head.len().min(MAX_HEAD_BYTES)) as u64)
-            .read_until(b'\n', &mut line)
-            .map_err(|_| bad("read"))?;
+            .read_until(b'\n', &mut line);
+        let n = match read {
+            Ok(n) => n,
+            Err(_) => return Err(read_failure(reader, "read")),
+        };
         if n == 0 {
             return Err(bad("closed"));
         }
@@ -319,13 +354,9 @@ fn read_head(
     })
 }
 
-/// The body, chunked or by length, at most `MAX_BODY_BYTES`.
-fn read_body(
-    reader: &mut BufReader<&TcpStream>,
-    stream: &TcpStream,
-    request: &mut Request,
-    deadline: Instant,
-) -> Result<(), Failure> {
+/// The body, chunked or by length, at most `MAX_BODY_BYTES`, by `deadline`.
+fn read_body(reader: &mut Reader, request: &mut Request, deadline: Instant) -> Result<(), Failure> {
+    reader.get_ref().deadline.set(deadline);
     let bad = |m: &str| (400, m.to_string());
     let too_large = || (413, "request body too large".to_string());
     let chunked = request
@@ -333,13 +364,15 @@ fn read_body(
         .is_some_and(|v| v.to_ascii_lowercase().contains("chunked"));
     if chunked {
         loop {
-            arm(stream, deadline)?;
             let mut size_line = String::new();
-            reader
+            if reader
                 .by_ref()
                 .take(1024)
                 .read_line(&mut size_line)
-                .map_err(|_| bad("chunk"))?;
+                .is_err()
+            {
+                return Err(read_failure(reader, "chunk"));
+            }
             let size = usize::from_str_radix(size_line.trim().split(';').next().unwrap_or(""), 16)
                 .map_err(|_| bad("chunk size"))?;
             // Checked: a size near usize::MAX must not wrap past the limit.
@@ -348,8 +381,9 @@ fn read_body(
                 return Err(too_large());
             }
             let mut chunk = vec![0; size.checked_add(2).ok_or_else(too_large)?];
-            arm(stream, deadline)?;
-            reader.read_exact(&mut chunk).map_err(|_| bad("chunk"))?;
+            if reader.read_exact(&mut chunk).is_err() {
+                return Err(read_failure(reader, "chunk"));
+            }
             if size == 0 {
                 break;
             }
@@ -361,15 +395,16 @@ fn read_body(
             return Err(too_large());
         }
         let mut body = Vec::new();
-        while body.len() < length {
-            arm(stream, deadline)?;
-            let want = (length - body.len()).min(1 << 20);
-            let mut part = vec![0; want];
-            let n = reader.read(&mut part).map_err(|_| bad("body"))?;
-            if n == 0 {
-                return Err(bad("body"));
-            }
-            body.extend_from_slice(&part[..n]);
+        if reader
+            .by_ref()
+            .take(length as u64)
+            .read_to_end(&mut body)
+            .is_err()
+        {
+            return Err(read_failure(reader, "body"));
+        }
+        if body.len() < length {
+            return Err(bad("body"));
         }
         request.body = body;
     }
@@ -379,9 +414,9 @@ fn read_body(
 /// A whole request, for the tests' fake model server.
 #[cfg(test)]
 fn read_request(stream: &TcpStream) -> Result<Request, Failure> {
-    let mut reader = BufReader::new(stream);
-    let mut request = read_head(&mut reader, stream, Instant::now() + HEAD_DEADLINE)?;
-    read_body(&mut reader, stream, &mut request, Instant::now() + BODY_DEADLINE)?;
+    let mut reader = BufReader::new(Armed::new(stream, Instant::now() + HEAD_DEADLINE));
+    let mut request = read_head(&mut reader)?;
+    read_body(&mut reader, &mut request, Instant::now() + BODY_DEADLINE)?;
     Ok(request)
 }
 
@@ -390,11 +425,11 @@ fn handle(stream: &mut TcpStream, proxy: &Proxy) -> Result<(), Failure> {
     // of the body is read or allocated, so a process without the token
     // cannot hold memory or a slot for long.
     let (request, route, tail) = {
-        let reader_stream: &TcpStream = stream;
-        let mut reader = BufReader::new(reader_stream);
-        let mut request = read_head(&mut reader, reader_stream, Instant::now() + HEAD_DEADLINE)?;
+        let mut reader = BufReader::new(Armed::new(stream, Instant::now() + HEAD_DEADLINE));
+        let mut request = read_head(&mut reader)?;
         let host_ok = request.header("host").is_some_and(|host| {
-            host == format!("127.0.0.1:{}", proxy.port) || host == format!("localhost:{}", proxy.port)
+            host == format!("127.0.0.1:{}", proxy.port)
+                || host == format!("localhost:{}", proxy.port)
         });
         if !host_ok {
             return Err((403, "unexpected host".into()));
@@ -412,15 +447,11 @@ fn handle(stream: &mut TcpStream, proxy: &Proxy) -> Result<(), Failure> {
             .get(token)
             .cloned()
             .ok_or((404, "no route".to_string()))?;
-        read_body(
-            &mut reader,
-            reader_stream,
-            &mut request,
-            Instant::now() + BODY_DEADLINE,
-        )?;
+        read_body(&mut reader, &mut request, Instant::now() + BODY_DEADLINE)?;
         (request, route, tail)
     };
-    let upstream_url = join_upstream(&route.upstream, &tail).ok_or((400, "bad path".to_string()))?;
+    let upstream_url =
+        join_upstream(&route.upstream, &tail).ok_or((400, "bad path".to_string()))?;
 
     let is_responses = request.method == "POST" && upstream_url.path().ends_with("/responses");
     let encoded = request
@@ -822,6 +853,35 @@ mod tests {
         );
         assert!(reply.starts_with("HTTP/1.1 403"), "{reply:?}");
         close_route("s-early");
+    }
+
+    #[test]
+    fn a_client_trickling_bytes_cannot_outlast_the_deadline() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // One byte every 200 ms, never a line break: each byte would reset a
+        // per-call timeout, so only a deadline re-armed per read stops it.
+        let client = std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            for _ in 0..40 {
+                if stream.write_all(b"G").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        });
+        let (server, _) = listener.accept().unwrap();
+        let started = Instant::now();
+        let mut reader = BufReader::new(Armed::new(&server, started + Duration::from_secs(1)));
+        let Err(failure) = read_head(&mut reader) else {
+            panic!("a trickled head was accepted");
+        };
+        let took = started.elapsed();
+        assert_eq!(failure.0, 408, "{failure:?}");
+        assert!(took < Duration::from_millis(1_800), "{took:?}");
+        drop(reader);
+        drop(server);
+        client.join().unwrap();
     }
 
     #[test]
