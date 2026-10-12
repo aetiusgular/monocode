@@ -56,7 +56,11 @@ test("document cards sit under the turn that wrote them", async ({ page }) => {
     "/Users/ada/acme-app/docs/launch-plan.md",
     "/Users/ada/acme-app/reports/q3-metrics.csv",
   ]);
+  // Reveal, Save a copy and Open, each named for the file.
   await expect(
     first.nth(0).getByRole("button", { name: /launch-plan\.md$/ }),
-  ).toHaveCount(2);
+  ).toHaveCount(3);
+  await expect(
+    first.nth(0).getByRole("button", { name: "Save a copy of launch-plan.md" }),
+  ).toHaveCount(1);
 });

@@ -127,19 +127,21 @@ test("the Progress heading folds the step list", async ({ page }) => {
   const steps = panel.locator("[data-progress-steps]");
   await expect(fold).toHaveAttribute("aria-expanded", "true");
   await expect(steps).toBeVisible();
-  const open = (await panel
-    .locator("[data-session-panel-body]")
-    .boundingBox())!;
+  // The panel can reach its full height (the privacy section added in wave 1
+  // makes it long), so the content height is measured, not the scroll box.
+  const contentHeight = () =>
+    panel
+      .locator("[data-session-panel-body]")
+      .evaluate((node) => node.scrollHeight);
+  const open = await contentHeight();
 
   await fold.click();
   await expect(fold).toHaveAttribute("aria-expanded", "false");
   await expect(steps).toHaveCount(0);
   await expect(panel.locator("[data-progress-count]")).toHaveText("5 of 9");
   // The card shrinks to what is left in it.
-  const shut = (await panel
-    .locator("[data-session-panel-body]")
-    .boundingBox())!;
-  expect(shut.height).toBeLessThan(open.height);
+  const shut = await contentHeight();
+  expect(shut).toBeLessThan(open);
   await expect(panel.getByRole("region", { name: "Outputs" })).toBeVisible();
 
   await page.reload();

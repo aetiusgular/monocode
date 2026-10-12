@@ -78,7 +78,10 @@ test("Settings lists every plugin with its scope, project and contents", async (
   expect(switchBox.x).toBeGreaterThan(rowBox.x + rowBox.width / 2);
   await noSideScroll(page);
 
+  // The marketplace list is read on open too, for the Marketplaces section
+  // (#41). Nothing is installed or fetched.
   expect(await pluginCalls(page)).toEqual([
+    "plugin marketplace list --json",
     "plugin list --json",
     "plugin list --json @ /Users/me/Projects/resale-platform",
   ]);
