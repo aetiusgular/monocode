@@ -236,6 +236,11 @@ export function applyHarnessEvent(
           ...(event.severity ? { severity: event.severity } : {}),
         },
       });
+    // [lane-1] events
+    // [lane-2] events
+    // [lane-3] events
+    // [lane-4] events
+    // [lane-5] events
     default:
       return session;
   }

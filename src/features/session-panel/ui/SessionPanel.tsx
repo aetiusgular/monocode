@@ -31,6 +31,11 @@ import { ProgressSection } from "./ProgressSection";
 import { SessionPanelCloseButton } from "./SessionPanelToggle";
 import { UsedSection } from "./UsedSection";
 import type { SessionPanelControl } from "./useSessionPanel";
+// [lane-1] imports
+// [lane-2] imports
+// [lane-3] imports
+// [lane-4] imports
+// [lane-5] imports
 
 type PanelSession = Pick<
   Session,
@@ -43,6 +48,11 @@ type PanelSession = Pick<
   | "branch"
   | "context"
   | "extraDirs"
+  // [lane-1] panel-session
+  // [lane-2] panel-session
+  // [lane-3] panel-session
+  // [lane-4] panel-session
+  // [lane-5] panel-session
 >;
 
 type PanelActions = {
@@ -50,6 +60,11 @@ type PanelActions = {
   onOpenFile: (path: string) => void;
   /** Scroll the transcript to a block, unfolding the work it sits in. */
   onShowInChat: (blockId: string) => void;
+  // [lane-1] panel-actions
+  // [lane-2] panel-actions
+  // [lane-3] panel-actions
+  // [lane-4] panel-actions
+  // [lane-5] panel-actions
 };
 
 /**
@@ -63,6 +78,11 @@ export function SessionPanel({
   visible = true,
   onOpenFile,
   onShowInChat,
+  // [lane-1] wrapper-destructure
+  // [lane-2] wrapper-destructure
+  // [lane-3] wrapper-destructure
+  // [lane-4] wrapper-destructure
+  // [lane-5] wrapper-destructure
 }: PanelActions & {
   panel: SessionPanelControl;
   session: PanelSession;
@@ -83,6 +103,11 @@ export function SessionPanel({
       onClose={close}
       onOpenFile={onOpenFile}
       onShowInChat={onShowInChat}
+      // [lane-1] view-props
+      // [lane-2] view-props
+      // [lane-3] view-props
+      // [lane-4] view-props
+      // [lane-5] view-props
     />
   );
 }
@@ -104,6 +129,11 @@ export function SessionPanelView({
   onClose,
   onOpenFile,
   onShowInChat,
+  // [lane-1] view-destructure
+  // [lane-2] view-destructure
+  // [lane-3] view-destructure
+  // [lane-4] view-destructure
+  // [lane-5] view-destructure
 }: PanelActions & {
   session: PanelSession;
   outputs: readonly DocumentFile[];
@@ -235,6 +265,11 @@ export function SessionPanelView({
               <CornerDownRight className="size-3.5" strokeWidth={1.75} />
             </button>
           ) : null}
+          {/* [lane-1] header */}
+          {/* [lane-2] header */}
+          {/* [lane-3] header */}
+          {/* [lane-4] header */}
+          {/* [lane-5] header */}
           <SessionPanelCloseButton controls={id} onClose={onClose} />
         </header>
         <div
@@ -253,6 +288,11 @@ export function SessionPanelView({
           <PreviewSection blocks={session.blocks} cwd={workCwd} />
           <OutputsSection files={outputs} onOpenFile={onOpenFile} />
           <UsedSection rows={rows} active={visible} onAction={act} />
+          {/* [lane-1] sections */}
+          {/* [lane-2] sections */}
+          {/* [lane-3] sections */}
+          {/* [lane-4] sections */}
+          {/* [lane-5] sections */}
           <PanelSection title="Session" fold="facts">
             <dl className="flex flex-col gap-0.5 px-2">
               {facts.map((fact) => (

@@ -33,7 +33,13 @@ export type SettingsSectionId =
   | "monos"
   | "inbox"
   | "worktrees"
-  | "archive";
+  | "archive"
+  // [lane-1] section-ids
+  // [lane-2] section-ids
+  // [lane-3] section-ids
+  // [lane-4] section-ids
+  // [lane-5] section-ids
+;
 
 /** Rail buckets. Sections list in order under their group label. */
 export type SettingsGroupId = "app" | "agents" | "workspace";
@@ -190,6 +196,11 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description: "Manage additional worktrees for each project.",
     keywords: "git branch worktree working copy project create delete",
   },
+  // [lane-1] sections
+  // [lane-2] sections
+  // [lane-3] sections
+  // [lane-4] sections
+  // [lane-5] sections
 ];
 
 /** Whether this platform lists the section. */
@@ -545,6 +556,11 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     label: "Show archived in the sidebar",
     keywords: "hidden conversations list",
   },
+  // [lane-1] index
+  // [lane-2] index
+  // [lane-3] index
+  // [lane-4] index
+  // [lane-5] index
 ];
 
 export type SettingsSearchResult = {
@@ -1555,3 +1571,8 @@ export function filterKeybindings(
       row.when.toLowerCase().includes(needle),
   );
 }
+// [lane-1] loaders
+// [lane-2] loaders
+// [lane-3] loaders
+// [lane-4] loaders
+// [lane-5] loaders

@@ -24,13 +24,28 @@ export const SESSION_PANEL_MIN_PANE_WIDTH =
   SESSION_PANEL_WIDTH + SESSION_PANEL_MIN_TRANSCRIPT_WIDTH;
 
 /** Sections of the panel the viewer can fold away. */
-export type SessionPanelSection = "progress" | "preview" | "used" | "facts";
+export type SessionPanelSection =
+  | "progress"
+  | "preview"
+  | "used"
+  | "facts"
+  // [lane-1] section-ids
+  // [lane-2] section-ids
+  // [lane-3] section-ids
+  // [lane-4] section-ids
+  // [lane-5] section-ids
+;
 
 const SECTION_COLLAPSED_KEY: Record<SessionPanelSection, string> = {
   progress: "monocode.sessionPanel.progressCollapsed",
   preview: "monocode.sessionPanel.previewCollapsed",
   used: "monocode.sessionPanel.usedCollapsed",
   facts: "monocode.sessionPanel.factsCollapsed",
+  // [lane-1] section-keys
+  // [lane-2] section-keys
+  // [lane-3] section-keys
+  // [lane-4] section-keys
+  // [lane-5] section-keys
 };
 
 /** What the session runs on rarely changes, so it starts folded. */
@@ -39,6 +54,11 @@ export const SECTION_COLLAPSED_DEFAULT: Record<SessionPanelSection, boolean> = {
   preview: false,
   used: false,
   facts: true,
+  // [lane-1] section-defaults
+  // [lane-2] section-defaults
+  // [lane-3] section-defaults
+  // [lane-4] section-defaults
+  // [lane-5] section-defaults
 };
 
 /** Fired on `window` when a section of the panel is folded or unfolded. */

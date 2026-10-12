@@ -139,6 +139,11 @@ export function buildThreadStartParams(input: {
   model?: string;
   serviceTier?: string;
   extraDirs?: string[];
+  // [lane-1] thread-start-input
+  // [lane-2] thread-start-input
+  // [lane-3] thread-start-input
+  // [lane-4] thread-start-input
+  // [lane-5] thread-start-input
 }): Record<string, unknown> {
   const config = runtimeModeToCodexConfig(
     input.runtimeMode,
@@ -155,6 +160,11 @@ export function buildThreadStartParams(input: {
     ...(input.serviceTier && input.serviceTier !== "default"
       ? { serviceTier: input.serviceTier }
       : {}),
+    // [lane-1] thread-start-return
+    // [lane-2] thread-start-return
+    // [lane-3] thread-start-return
+    // [lane-4] thread-start-return
+    // [lane-5] thread-start-return
   };
 }
 
@@ -182,6 +192,11 @@ export function buildTurnStartParams(input: {
   serviceTier?: string;
   intent?: TurnIntent;
   extraDirs?: string[];
+  // [lane-1] turn-start-input
+  // [lane-2] turn-start-input
+  // [lane-3] turn-start-input
+  // [lane-4] turn-start-input
+  // [lane-5] turn-start-input
 }): Record<string, unknown> {
   const runtimeConfig = runtimeModeToCodexConfig(
     input.runtimeMode,
@@ -227,6 +242,11 @@ export function buildTurnStartParams(input: {
     ...(input.serviceTier && input.serviceTier !== "default"
       ? { serviceTier: input.serviceTier }
       : {}),
+    // [lane-1] turn-start-return
+    // [lane-2] turn-start-return
+    // [lane-3] turn-start-return
+    // [lane-4] turn-start-return
+    // [lane-5] turn-start-return
   };
 }
 
@@ -1607,3 +1627,8 @@ export function mapApprovalRequest(
 
   return null;
 }
+// [lane-1] exports
+// [lane-2] exports
+// [lane-3] exports
+// [lane-4] exports
+// [lane-5] exports

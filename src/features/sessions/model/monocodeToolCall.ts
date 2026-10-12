@@ -24,6 +24,11 @@ const ACTION_LABELS: Record<string, string> = {
   "artifacts.list": "List artifacts",
   "artifacts.read": "Read an artifact",
   "artifacts.write": "Write an artifact",
+  // [lane-1] labels
+  // [lane-2] labels
+  // [lane-3] labels
+  // [lane-4] labels
+  // [lane-5] labels
 };
 
 /** Conservatively parse one shell invocation; compound commands use the shell row. */

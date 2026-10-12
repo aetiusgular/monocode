@@ -102,6 +102,11 @@ import type {
   SendTurnInput,
   SteerTurnInput,
 } from "../../core/types";
+// [lane-1] imports
+// [lane-2] imports
+// [lane-3] imports
+// [lane-4] imports
+// [lane-5] imports
 
 /**
  * A PermissionRequest hook can decide before the user touches the prompt; Claude
@@ -207,6 +212,11 @@ type Live = {
   pendingAssistantBoundary: boolean;
   manualCompaction: boolean;
   compactionConfirmed: boolean;
+  // [lane-1] live
+  // [lane-2] live
+  // [lane-3] live
+  // [lane-4] live
+  // [lane-5] live
 };
 
 type Resume = {
@@ -739,6 +749,11 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     pendingAssistantBoundary: false,
     manualCompaction: false,
     compactionConfirmed: false,
+    // [lane-1] live-init
+    // [lane-2] live-init
+    // [lane-3] live-init
+    // [lane-4] live-init
+    // [lane-5] live-init
   };
   liveRef.current = live;
 
@@ -774,6 +789,11 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     },
   );
 
+  // [lane-1] ensure-live
+  // [lane-2] ensure-live
+  // [lane-3] ensure-live
+  // [lane-4] ensure-live
+  // [lane-5] ensure-live
   await spawnChild(
     input.sessionId,
     path,
@@ -2100,6 +2120,11 @@ function settingsKeyFor(input: HarnessSessionInput): string {
     disabledSkills: input.disabledSkills,
     disabledPlugins: input.disabledPlugins,
     gatewayConnectors: input.gatewayConnectors,
+    // [lane-1] settings-key
+    // [lane-2] settings-key
+    // [lane-3] settings-key
+    // [lane-4] settings-key
+    // [lane-5] settings-key
   })}`;
 }
 
@@ -2181,6 +2206,11 @@ function launchOptions(
   disallowedTools?: string[];
   disabledMcpServers?: string[];
   gatewayConnectors?: HarnessSessionInput["gatewayConnectors"];
+  // [lane-1] launch-type
+  // [lane-2] launch-type
+  // [lane-3] launch-type
+  // [lane-4] launch-type
+  // [lane-5] launch-type
 } {
   const native = nativeModelId(input.model);
   const effortRaw = input.modelSettings?.effort;
@@ -2205,6 +2235,11 @@ function launchOptions(
   if (enabledPlugins) {
     settings.enabledPlugins = enabledPlugins;
   }
+  // [lane-1] launch-body
+  // [lane-2] launch-body
+  // [lane-3] launch-body
+  // [lane-4] launch-body
+  // [lane-5] launch-body
   return {
     model: resolveClaudeApiModelId(native, context),
     effort: normalizeClaudeCliEffort(effortRaw, native),
@@ -2228,6 +2263,11 @@ function launchOptions(
     ],
     disabledMcpServers: input.disabledMcpServers,
     gatewayConnectors: input.gatewayConnectors,
+    // [lane-1] launch-return
+    // [lane-2] launch-return
+    // [lane-3] launch-return
+    // [lane-4] launch-return
+    // [lane-5] launch-return
   };
 }
 
@@ -2240,3 +2280,8 @@ export function __claudeTestReset(): void {
   lastEntryByThread.clear();
   rewindByThread.clear();
 }
+// [lane-1] exports
+// [lane-2] exports
+// [lane-3] exports
+// [lane-4] exports
+// [lane-5] exports

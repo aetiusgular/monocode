@@ -608,6 +608,11 @@ describe("settings navigation", () => {
       "connections",
       "appearance",
       "keybindings",
+      // [lane-1] rail-app
+      // [lane-2] rail-app
+      // [lane-3] rail-app
+      // [lane-4] rail-app
+      // [lane-5] rail-app
       "chat",
       "providers",
       "models",
@@ -616,9 +621,19 @@ describe("settings navigation", () => {
       "skills",
       "plugins",
       "monos",
+      // [lane-1] rail-agents
+      // [lane-2] rail-agents
+      // [lane-3] rail-agents
+      // [lane-4] rail-agents
+      // [lane-5] rail-agents
       "inbox",
       "archive",
       "worktrees",
+      // [lane-1] rail-workspace
+      // [lane-2] rail-workspace
+      // [lane-3] rail-workspace
+      // [lane-4] rail-workspace
+      // [lane-5] rail-workspace
     ]);
   });
 
@@ -633,7 +648,18 @@ describe("settings navigation", () => {
       settingsSectionsByGroup(true)
         .find((group) => group.id === "app")
         ?.sections.map((section) => section.id),
-    ).toEqual(["general", "connections", "appearance", "keybindings", "voice"]);
+    ).toEqual([
+      "general",
+      "connections",
+      "appearance",
+      "keybindings",
+      "voice",
+      // [lane-1] rail-mac-app
+      // [lane-2] rail-mac-app
+      // [lane-3] rail-mac-app
+      // [lane-4] rail-mac-app
+      // [lane-5] rail-mac-app
+    ]);
   });
 
   it("points every indexed setting at a real section", () => {

@@ -214,3 +214,8 @@ export type {
   UserQuestionReply,
 } from "../../features/sessions/model/userQuestion";
 export type { HarnessAdapter, TextPromptInput } from "./core/registry";
+// [lane-1] exports
+// [lane-2] exports
+// [lane-3] exports
+// [lane-4] exports
+// [lane-5] exports

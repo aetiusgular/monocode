@@ -359,6 +359,11 @@ function persistedSessionTools(
   const disabledSkills = sanitizeDisabledSkills(source?.disabledSkills);
   const disabledPlugins = sanitizeDisabledPlugins(source?.disabledPlugins);
   const modelProvider = sanitizeModelProvider(source?.modelProvider);
+  // [lane-1] persisted-tools-body
+  // [lane-2] persisted-tools-body
+  // [lane-3] persisted-tools-body
+  // [lane-4] persisted-tools-body
+  // [lane-5] persisted-tools-body
   if (
     !extraDirs &&
     !disabledMcpServers &&
@@ -366,6 +371,11 @@ function persistedSessionTools(
     !disabledSkills &&
     !disabledPlugins &&
     !modelProvider
+    // [lane-1] persisted-tools-check
+    // [lane-2] persisted-tools-check
+    // [lane-3] persisted-tools-check
+    // [lane-4] persisted-tools-check
+    // [lane-5] persisted-tools-check
   ) {
     return undefined;
   }
@@ -376,6 +386,11 @@ function persistedSessionTools(
     ...(disabledSkills ? { disabledSkills } : {}),
     ...(disabledPlugins ? { disabledPlugins } : {}),
     ...(modelProvider ? { modelProvider } : {}),
+    // [lane-1] persisted-tools-return
+    // [lane-2] persisted-tools-return
+    // [lane-3] persisted-tools-return
+    // [lane-4] persisted-tools-return
+    // [lane-5] persisted-tools-return
   };
 }
 
@@ -1089,6 +1104,11 @@ function sanitizeBlock(
       next.notice = block.notice;
     }
   }
+  // [lane-1] sanitize-block
+  // [lane-2] sanitize-block
+  // [lane-3] sanitize-block
+  // [lane-4] sanitize-block
+  // [lane-5] sanitize-block
   return next;
 }
 

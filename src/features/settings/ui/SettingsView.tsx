@@ -415,6 +415,11 @@ import {
   type RemoveWorktree,
 } from "../../source-control/model/worktrees";
 import type { Session } from "../../sessions/model/session";
+// [lane-1] imports
+// [lane-2] imports
+// [lane-3] imports
+// [lane-4] imports
+// [lane-5] imports
 
 /**
  * The `data-setting-id` Settings should reveal when it opens: one of the ids in
@@ -606,6 +611,11 @@ export function SettingsView({
               {section === "connectors" ? <ConnectorsPage cwd={cwd} /> : null}
               {section === "plugins" ? <PluginsPage cwd={cwd} /> : null}
               {section === "models" ? <ModelsPage /> : null}
+              {/* [lane-1] section-switch */}
+              {/* [lane-2] section-switch */}
+              {/* [lane-3] section-switch */}
+              {/* [lane-4] section-switch */}
+              {/* [lane-5] section-switch */}
               {section === "providers" ? (
                 <ProvidersPage cwd={cwd} recents={recents} />
               ) : null}
@@ -1080,6 +1090,11 @@ function ChatPage() {
             onChange={onTranscriptAnchor}
           />
         </Row>
+        {/* [lane-1] chat-transcript */}
+        {/* [lane-2] chat-transcript */}
+        {/* [lane-3] chat-transcript */}
+        {/* [lane-4] chat-transcript */}
+        {/* [lane-5] chat-transcript */}
       </Group>
 
       <Group

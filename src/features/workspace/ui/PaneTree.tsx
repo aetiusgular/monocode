@@ -193,6 +193,11 @@ type Shared = {
   onNewTerminal: (sessionId: string) => void;
   onTerminalMetaChange?: (fileId: string, patch: TerminalMetaPatch) => void;
   transcriptPool?: TranscriptPool;
+  // [lane-1] props
+  // [lane-2] props
+  // [lane-3] props
+  // [lane-4] props
+  // [lane-5] props
 };
 
 type Props = Shared & { layout: LayoutNode };
@@ -283,6 +288,11 @@ function PaneTreeComponent({
   onNewTerminal,
   onTerminalMetaChange,
   transcriptPool,
+  // [lane-1] destructure
+  // [lane-2] destructure
+  // [lane-3] destructure
+  // [lane-4] destructure
+  // [lane-5] destructure
 }: Props) {
   const treeRef = useRef<HTMLDivElement>(null);
   const layoutRef = useRef(layout);
@@ -575,6 +585,11 @@ function PaneTreeComponent({
                   onNewTerminal={onNewTerminal}
                   onPaneDragStart={onPaneDragStart}
                   transcriptPool={transcriptPool}
+                  // [lane-1] pane-props
+                  // [lane-2] pane-props
+                  // [lane-3] pane-props
+                  // [lane-4] pane-props
+                  // [lane-5] pane-props
                 />
               ) : null}
             </div>

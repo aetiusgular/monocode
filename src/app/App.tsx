@@ -814,6 +814,11 @@ import {
   setQuitWorkspace,
   type ResumedWorkspace,
 } from "./model/appLifecycle";
+// [lane-1] imports
+// [lane-2] imports
+// [lane-3] imports
+// [lane-4] imports
+// [lane-5] imports
 
 const SearchView = lazySurface(
   async () => {
@@ -6850,6 +6855,11 @@ function Workspace({
     [invalidateLoadedSession],
   );
 
+  // [lane-1] app-state
+  // [lane-2] app-state
+  // [lane-3] app-state
+  // [lane-4] app-state
+  // [lane-5] app-state
   const submitSession = useCallback(
     (
       sessionId: string,
@@ -11159,6 +11169,11 @@ function Workspace({
             readAgentFile: (monoId, path) => readAgentFile(monoId, path),
             writeAgentFile: (monoId, path, text, hash) =>
               writeAgentFile(monoId, path, text, hash),
+            // [lane-1] agent-host
+            // [lane-2] agent-host
+            // [lane-3] agent-host
+            // [lane-4] agent-host
+            // [lane-5] agent-host
           },
         );
         appReceipts.current.set(key, { signature, promise });
@@ -12544,6 +12559,11 @@ function Workspace({
     create: () => createMono().id,
   });
 
+  // [lane-1] app-late
+  // [lane-2] app-late
+  // [lane-3] app-late
+  // [lane-4] app-late
+  // [lane-5] app-late
   const sessionPaneProps = {
     workspaceSwitchingSessionId: workspaceNavigation.pending
       ? active?.id
@@ -12602,6 +12622,11 @@ function Workspace({
     onBtwStop,
     onBtwModelChange,
     onNewTerminal: onNewTerminalInSession,
+    // [lane-1] pane-props
+    // [lane-2] pane-props
+    // [lane-3] pane-props
+    // [lane-4] pane-props
+    // [lane-5] pane-props
   };
 
   // Renames, mascot picks and new projects show up on the rail.
@@ -12929,6 +12954,11 @@ function Workspace({
               updateNotice={updateNotice}
               onOpenWhatsNew={onOpenWhatsNew}
               onDismissUpdate={onDismissUpdate}
+              // [lane-1] sidebar-props
+              // [lane-2] sidebar-props
+              // [lane-3] sidebar-props
+              // [lane-4] sidebar-props
+              // [lane-5] sidebar-props
             />
 
             <div className="body-glass flex min-h-0 min-w-0 flex-1 flex-col">
@@ -13402,6 +13432,11 @@ function Workspace({
               }}
             />
           )}
+          {/* [lane-1] mounts */}
+          {/* [lane-2] mounts */}
+          {/* [lane-3] mounts */}
+          {/* [lane-4] mounts */}
+          {/* [lane-5] mounts */}
           <HarnessUpdateNotice
             topOffset={
               12 + (reminderNoticesHeight ? reminderNoticesHeight + 8 : 0)

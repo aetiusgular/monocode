@@ -20,6 +20,11 @@ import {
 import { harnessDisabledMcpServers } from "./connectors";
 import { harnessExtraDirs } from "./extraDirs";
 import { sanitizeModelProvider } from "../../model-setup/model/modelProvider";
+// [lane-1] imports
+// [lane-2] imports
+// [lane-3] imports
+// [lane-4] imports
+// [lane-5] imports
 
 /** The session fields a harness turn's composer tools are built from. */
 type SessionTools = Pick<
@@ -31,6 +36,11 @@ type SessionTools = Pick<
   | "disabledSkills"
   | "disabledPlugins"
   | "modelProvider"
+  // [lane-1] tools-pick
+  // [lane-2] tools-pick
+  // [lane-3] tools-pick
+  // [lane-4] tools-pick
+  // [lane-5] tools-pick
 > &
   // The chat, for its claude.ai connectors switched back on over a Docker
   // gateway copy.
@@ -53,6 +63,11 @@ export function sessionToolsInput(
   disabledSkills?: string[];
   disabledPlugins?: string[];
   modelProvider?: string;
+  // [lane-1] tools-input-type
+  // [lane-2] tools-input-type
+  // [lane-3] tools-input-type
+  // [lane-4] tools-input-type
+  // [lane-5] tools-input-type
 } {
   const extraDirs = harnessExtraDirs(
     session.harness,
@@ -80,6 +95,11 @@ export function sessionToolsInput(
     session.harness,
     session.disabledPlugins,
   );
+  // [lane-1] tools-input-body
+  // [lane-2] tools-input-body
+  // [lane-3] tools-input-body
+  // [lane-4] tools-input-body
+  // [lane-5] tools-input-body
   return {
     ...(extraDirs ? { extraDirs } : {}),
     ...(disabledMcpServers ? { disabledMcpServers } : {}),
@@ -89,6 +109,11 @@ export function sessionToolsInput(
     ...(disabledPlugins ? { disabledPlugins } : {}),
     // Carried with no effect until the provider picker uses it.
     ...(session.modelProvider ? { modelProvider: session.modelProvider } : {}),
+    // [lane-1] tools-input-return
+    // [lane-2] tools-input-return
+    // [lane-3] tools-input-return
+    // [lane-4] tools-input-return
+    // [lane-5] tools-input-return
   };
 }
 
@@ -120,13 +145,26 @@ export type SessionToolsPatch = {
   disabledPlugins?: string[];
   /** A provider id; an empty string returns the chat to the default. */
   modelProvider?: string;
+  // [lane-1] tools-patch
+  // [lane-2] tools-patch
+  // [lane-3] tools-patch
+  // [lane-4] tools-patch
+  // [lane-5] tools-patch
 };
 
 /** The session with a plus-menu change applied. */
 export function withSessionToolsPatch<
   T extends Pick<
     Session,
-    "toolAccess" | "disabledSkills" | "disabledPlugins" | "modelProvider"
+    | "toolAccess"
+    | "disabledSkills"
+    | "disabledPlugins"
+    | "modelProvider"
+    // [lane-1] tools-apply-pick
+    // [lane-2] tools-apply-pick
+    // [lane-3] tools-apply-pick
+    // [lane-4] tools-apply-pick
+    // [lane-5] tools-apply-pick
   >,
 >(session: T, patch: SessionToolsPatch): T {
   let next = session;
@@ -157,6 +195,11 @@ export function withSessionToolsPatch<
       modelProvider: sanitizeModelProvider(patch.modelProvider),
     };
   }
+  // [lane-1] tools-apply-body
+  // [lane-2] tools-apply-body
+  // [lane-3] tools-apply-body
+  // [lane-4] tools-apply-body
+  // [lane-5] tools-apply-body
   return next;
 }
 
@@ -222,6 +265,11 @@ export function sessionToolsSummary(
     );
     lines.push(`Plugins off: ${disabledPlugins.join(", ")}`);
   }
+  // [lane-1] tools-summary
+  // [lane-2] tools-summary
+  // [lane-3] tools-summary
+  // [lane-4] tools-summary
+  // [lane-5] tools-summary
   return parts.length > 0
     ? { label: parts.join(" · "), title: lines.join("\n") }
     : null;

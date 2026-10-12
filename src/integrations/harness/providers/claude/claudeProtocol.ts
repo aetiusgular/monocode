@@ -85,6 +85,11 @@ export type ClaudeCliSettings = {
   disableAllHooks?: boolean;
   /** Plugins switched off for one chat, each `false`. */
   enabledPlugins?: Record<string, boolean>;
+  // [lane-1] cli-settings
+  // [lane-2] cli-settings
+  // [lane-3] cli-settings
+  // [lane-4] cli-settings
+  // [lane-5] cli-settings
 };
 
 /**
@@ -339,6 +344,11 @@ export function buildClaudeSpawnArgs(input: {
    * own servers. Never with `--strict-mcp-config`. Ignored when isolated.
    */
   gatewayConnectors?: HarnessLaunchMcpServer[];
+  // [lane-1] spawn-input
+  // [lane-2] spawn-input
+  // [lane-3] spawn-input
+  // [lane-4] spawn-input
+  // [lane-5] spawn-input
 }): string[] {
   const args = [
     "--output-format",
@@ -404,6 +414,11 @@ export function buildClaudeSpawnArgs(input: {
   }
   if (input.sessionId) args.push("--session-id", input.sessionId);
   if (input.maxTurns) args.push("--max-turns", String(input.maxTurns));
+  // [lane-1] spawn-flags
+  // [lane-2] spawn-flags
+  // [lane-3] spawn-flags
+  // [lane-4] spawn-flags
+  // [lane-5] spawn-flags
   return args;
 }
 
@@ -1283,6 +1298,11 @@ export function claudeSettingsKey(input: {
   disabledPlugins?: string[];
   /** Docker gateway connectors, a launch-time `--mcp-config`. */
   gatewayConnectors?: HarnessLaunchMcpServer[];
+  // [lane-1] settings-key-input
+  // [lane-2] settings-key-input
+  // [lane-3] settings-key-input
+  // [lane-4] settings-key-input
+  // [lane-5] settings-key-input
 }): string {
   const deniedTools = claudeToolDenyRules(input.deniedTools);
   const deniedSkills = claudeSkillDenyRules(input.disabledSkills);
@@ -1311,6 +1331,11 @@ export function claudeSettingsKey(input: {
           `gateway:${claudeGatewayMcpConfig(sortedByName(input.gatewayConnectors))}`,
         ]
       : []),
+    // [lane-1] settings-key-parts
+    // [lane-2] settings-key-parts
+    // [lane-3] settings-key-parts
+    // [lane-4] settings-key-parts
+    // [lane-5] settings-key-parts
   ].join("|");
 }
 

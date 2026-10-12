@@ -68,6 +68,11 @@ export type WorkspaceSessionStub = {
   disabledSkills?: string[];
   disabledPlugins?: string[];
   modelProvider?: string;
+  // [lane-1] stub-fields
+  // [lane-2] stub-fields
+  // [lane-3] stub-fields
+  // [lane-4] stub-fields
+  // [lane-5] stub-fields
 };
 
 export type WorkspaceSnapshot = {
@@ -396,6 +401,11 @@ function sessionStub(session: Session): WorkspaceSessionStub | null {
       ? { disabledPlugins: session.disabledPlugins }
       : {}),
     ...(session.modelProvider ? { modelProvider: session.modelProvider } : {}),
+    // [lane-1] stub-from-session
+    // [lane-2] stub-from-session
+    // [lane-3] stub-from-session
+    // [lane-4] stub-from-session
+    // [lane-5] stub-from-session
   };
 }
 
@@ -433,6 +443,11 @@ function sessionFromStub(stub: WorkspaceSessionStub): Session {
     ...(stub.disabledSkills ? { disabledSkills: stub.disabledSkills } : {}),
     ...(stub.disabledPlugins ? { disabledPlugins: stub.disabledPlugins } : {}),
     ...(stub.modelProvider ? { modelProvider: stub.modelProvider } : {}),
+    // [lane-1] session-from-stub
+    // [lane-2] session-from-stub
+    // [lane-3] session-from-stub
+    // [lane-4] session-from-stub
+    // [lane-5] session-from-stub
   };
 }
 
@@ -461,6 +476,11 @@ function sanitizeStub(raw: unknown): WorkspaceSessionStub | null {
   const disabledSkills = sanitizeDisabledSkills(value.disabledSkills);
   const disabledPlugins = sanitizeDisabledPlugins(value.disabledPlugins);
   const modelProvider = sanitizeModelProvider(value.modelProvider);
+  // [lane-1] sanitize-stub-body
+  // [lane-2] sanitize-stub-body
+  // [lane-3] sanitize-stub-body
+  // [lane-4] sanitize-stub-body
+  // [lane-5] sanitize-stub-body
   return {
     id: value.id,
     cwd:
@@ -495,6 +515,11 @@ function sanitizeStub(raw: unknown): WorkspaceSessionStub | null {
     ...(disabledSkills ? { disabledSkills } : {}),
     ...(disabledPlugins ? { disabledPlugins } : {}),
     ...(modelProvider ? { modelProvider } : {}),
+    // [lane-1] sanitize-stub
+    // [lane-2] sanitize-stub
+    // [lane-3] sanitize-stub
+    // [lane-4] sanitize-stub
+    // [lane-5] sanitize-stub
   };
 }
 

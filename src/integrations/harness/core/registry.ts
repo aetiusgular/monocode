@@ -22,6 +22,11 @@ import type {
   SendTurnInput,
   SteerTurnInput,
 } from "./types";
+// [lane-1] imports
+// [lane-2] imports
+// [lane-3] imports
+// [lane-4] imports
+// [lane-5] imports
 
 export type TitleInput = {
   sessionId: string;
@@ -125,6 +130,11 @@ export type HarnessAdapter = {
    * session can run with a configuration the app cannot read from disk.
    */
   listMcpServers?(input: ListMcpServersInput): Promise<HarnessMcpServer[]>;
+  // [lane-1] adapter
+  // [lane-2] adapter
+  // [lane-3] adapter
+  // [lane-4] adapter
+  // [lane-5] adapter
 };
 
 const adapters = new Map<HarnessId, HarnessAdapter>();
@@ -651,3 +661,8 @@ export async function runHarnessTextPrompt(
 export async function stopHarnessTextPrompts(): Promise<void> {
   await Promise.all([...adapters.values()].map(stopTextPrompt));
 }
+// [lane-1] wrappers
+// [lane-2] wrappers
+// [lane-3] wrappers
+// [lane-4] wrappers
+// [lane-5] wrappers

@@ -34,6 +34,11 @@ export async function requestOutgoingHandoff(input: {
   disabledSkills?: string[];
   disabledPlugins?: string[];
   modelProvider?: string;
+  // [lane-1] input
+  // [lane-2] input
+  // [lane-3] input
+  // [lane-4] input
+  // [lane-5] input
   userRequest: string;
 }): Promise<string> {
   let brief = "";
@@ -67,6 +72,11 @@ export async function requestOutgoingHandoff(input: {
         ? { disabledPlugins: input.disabledPlugins }
         : {}),
       ...(input.modelProvider ? { modelProvider: input.modelProvider } : {}),
+      // [lane-1] pass
+      // [lane-2] pass
+      // [lane-3] pass
+      // [lane-4] pass
+      // [lane-5] pass
       text: buildOutgoingHandoffPrompt(input.userRequest),
       onEvent: (event) => {
         if (event.type === "message.delta") {

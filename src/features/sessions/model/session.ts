@@ -418,6 +418,11 @@ export type Block = {
    * when the chat renders; see `features/monos/model/monoReaction`.
    */
   monoReaction?: string;
+  // [lane-1] block-fields
+  // [lane-2] block-fields
+  // [lane-3] block-fields
+  // [lane-4] block-fields
+  // [lane-5] block-fields
 };
 
 /** Session-level composer tools saved with the transcript. */
@@ -428,6 +433,11 @@ export type PersistedSessionTools = {
   disabledSkills?: string[];
   disabledPlugins?: string[];
   modelProvider?: string;
+  // [lane-1] persisted-tools
+  // [lane-2] persisted-tools
+  // [lane-3] persisted-tools
+  // [lane-4] persisted-tools
+  // [lane-5] persisted-tools
 };
 
 /** A standing answer for one tool's approval requests in one chat. */
@@ -603,6 +613,11 @@ export type Session = {
    * In-memory; request ids do not survive restarts.
    */
   pendingQuestion?: UserQuestionPrompt;
+  // [lane-1] session-fields
+  // [lane-2] session-fields
+  // [lane-3] session-fields
+  // [lane-4] session-fields
+  // [lane-5] session-fields
 };
 
 export type PendingHarnessSwitch = {

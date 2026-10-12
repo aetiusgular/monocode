@@ -129,6 +129,11 @@ import {
   useSessionPanel,
 } from "../../session-panel";
 import { ToolImageGalleryHost } from "../../tool-images";
+// [lane-1] imports
+// [lane-2] imports
+// [lane-3] imports
+// [lane-4] imports
+// [lane-5] imports
 
 export type SessionPaneProps = {
   session: Session;
@@ -272,6 +277,11 @@ export type SessionPaneProps = {
   onPaneDragStart?: (event: ReactPointerEvent<HTMLElement>) => void;
   /** Keeps this transcript mounted after the pane closes. */
   transcriptPool?: TranscriptPool;
+  // [lane-1] props
+  // [lane-2] props
+  // [lane-3] props
+  // [lane-4] props
+  // [lane-5] props
 };
 
 type Props = SessionPaneProps & {
@@ -378,6 +388,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onNewTerminal,
   onPaneDragStart,
   transcriptPool,
+  // [lane-1] destructure
+  // [lane-2] destructure
+  // [lane-3] destructure
+  // [lane-4] destructure
+  // [lane-5] destructure
 }: Props) {
   const orchestrationRuns = useSyncExternalStore(
     orchestrator.subscribe,
@@ -703,6 +718,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
     (!draftBlock && (!isEmpty || inSplit || !!session.inboxAsk || !!agent));
   const composerDockMotion = useComposerDockMotion(dockComposer);
   const draftRef = useRef<string | undefined>(getComposerDraft(session.id));
+  // [lane-1] body
+  // [lane-2] body
+  // [lane-3] body
+  // [lane-4] body
+  // [lane-5] body
   const composer = (
     <Composer
       key={session.id}
@@ -874,6 +894,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
       onRestorePromptReady={(restore) => {
         restorePromptRef.current = restore;
       }}
+      // [lane-1] composer-props
+      // [lane-2] composer-props
+      // [lane-3] composer-props
+      // [lane-4] composer-props
+      // [lane-5] composer-props
     />
   );
 
@@ -1209,6 +1234,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
                         />
                       )
                     }
+                    // [lane-1] transcript-props
+                    // [lane-2] transcript-props
+                    // [lane-3] transcript-props
+                    // [lane-4] transcript-props
+                    // [lane-5] transcript-props
                   />
                 </PooledTranscript>
                 {!session.inboxAsk ? (
@@ -1342,6 +1372,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
           visible={visible}
           onOpenFile={onOpenFile}
           onShowInChat={showInChat}
+          // [lane-1] panel-props
+          // [lane-2] panel-props
+          // [lane-3] panel-props
+          // [lane-4] panel-props
+          // [lane-5] panel-props
         />
         <ToolImageGalleryHost blocks={session.blocks} cwd={workCwd} />
       </div>

@@ -61,6 +61,11 @@ mod window_transfer;
 mod windows;
 mod worktree_lifecycle;
 mod worktrees;
+// [lane-1] mods
+// [lane-2] mods
+// [lane-3] mods
+// [lane-4] mods
+// [lane-5] mods
 
 // Phase 1 seam: spawn / kill harness children per MonoCode thread.
 // Adapters own the protocol; this host only supervises processes.
@@ -290,6 +295,11 @@ pub fn run() {
         .on_menu_event(|app, event| {
             menu::dispatch(app, event.id().as_ref());
         })
+        // [lane-1] builder
+        // [lane-2] builder
+        // [lane-3] builder
+        // [lane-4] builder
+        // [lane-5] builder
         .invoke_handler(tauri::generate_handler![
             remote::remote_machines,
             remote::remote_connect,
@@ -620,6 +630,11 @@ pub fn run() {
             project_logo::save_project_logo,
             project_logo::remove_project_logo,
             project_logo::forget_logo_file,
+            // [lane-1] commands
+            // [lane-2] commands
+            // [lane-3] commands
+            // [lane-4] commands
+            // [lane-5] commands
         ])
         .build(tauri::generate_context!())
         .expect("error while building MonoCode");

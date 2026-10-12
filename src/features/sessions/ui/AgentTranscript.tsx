@@ -166,6 +166,11 @@ import {
   transcriptWordRanges,
 } from "../model/transcriptHighlights";
 import { ResearchLabel } from "../../research-mode/ui/ResearchLabel";
+// [lane-1] imports
+// [lane-2] imports
+// [lane-3] imports
+// [lane-4] imports
+// [lane-5] imports
 
 const NEAR_BOTTOM_PX = 16;
 const WHEEL_HOLD_MS = 150;
@@ -275,6 +280,11 @@ type Props = {
   onScrollerChange?: (el: HTMLDivElement | null) => void;
   /** A worker's transcript: show the orchestrator's turns instead of hiding them. */
   managed?: boolean;
+  // [lane-1] props
+  // [lane-2] props
+  // [lane-3] props
+  // [lane-4] props
+  // [lane-5] props
 };
 
 function AgentTranscriptComponent({
@@ -336,6 +346,11 @@ function AgentTranscriptComponent({
   parked = false,
   onScrollerChange,
   managed = false,
+  // [lane-1] destructure
+  // [lane-2] destructure
+  // [lane-3] destructure
+  // [lane-4] destructure
+  // [lane-5] destructure
 }: Props) {
   const isMonoChat = !!agentMascot;
   const blocks = useMemo(() => {
@@ -1031,6 +1046,11 @@ function AgentTranscriptComponent({
     historicalBlockIds,
   );
 
+  // [lane-1] body
+  // [lane-2] body
+  // [lane-3] body
+  // [lane-4] body
+  // [lane-5] body
   return (
     <div
       ref={setScroller}
@@ -1365,6 +1385,11 @@ function AgentTranscriptComponent({
                   item.block.role === "user" &&
                   item.block.id === editableUserBlockId
                 }
+                // [lane-1] block-pass
+                // [lane-2] block-pass
+                // [lane-3] block-pass
+                // [lane-4] block-pass
+                // [lane-5] block-pass
               />
             );
           // The fold reaches across a stack of delegated runs, but those rows
@@ -2239,6 +2264,11 @@ const TranscriptBlock = memo(function TranscriptBlock({
   planModelSettings,
   onEditLastTurn,
   editing = false,
+  // [lane-1] block-destructure
+  // [lane-2] block-destructure
+  // [lane-3] block-destructure
+  // [lane-4] block-destructure
+  // [lane-5] block-destructure
 }: {
   block: Block;
   layout: TranscriptLayout;
@@ -2268,6 +2298,11 @@ const TranscriptBlock = memo(function TranscriptBlock({
   planModelSettings?: Record<string, string>;
   onEditLastTurn?: () => void;
   editing?: boolean;
+  // [lane-1] block-props
+  // [lane-2] block-props
+  // [lane-3] block-props
+  // [lane-4] block-props
+  // [lane-5] block-props
 }) {
   if (block.role === "user") {
     return (

@@ -253,6 +253,11 @@ import {
 } from "../../settings/model/mcpSettingsCache";
 import type { LastTurnRecall } from "../model/editLastTurn";
 import { useComposerAutocorrect } from "../../settings/model/displayPrefs";
+// [lane-1] imports
+// [lane-2] imports
+// [lane-3] imports
+// [lane-4] imports
+// [lane-5] imports
 
 type Props = {
   enabled?: boolean;
@@ -375,6 +380,11 @@ type Props = {
     restore: (text: string, attachments: Attachment[]) => boolean,
   ) => void;
   children?: ReactNode;
+  // [lane-1] props
+  // [lane-2] props
+  // [lane-3] props
+  // [lane-4] props
+  // [lane-5] props
 };
 
 const NO_DISABLED_MCP_SERVERS: string[] = [];
@@ -507,6 +517,11 @@ export function Composer({
   onEditingLastTurnChange,
   onRestorePromptReady,
   children,
+  // [lane-1] destructure
+  // [lane-2] destructure
+  // [lane-3] destructure
+  // [lane-4] destructure
+  // [lane-5] destructure
 }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -569,7 +584,16 @@ export function Composer({
   const [connectorsOpen, setConnectorsOpen] = useState(false);
   // The other per-chat lists the plus menu opens, one at a time.
   const [chatList, setChatList] = useState<
-    "tool-access" | "skills" | "record-skill" | "plugins" | null
+    | "tool-access"
+    | "skills"
+    | "record-skill"
+    | "plugins"
+    // [lane-1] chat-list
+    // [lane-2] chat-list
+    // [lane-3] chat-list
+    // [lane-4] chat-list
+    // [lane-5] chat-list
+    | null
   >(null);
   const [planSelected, setPlanSelected] = useState(false);
   const [operatorSelected, setOperatorSelected] = useState(false);
@@ -1888,6 +1912,11 @@ export function Composer({
     });
   };
 
+  // [lane-1] body
+  // [lane-2] body
+  // [lane-3] body
+  // [lane-4] body
+  // [lane-5] body
   return (
     <div
       data-composer
@@ -2204,6 +2233,11 @@ export function Composer({
               }}
             />
           ) : null}
+          {/* [lane-1] chips */}
+          {/* [lane-2] chips */}
+          {/* [lane-3] chips */}
+          {/* [lane-4] chips */}
+          {/* [lane-5] chips */}
 
           {attachments.length > 0 ? (
             <div className="flex flex-wrap gap-1.5 px-3 pt-2">
@@ -2429,6 +2463,11 @@ export function Composer({
                       }}
                     />
                   ) : null}
+                  {/* [lane-1] plus-menu */}
+                  {/* [lane-2] plus-menu */}
+                  {/* [lane-3] plus-menu */}
+                  {/* [lane-4] plus-menu */}
+                  {/* [lane-5] plus-menu */}
                   {!remote || remoteFeatures?.plan ? (
                     <button
                       type="button"
@@ -2684,6 +2723,11 @@ export function Composer({
                   }}
                 />
               ) : null}
+              {/* [lane-1] popovers */}
+              {/* [lane-2] popovers */}
+              {/* [lane-3] popovers */}
+              {/* [lane-4] popovers */}
+              {/* [lane-5] popovers */}
             </div>
             {compact && !remote ? (
               <SessionToolsSummary

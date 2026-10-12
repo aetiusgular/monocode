@@ -174,7 +174,13 @@ export type HarnessEvent =
   /** Context-window level after the harness's latest request. */
   | { type: "context"; used?: number; window?: number }
   /** Provider token accounting for the active user turn. */
-  | ({ type: "turn.metrics" } & TurnMetrics);
+  | ({ type: "turn.metrics" } & TurnMetrics)
+  // [lane-1] events
+  // [lane-2] events
+  // [lane-3] events
+  // [lane-4] events
+  // [lane-5] events
+;
 
 export type ApprovalDecision = "allow" | "deny";
 
@@ -259,6 +265,11 @@ export type HarnessSessionInput = {
    */
   modelProvider?: string;
   onEvent: (event: HarnessEvent) => void;
+  // [lane-1] session-input
+  // [lane-2] session-input
+  // [lane-3] session-input
+  // [lane-4] session-input
+  // [lane-5] session-input
 };
 
 export type SendTurnInput = HarnessSessionInput & {
