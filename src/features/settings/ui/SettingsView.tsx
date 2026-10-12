@@ -171,7 +171,10 @@ import {
   MINIMUM_OPENCODE_VERSION,
   parseOpenCodeVersion,
 } from "../../../integrations/harness/providers/opencode/opencodeProtocol";
-import { refreshHarnessCatalogs } from "../../../integrations/harness/core/registry";
+import {
+  enforceHarnessIdleLimit,
+  refreshHarnessCatalogs,
+} from "../../../integrations/harness/core/registry";
 import { loginHarness } from "../../../integrations/harness/core/auth";
 import {
   defaultModelId,
@@ -225,6 +228,7 @@ import {
   renameProviderAccount,
   saveProviderAccount,
   subscribeProviderAccounts,
+  supportsAccountProfiles,
   type ProviderAccount,
   type ProviderAccountProvider,
 } from "../../providers/model/providerAccounts";
@@ -238,10 +242,12 @@ import { ProviderAccountSubtitle } from "../../providers/ui/ProviderAccountSubti
 import {
   saveComposerAutocorrect,
   saveMaskEmails,
+  saveRailMonosPinned,
   saveShowRemainingUsage,
   saveTabsAcrossProjects,
   useComposerAutocorrect,
   useMaskEmails,
+  useRailMonosPinned,
   useShowRemainingUsage,
   useTabsAcrossProjects,
 } from "../model/displayPrefs";
@@ -317,6 +323,7 @@ import {
   filterKeybindings,
   currentKeybindings,
   loadClaudeHooks,
+  loadIdleAgentLimit,
   loadCloseToTray,
   loadCollapsedProjectRailMode,
   loadComposerRunner,
@@ -337,6 +344,9 @@ import {
   loadQuickComposerShortcut,
   loadTabAnimationsEnabled,
   saveClaudeHooks,
+  saveIdleAgentLimit,
+  IDLE_AGENT_LIMITS,
+  type IdleAgentLimit,
   saveCloseToTray,
   saveCollapsedProjectRailMode,
   saveComposerRunner,
@@ -3185,6 +3195,8 @@ function ProvidersPage({
   const [choice, setChoice] = useState(loadLastModelChoice);
   const [defaultModels, setDefaultModels] = useState(loadDefaultModels);
   const [claudeHooks, setClaudeHooks] = useState(loadClaudeHooks);
+  const [idleAgentLimit, setIdleAgentLimit] =
+    useState<IdleAgentLimit>(loadIdleAgentLimit);
   const [scope, setScope] = useState<string>(GLOBAL_PROVIDER_SCOPE);
   const [hiddenGlobally, setHiddenGlobally] = useState(
     loadHiddenPickerProviders,
@@ -3242,6 +3254,14 @@ function ProvidersPage({
   const onClaudeHooks = (next: boolean) => {
     saveClaudeHooks(next);
     setClaudeHooks(next);
+  };
+
+  const onIdleAgentLimit = (next: string) => {
+    const limit = Number(next) as IdleAgentLimit;
+    saveIdleAgentLimit(limit);
+    setIdleAgentLimit(limit);
+    // A lower limit takes effect now, not at the next finished turn.
+    enforceHarnessIdleLimit();
   };
 
   const onModelChange = (harness: HarnessId, model: string) => {
@@ -3345,6 +3365,21 @@ function ProvidersPage({
       </Group>
 
       <Group title="Advanced">
+        <Row
+          id="idle-agents"
+          label="Keep idle agents ready"
+          description="A finished conversation keeps its agent CLI running for a few minutes, so a follow-up starts instantly. Each one can hold a few hundred MB of memory. Past this many, the one idle longest stops early; it resumes on your next message after a short restart. Choose None on a machine short on memory."
+        >
+          <Segmented
+            label="Keep idle agents ready"
+            value={String(idleAgentLimit)}
+            options={IDLE_AGENT_LIMITS.map((limit) => ({
+              value: String(limit),
+              label: limit === 0 ? "None" : String(limit),
+            }))}
+            onChange={onIdleAgentLimit}
+          />
+        </Row>
         <Row
           id="claude-hooks"
           label="Claude Code hooks"
@@ -3523,15 +3558,17 @@ function ProviderAccountsSettings() {
                   </div>
                 </div>
               </div>
-              <button
-                type="button"
-                disabled={Boolean(working)}
-                onClick={() => startAdd(provider)}
-                className="flex shrink-0 items-center gap-1.5 rounded-md border border-content/10 px-2.5 py-1 text-[12px] text-content/70 transition-transform duration-150 hover:bg-content/10 hover:text-content active:scale-[0.97] disabled:cursor-default disabled:opacity-40"
-              >
-                <Plus className="size-3.5" strokeWidth={1.75} aria-hidden />
-                Add account
-              </button>
+              {supportsAccountProfiles(provider) ? (
+                <button
+                  type="button"
+                  disabled={Boolean(working)}
+                  onClick={() => startAdd(provider)}
+                  className="flex shrink-0 items-center gap-1.5 rounded-md border border-content/10 px-2.5 py-1 text-[12px] text-content/70 transition-transform duration-150 hover:bg-content/10 hover:text-content active:scale-[0.97] disabled:cursor-default disabled:opacity-40"
+                >
+                  <Plus className="size-3.5" strokeWidth={1.75} aria-hidden />
+                  Add account
+                </button>
+              ) : null}
             </div>
             <div className="border-t border-content/5 bg-content/[0.015] pl-10">
               {accounts.map((account) => {
@@ -4026,6 +4063,7 @@ function MonosPage() {
     loadMonoMenuBarIcon,
     () => true,
   );
+  const railPinned = useRailMonosPinned();
   const snapshot = useSyncExternalStore(subscribeMonos, monosSnapshot);
   const monos = useMemo(() => listMonos(), [snapshot]);
 
@@ -4038,6 +4076,18 @@ function MonosPage() {
           description="Agents of your own on the project rail. Each works on the projects you give it, remembers what matters and picks up habits it runs on its own. Turn this off to hide them."
         >
           <Toggle label="Show monos" on={enabled} onChange={saveMonosEnabled} />
+        </Row>
+        <Row
+          id="rail-monos-pinned"
+          label="Pin monos to the icon rail"
+          description="When the project rail is collapsed to icons, show each Mono at the top of the rail, above a divider, instead of inside the project picker."
+        >
+          <Toggle
+            label="Pin monos to the icon rail"
+            on={railPinned}
+            onChange={saveRailMonosPinned}
+            disabled={!enabled}
+          />
         </Row>
         {IS_MAC && (
           <Row

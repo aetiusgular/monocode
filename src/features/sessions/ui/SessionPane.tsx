@@ -19,7 +19,8 @@ import {
 } from "../../orchestration/model/orchestration";
 import { DiscussionEmpty } from "./DiscussionEmpty";
 import { LinkedWorkItemUpdateNotice } from "../../inbox/ui/LinkedWorkItemUpdateNotice";
-import { SessionReview } from "./SessionReview";
+import { SessionChangesButton, SessionReview } from "./SessionReview";
+import { sessionEditPaths } from "../model/checkpointEdits";
 import { PromptOutline } from "./PromptOutline";
 import {
   canCompactHarnessContext,
@@ -390,6 +391,10 @@ const LocalSessionPane = memo(function LocalSessionPane({
   );
   const title = sessionDisplayTitle(session.title, session.harness);
   const isEmpty = session.blocks.length === 0;
+  const editedPaths = useMemo(
+    () => (session.busy ? undefined : sessionEditPaths(session.blocks)),
+    [session.blocks, session.busy],
+  );
   const messageDeliveries = useMemo(
     () => monoMessageDeliveries(session),
     [session.queuedMessages, session.queueStatus],
@@ -685,6 +690,12 @@ const LocalSessionPane = memo(function LocalSessionPane({
     session.toolAccess,
     changeToolAccess,
   );
+  const reviewHidden =
+    remote ||
+    !!session.inboxAsk ||
+    !!session.worktreeRemoved ||
+    monoTranscript.viewingOlderPage ||
+    !!draftBlock;
   const showDeckProjectPicker = isEmpty && !looksLikeProject(session.cwd);
   // The agent's input always sits at the bottom, like a chat.
   const dockComposer =
@@ -1161,14 +1172,23 @@ const LocalSessionPane = memo(function LocalSessionPane({
                         ? retryLastTurn.retry
                         : undefined
                     }
+                    editTurnAction={
+                      reviewHidden || !agent ? undefined : (
+                        <SessionChangesButton
+                          sessionId={session.id}
+                          editedPaths={editedPaths}
+                          cwd={workCwd}
+                          enabled={visible}
+                          busy={!!session.busy}
+                          onOpenDiff={onOpenDiff}
+                        />
+                      )
+                    }
                     latestTurnAccessory={
-                      remote ||
-                      session.inboxAsk ||
-                      session.worktreeRemoved ||
-                      monoTranscript.viewingOlderPage ||
-                      draftBlock ? undefined : (
+                      reviewHidden || agent ? undefined : (
                         <SessionReview
                           sessionId={session.id}
+                          editedPaths={editedPaths}
                           cwd={workCwd}
                           enabled={visible}
                           busy={!!session.busy}

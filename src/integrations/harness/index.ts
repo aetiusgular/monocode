@@ -184,6 +184,8 @@ export {
   keepHarnessQuestionOpen,
   setHarnessToolAccess,
   stopHarnessSession,
+  configureHarnessIdlePark,
+  enforceHarnessIdleLimit,
   forgetHarnessSession,
   bindHarnessSession,
   refreshHarnessCatalogs,
