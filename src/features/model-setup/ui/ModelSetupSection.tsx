@@ -24,6 +24,7 @@ import {
   type ModelProviderKind,
 } from "../model/modelProviders";
 import { providerLocality } from "../model/providerLocality";
+import { EditAdapterSwitch } from "./EditAdapterSwitch";
 
 const NOTE = "text-[11px] leading-4 text-content/45";
 const FIELD =
@@ -131,7 +132,7 @@ export function ModelSetupSection() {
             return (
               <li
                 key={entry.id}
-                className="flex min-w-0 items-center gap-2 rounded-lg border border-content/10 px-2.5 py-1.5 text-[12px]"
+                className="flex min-w-0 flex-wrap items-center gap-2 rounded-lg border border-content/10 px-2.5 py-1.5 text-[12px]"
                 data-model-provider={entry.id}
               >
                 <span className="truncate text-content" title={entry.id}>
@@ -143,6 +144,7 @@ export function ModelSetupSection() {
                     .filter(Boolean)
                     .join(" · ")}
                 </span>
+                <EditAdapterSwitch entry={entry} />
                 <button
                   type="button"
                   className="ml-auto shrink-0 rounded-md px-1.5 text-[11px] text-content/45 hover:bg-content/8"

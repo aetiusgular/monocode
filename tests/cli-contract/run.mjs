@@ -4,6 +4,7 @@
 //
 //   node tests/cli-contract/run.mjs --codex <path> --claude <path> [--claude <path2>]
 //       [--only <id,id>] [--json <file>] [--timeout <seconds per check>]
+//       [--edit-adapter <path to the edit_adapter_proxy example binary>]
 //
 // A check whose CLI is not given, or not found, is skipped. Exit code 0 when
 // every check that ran has status pass or info, 1 when one failed or errored,
@@ -15,6 +16,7 @@ import path from "node:path";
 import { runsDir } from "./lib/codexDriver.mjs";
 import { codexChecks } from "./checks/codex.mjs";
 import { claudeChecks } from "./checks/claude.mjs";
+import { editAdapterChecks } from "./checks/editAdapter.mjs";
 
 function parseArgs(argv) {
   const out = { codex: null, claude: [], only: null, json: null, timeout: 240 };
@@ -31,6 +33,7 @@ function parseArgs(argv) {
     else if (a === "--json") out.json = next();
     else if (a === "--timeout") out.timeout = Number(next());
     else if (a === "--keep") out.keep = true;
+    else if (a === "--edit-adapter") out.editAdapter = next();
     else if (a === "--help" || a === "-h") out.help = true;
     else throw new Error(`unknown argument ${a}`);
   }
@@ -65,7 +68,7 @@ async function main() {
     process.exit(2);
   }
   if (args.help) {
-    console.log("node tests/cli-contract/run.mjs --codex <path> --claude <path> [--claude <path>] [--only ids] [--json file] [--timeout s] [--keep]");
+    console.log("node tests/cli-contract/run.mjs --codex <path> --claude <path> [--claude <path>] [--only ids] [--json file] [--timeout s] [--keep] [--edit-adapter bin]");
     return;
   }
   // Every temp home of this run goes in one folder, removed at the end
@@ -76,6 +79,9 @@ async function main() {
   const plan = [];
   const codexVersion = args.codex && existsSync(args.codex) ? version(args.codex) : null;
   for (const c of codexChecks) plan.push({ ...c, harness: "codex", bin: codexVersion ? args.codex : null, cliVersion: codexVersion });
+  // The edit adapter check also needs the adapter binary (session 10).
+  if (args.editAdapter) process.env.EDIT_ADAPTER_BIN = path.resolve(args.editAdapter);
+  for (const c of editAdapterChecks) plan.push({ ...c, harness: "codex", bin: codexVersion ? args.codex : null, cliVersion: codexVersion });
   const claudes = args.claude.length ? args.claude : [null];
   for (const bin of claudes) {
     const v = bin && existsSync(bin) ? version(bin) : null;

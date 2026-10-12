@@ -91,6 +91,10 @@ import {
   codexNetworkAmendmentDecision as codexNetworkAmendmentDecision_l5,
   type CodexNetworkAmendment as CodexNetworkAmendment_l5,
 } from "./codexProviders";
+import {
+  codexEditAdapter as codexEditAdapter_l5,
+  editAdapterConfig as editAdapterConfig_l5,
+} from "../../../../features/model-setup/model/editAdapter";
 
 type ApprovalOutcome = ApprovalDecision | "cancelled";
 
@@ -201,6 +205,8 @@ type Live = {
   chatFolders_l5: string[];
   /** Model provider and permissions profile the thread was opened with. */
   identityKey_l5: string;
+  /** Session 10: the edit adapter route the thread was opened with, or "". */
+  editAdapterKey_l5: string;
 };
 
 function trackNotificationQueue(live: Live, queued: Promise<void>): void {
@@ -639,6 +645,11 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   // [lane-5] reuse-key
   const identity_l5 = codexThreadIdentity_l5(input);
   const identityKey_l5 = codexThreadIdentityKey_l5(identity_l5);
+  // Session 10: the edit adapter, when it is on for this chat's provider.
+  // A failure to open it leaves Codex talking to the model server directly.
+  const editAdapter_l5 = await codexEditAdapter_l5(input);
+  if (editAdapter_l5.error)
+    console.warn("Edit adapter not used:", editAdapter_l5.error);
   // The servers this session's Codex has an entry for, once it was asked;
   // null when it could not say.
   let mcpConfigured: Set<string> | null | undefined;
@@ -659,6 +670,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     // [lane-4] reuse
     // [lane-5] reuse
     && existing.identityKey_l5 === identityKey_l5
+    && existing.editAdapterKey_l5 === editAdapter_l5.key
   ) {
     if (existing.mcpRequested === mcpRequested) {
       existing.onEvent = input.onEvent;
@@ -909,6 +921,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
           // [lane-4] thread-resume-call
           // [lane-5] thread-resume-call
           ...identity_l5,
+          providerConfig: editAdapterConfig_l5(editAdapter_l5),
         });
         const opened = await openThread("thread/resume", {
           threadId: resume.threadId,
@@ -941,6 +954,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
         // [lane-4] thread-start-call
         // [lane-5] thread-start-call
         ...identity_l5,
+        providerConfig: editAdapterConfig_l5(editAdapter_l5),
       });
       const opened = await openThread("thread/start", {
         ...params,
@@ -999,6 +1013,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       fileChanges_l5: new Map(),
       chatFolders_l5: chatFolders_l5(input.cwd, input.extraDirs),
       identityKey_l5,
+      editAdapterKey_l5: editAdapter_l5.key,
     };
     liveRef.current = live;
     liveByThread.set(input.sessionId, live);

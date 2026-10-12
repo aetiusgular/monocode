@@ -35,6 +35,11 @@ export type ModelProviderEntry = {
   contextWindow?: number;
   /** Environment variable holding the key, for a hosted provider. */
   envKey?: string;
+  /**
+   * Edit adapter for small models (session 10). Unset: on when the model is
+   * not marked a reliable tool caller. See `editAdapter.ts`.
+   */
+  editAdapter?: boolean;
 };
 
 export const MODEL_PROVIDERS_KEY = "monocode.modelProviders";
@@ -112,6 +117,7 @@ export function sanitizeProviderEntry(
     entry.contextWindow = raw.contextWindow;
   if (typeof raw.envKey === "string" && ENV_KEY.test(raw.envKey))
     entry.envKey = raw.envKey;
+  if (typeof raw.editAdapter === "boolean") entry.editAdapter = raw.editAdapter;
   return entry;
 }
 
@@ -179,6 +185,21 @@ export function saveModelProvider(entry: ModelProviderEntry): boolean {
   if (list.length >= MAX_MODEL_PROVIDERS) return false;
   write([...list, clean]);
   return true;
+}
+
+/** Sets the edit adapter switch for one provider; undefined goes back to the default. */
+export function setProviderEditAdapter(
+  id: string,
+  on: boolean | undefined,
+): void {
+  write(
+    modelProviders().map((item) => {
+      if (item.id !== id) return item;
+      const { editAdapter: _old, ...rest } = item;
+      void _old;
+      return on === undefined ? rest : { ...rest, editAdapter: on };
+    }),
+  );
 }
 
 export function removeModelProvider(id: string): void {

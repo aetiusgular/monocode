@@ -149,6 +149,11 @@ export function buildThreadStartParams(input: {
   /** Codex `model_providers` key; sent on thread/start and thread/resume. */
   modelProvider?: string;
   /**
+   * Session 10: thread `config` entries for the provider, such as the edit
+   * adapter's `model_providers.<id>.base_url`. Sent on start and resume.
+   */
+  providerConfig?: Record<string, string>;
+  /**
    * Named Codex permissions profile. It replaces `sandbox`/`sandboxPolicy`
    * for the thread, so `extraDirs` and the agent-control network flag do not
    * apply while one is set.
@@ -186,6 +191,9 @@ export function buildThreadStartParams(input: {
       : {}),
     ...(isCodexConfigId_l5(input.modelProvider)
       ? { modelProvider: input.modelProvider }
+      : {}),
+    ...(input.providerConfig && Object.keys(input.providerConfig).length
+      ? { config: { ...input.providerConfig } }
       : {}),
     // A named profile cannot be combined with `sandbox`. The undefined keys
     // drop out when the request is serialized to JSON. Full access keeps

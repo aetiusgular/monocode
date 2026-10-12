@@ -71,6 +71,8 @@ mod preview;
 mod sandbox_frame;
 // [lane-4] mods
 // [lane-5] mods
+pub mod edit_adapter;
+mod edit_adapter_commands;
 mod model_setup;
 
 // Phase 1 seam: spawn / kill harness children per MonoCode thread.
@@ -669,6 +671,8 @@ pub fn run() {
             model_setup::model_setup_detect,
             model_setup::model_setup_write_codex_home,
             model_setup::approval_paths_within,
+            edit_adapter_commands::edit_adapter_open,
+            edit_adapter_commands::edit_adapter_close,
         ])
         .build(tauri::generate_context!())
         .expect("error while building MonoCode");
