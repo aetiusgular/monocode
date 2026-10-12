@@ -253,6 +253,11 @@ export type HarnessSessionInput = {
    * `enabledPlugins` in the `--settings` its process starts with.
    */
   disabledPlugins?: string[];
+  /**
+   * The model provider the chat picked, by the harness's own provider id.
+   * No adapter reads it yet.
+   */
+  modelProvider?: string;
   onEvent: (event: HarnessEvent) => void;
 };
 

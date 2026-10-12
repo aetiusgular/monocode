@@ -19,6 +19,7 @@ import {
 } from "../../gateway-connectors/model/sessionGateway";
 import { harnessDisabledMcpServers } from "./connectors";
 import { harnessExtraDirs } from "./extraDirs";
+import { sanitizeModelProvider } from "../../model-setup/model/modelProvider";
 
 /** The session fields a harness turn's composer tools are built from. */
 type SessionTools = Pick<
@@ -29,6 +30,7 @@ type SessionTools = Pick<
   | "toolAccess"
   | "disabledSkills"
   | "disabledPlugins"
+  | "modelProvider"
 > &
   // The chat, for its claude.ai connectors switched back on over a Docker
   // gateway copy.
@@ -50,6 +52,7 @@ export function sessionToolsInput(
   toolAccess?: HarnessToolAccess;
   disabledSkills?: string[];
   disabledPlugins?: string[];
+  modelProvider?: string;
 } {
   const extraDirs = harnessExtraDirs(
     session.harness,
@@ -84,6 +87,8 @@ export function sessionToolsInput(
     ...(toolAccess ? { toolAccess } : {}),
     ...(disabledSkills ? { disabledSkills } : {}),
     ...(disabledPlugins ? { disabledPlugins } : {}),
+    // Carried with no effect until the provider picker uses it.
+    ...(session.modelProvider ? { modelProvider: session.modelProvider } : {}),
   };
 }
 
@@ -113,11 +118,16 @@ export type SessionToolsPatch = {
   toolAccess?: ToolAccess;
   disabledSkills?: string[];
   disabledPlugins?: string[];
+  /** A provider id; an empty string returns the chat to the default. */
+  modelProvider?: string;
 };
 
 /** The session with a plus-menu change applied. */
 export function withSessionToolsPatch<
-  T extends Pick<Session, "toolAccess" | "disabledSkills" | "disabledPlugins">,
+  T extends Pick<
+    Session,
+    "toolAccess" | "disabledSkills" | "disabledPlugins" | "modelProvider"
+  >,
 >(session: T, patch: SessionToolsPatch): T {
   let next = session;
   if (patch.toolAccess) {
@@ -139,6 +149,12 @@ export function withSessionToolsPatch<
       ...next,
       disabledPlugins:
         patch.disabledPlugins.length > 0 ? patch.disabledPlugins : undefined,
+    };
+  }
+  if (patch.modelProvider !== undefined) {
+    next = {
+      ...next,
+      modelProvider: sanitizeModelProvider(patch.modelProvider),
     };
   }
   return next;

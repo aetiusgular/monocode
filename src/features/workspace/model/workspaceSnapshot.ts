@@ -45,6 +45,7 @@ import { sanitizeExtraDirs } from "../../session-tools/model/extraDirs";
 import { sanitizeToolAccess } from "../../tool-access/model/toolAccess";
 import { sanitizeDisabledSkills } from "../../chat-skills/model/chatSkills";
 import { sanitizeDisabledPlugins } from "../../claude-plugins/model/chatPlugins";
+import { sanitizeModelProvider } from "../../model-setup/model/modelProvider";
 
 export type WorkspaceSessionStub = {
   inboxAsk?: InboxAskContext;
@@ -66,6 +67,7 @@ export type WorkspaceSessionStub = {
   toolAccess?: ToolAccess;
   disabledSkills?: string[];
   disabledPlugins?: string[];
+  modelProvider?: string;
 };
 
 export type WorkspaceSnapshot = {
@@ -393,6 +395,7 @@ function sessionStub(session: Session): WorkspaceSessionStub | null {
     ...(session.disabledPlugins?.length
       ? { disabledPlugins: session.disabledPlugins }
       : {}),
+    ...(session.modelProvider ? { modelProvider: session.modelProvider } : {}),
   };
 }
 
@@ -429,6 +432,7 @@ function sessionFromStub(stub: WorkspaceSessionStub): Session {
     ...(stub.toolAccess ? { toolAccess: stub.toolAccess } : {}),
     ...(stub.disabledSkills ? { disabledSkills: stub.disabledSkills } : {}),
     ...(stub.disabledPlugins ? { disabledPlugins: stub.disabledPlugins } : {}),
+    ...(stub.modelProvider ? { modelProvider: stub.modelProvider } : {}),
   };
 }
 
@@ -456,6 +460,7 @@ function sanitizeStub(raw: unknown): WorkspaceSessionStub | null {
   const toolAccess = sanitizeToolAccess(value.toolAccess);
   const disabledSkills = sanitizeDisabledSkills(value.disabledSkills);
   const disabledPlugins = sanitizeDisabledPlugins(value.disabledPlugins);
+  const modelProvider = sanitizeModelProvider(value.modelProvider);
   return {
     id: value.id,
     cwd:
@@ -489,6 +494,7 @@ function sanitizeStub(raw: unknown): WorkspaceSessionStub | null {
     ...(toolAccess ? { toolAccess } : {}),
     ...(disabledSkills ? { disabledSkills } : {}),
     ...(disabledPlugins ? { disabledPlugins } : {}),
+    ...(modelProvider ? { modelProvider } : {}),
   };
 }
 

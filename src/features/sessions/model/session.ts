@@ -427,6 +427,7 @@ export type PersistedSessionTools = {
   toolAccess?: ToolAccess;
   disabledSkills?: string[];
   disabledPlugins?: string[];
+  modelProvider?: string;
 };
 
 /** A standing answer for one tool's approval requests in one chat. */
@@ -577,6 +578,12 @@ export type Session = {
    * only. Claude Code's own settings are left alone. Saved like `extraDirs`.
    */
   disabledPlugins?: string[];
+  /**
+   * The model provider this chat runs on, by the harness's own provider id
+   * (a Codex `model_providers` key). Unset uses the account's default. Saved
+   * like `extraDirs`. Carried with no effect until the provider picker uses it.
+   */
+  modelProvider?: string;
   /** One-shot composer text when opening a session from Inbox. */
   composerSeed?: string;
   /** Inbox issue/PR chip shown above the composer. In-memory, one-shot. */

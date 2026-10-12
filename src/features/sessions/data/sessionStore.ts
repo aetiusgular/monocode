@@ -14,6 +14,7 @@ import { sanitizeExtraDirs } from "../../session-tools/model/extraDirs";
 import { sanitizeDisabledSkills } from "../../chat-skills/model/chatSkills";
 import { sanitizeResearchRequest } from "../../research-mode/model/researchPrompt";
 import { sanitizeDisabledPlugins } from "../../claude-plugins/model/chatPlugins";
+import { sanitizeModelProvider } from "../../model-setup/model/modelProvider";
 import {
   sanitizeApprovalTool,
   sanitizeToolAccess,
@@ -357,12 +358,14 @@ function persistedSessionTools(
   const toolAccess = sanitizeToolAccess(source?.toolAccess);
   const disabledSkills = sanitizeDisabledSkills(source?.disabledSkills);
   const disabledPlugins = sanitizeDisabledPlugins(source?.disabledPlugins);
+  const modelProvider = sanitizeModelProvider(source?.modelProvider);
   if (
     !extraDirs &&
     !disabledMcpServers &&
     !toolAccess &&
     !disabledSkills &&
-    !disabledPlugins
+    !disabledPlugins &&
+    !modelProvider
   ) {
     return undefined;
   }
@@ -372,6 +375,7 @@ function persistedSessionTools(
     ...(toolAccess ? { toolAccess } : {}),
     ...(disabledSkills ? { disabledSkills } : {}),
     ...(disabledPlugins ? { disabledPlugins } : {}),
+    ...(modelProvider ? { modelProvider } : {}),
   };
 }
 

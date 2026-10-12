@@ -33,6 +33,7 @@ export async function requestOutgoingHandoff(input: {
   toolAccess?: HarnessToolAccess;
   disabledSkills?: string[];
   disabledPlugins?: string[];
+  modelProvider?: string;
   userRequest: string;
 }): Promise<string> {
   let brief = "";
@@ -65,6 +66,7 @@ export async function requestOutgoingHandoff(input: {
       ...(input.disabledPlugins
         ? { disabledPlugins: input.disabledPlugins }
         : {}),
+      ...(input.modelProvider ? { modelProvider: input.modelProvider } : {}),
       text: buildOutgoingHandoffPrompt(input.userRequest),
       onEvent: (event) => {
         if (event.type === "message.delta") {
