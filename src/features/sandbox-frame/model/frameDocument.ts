@@ -6,6 +6,15 @@
  * Mac (step 3c, section 14), so the same policy also goes into the document
  * as a `<meta>` tag. Two policies are both enforced, so a page's own meta tag
  * can only narrow this one, never widen it.
+ *
+ * The meta tag covers fetches, scripts and the other resource rules. It does
+ * not make up for a missing header in full: a `<meta>` policy cannot carry
+ * `sandbox` or `frame-ancestors`, and the scheme's `Sec-Fetch-Dest: document`
+ * refusal likely never fires on WebKit for a custom scheme. What keeps the
+ * frame away from the app is the iframe's own `sandbox` attribute, with no
+ * `allow-same-origin`. Whether WKWebView's IPC handler
+ * (`window.webkit.messageHandlers.ipc`) can be reached from inside the frame
+ * is a Mac test step (check 8), not a fact (session 6, open item F6).
  */
 export const FRAME_META_CSP = [
   "default-src 'none'",

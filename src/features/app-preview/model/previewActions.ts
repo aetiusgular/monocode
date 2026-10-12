@@ -14,7 +14,8 @@ import {
  * - `preview.status`: the chat's preview, its address and state.
  * - `preview.logs`: the newest lines of its output, or only error lines.
  * - `preview.restart`: stop and start the command the user confirmed. It never
- *   starts a different command, and never one in a chat that has no preview.
+ *   starts a different command, never one in a chat that has no preview, and
+ *   never a server that is not running now: one the user stopped stays down.
  *
  * Each acts on the calling chat's own preview only.
  */
@@ -74,7 +75,7 @@ export async function handlePreviewAction(
       return { lines: tailLines(output, count) };
     }
     case "preview.restart": {
-      const next = await restartPreview(source.id);
+      const next = await restartPreview(source.id, { byAgent: true });
       return previewSummary(next);
     }
     default:

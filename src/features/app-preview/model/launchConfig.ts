@@ -1,4 +1,5 @@
 import { normalizePreviewUrl } from "./previewUrl";
+import { sha256Hex } from "./sha256";
 
 /**
  * #37: what a preview can start from. Two sources, both files in the project
@@ -37,11 +38,21 @@ export type PreviewCandidate = {
   autoVerify?: boolean;
   /** The script a package manager runs, shown beside the command. */
   scriptBody?: string;
+  /** The `pre<name>` and `post<name>` scripts npm runs around it. */
+  preScript?: string;
+  postScript?: string;
+  /**
+   * SHA-256 of the project's `.npmrc`, when it has one. npm reads it when it
+   * runs a script (`script-shell`, `node-options`), so a change asks again.
+   * The content is never shown: it can hold a registry token.
+   */
+  npmrcHash?: string;
 };
 
 export type PreviewConfigFiles = {
   launchJson?: string | null;
   packageJson?: string | null;
+  npmrc?: string | null;
   lockfiles?: string[];
   skipped?: string[];
 };
@@ -64,7 +75,47 @@ const RESERVED_ENV = new Set([
   "DYLD_INSERT_LIBRARIES",
   "DYLD_LIBRARY_PATH",
   "DYLD_FRAMEWORK_PATH",
+  // Names that make a runtime or shell load code before the command runs.
+  "NODE_OPTIONS",
+  "NODE_PATH",
+  "BASH_ENV",
+  "ENV",
+  "SHELLOPTS",
+  "PS4",
+  "PROMPT_COMMAND",
+  "PYTHONPATH",
+  "PYTHONSTARTUP",
+  "PYTHONHOME",
+  "PERL5OPT",
+  "PERL5LIB",
+  "RUBYOPT",
+  "RUBYLIB",
+  "GIT_SSH_COMMAND",
+  "GIT_EXEC_PATH",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_SYSTEM",
+  "ZDOTDIR",
 ]);
+
+/** Prefixes refused for the same reason: every DYLD_ and LD_ name, npm's own
+ * settings (`npm_config_script_shell`, `npm_config_node_options`), Yarn's and
+ * pnpm's, and git's per-call config. */
+const RESERVED_ENV_PREFIXES = [
+  "DYLD_",
+  "LD_",
+  "NPM_CONFIG_",
+  "YARN_",
+  "PNPM_",
+  "BUN_",
+  "GIT_CONFIG_",
+];
+
+export function reservedEnvName(name: string): boolean {
+  const upper = name.toUpperCase();
+  return (
+    RESERVED_ENV.has(upper) || RESERVED_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix))
+  );
+}
 
 const MAX_CONFIGURATIONS = 20;
 const MAX_ARGS = 64;
@@ -132,7 +183,7 @@ function envMap(value: unknown): Record<string, string> | string {
   const out: Record<string, string> = {};
   for (const [name, raw] of entries) {
     if (!validEnvName(name)) return `env name ${JSON.stringify(name)} is not valid`;
-    if (RESERVED_ENV.has(name.toUpperCase()))
+    if (reservedEnvName(name))
       return `env may not set ${name}`;
     const entry = typeof raw === "number" || typeof raw === "boolean" ? String(raw) : text(raw);
     if (entry === undefined) return `env value for ${name} is not text`;
@@ -273,6 +324,8 @@ export function packageScriptCandidates(
     const body = text((scripts as Record<string, unknown>)[name]);
     if (!body || !body.trim()) continue;
     const fixedPort = scriptPort(body);
+    const pre = text((scripts as Record<string, unknown>)[`pre${name}`]);
+    const post = text((scripts as Record<string, unknown>)[`post${name}`]);
     candidates.push({
       key: `script:${name}`,
       label: `${manager} run ${name}`,
@@ -284,6 +337,8 @@ export function packageScriptCandidates(
       ...(fixedPort ? { port: fixedPort } : {}),
       autoPort: false,
       scriptBody: body,
+      ...(pre !== undefined ? { preScript: pre } : {}),
+      ...(post !== undefined ? { postScript: post } : {}),
     });
   }
   return { candidates, problems: [] };
@@ -297,35 +352,42 @@ export function previewCandidates(files: PreviewConfigFiles): PreviewCandidates 
   const scripts = files.packageJson
     ? packageScriptCandidates(files.packageJson, files.lockfiles)
     : { candidates: [], problems: [] };
+  // An .npmrc that is there but could not be read (a link out of the project,
+  // too large, not text) cannot be fingerprinted, and npm would still read
+  // it. Nothing is offered until it is fixed.
+  const npmrcSkipped = (files.skipped ?? []).some((reason) => reason.startsWith(".npmrc"));
+  if (npmrcSkipped)
+    return {
+      candidates: [],
+      problems: [
+        ...(files.skipped ?? []),
+        "Every command: this project's .npmrc could not be read, so a change to it could not be noticed",
+        ...launch.problems,
+        ...scripts.problems,
+      ],
+    };
+  const npmrcHash =
+    typeof files.npmrc === "string" ? sha256Hex(files.npmrc) : undefined;
+  const all = [...launch.candidates, ...scripts.candidates].map((candidate) =>
+    npmrcHash ? { ...candidate, npmrcHash } : candidate,
+  );
   return {
-    candidates: [...launch.candidates, ...scripts.candidates],
+    candidates: all,
     problems: [...(files.skipped ?? []), ...launch.problems, ...scripts.problems],
   };
 }
 
-/** 53-bit string hash (cyrb53). Not a secret, only a change detector. */
-function hash53(input: string): string {
-  let h1 = 0xdeadbeef;
-  let h2 = 0x41c6ce57;
-  for (let index = 0; index < input.length; index += 1) {
-    const code = input.charCodeAt(index);
-    h1 = Math.imul(h1 ^ code, 2654435761);
-    h2 = Math.imul(h2 ^ code, 1597334677);
-  }
-  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, "0");
-}
-
 /**
  * Everything that decides what runs. A change to any of it, the script a
- * package manager runs included, means the user confirms again.
+ * package manager runs included, with its pre and post scripts and the
+ * project's `.npmrc`, means the user confirms again. SHA-256, so a file
+ * written to collide with a confirmed command cannot pass for it.
  */
 export function previewFingerprint(candidate: PreviewCandidate): string {
   const env = Object.keys(candidate.env)
     .sort()
     .map((name) => [name, candidate.env[name]]);
-  return hash53(
+  return sha256Hex(
     JSON.stringify([
       candidate.program,
       candidate.args,
@@ -335,6 +397,9 @@ export function previewFingerprint(candidate: PreviewCandidate): string {
       candidate.port ?? null,
       candidate.url ?? null,
       candidate.autoPort,
+      candidate.preScript ?? null,
+      candidate.postScript ?? null,
+      candidate.npmrcHash ?? null,
     ]),
   );
 }

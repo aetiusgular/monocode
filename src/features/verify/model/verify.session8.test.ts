@@ -150,6 +150,23 @@ describe("the turn watch", () => {
     probes = [];
     let n = 0;
     setPreviewDepsForTest({
+      // The files on disk give exactly the candidates the tests start, as in
+      // the app: a start reads them again right before the spawn.
+      readConfig: async () => ({
+        packageJson: JSON.stringify({ scripts: { dev: "vite --port 5173" } }),
+        launchJson: JSON.stringify({
+          configurations: [
+            {
+              name: "web",
+              runtimeExecutable: "npm",
+              runtimeArgs: ["run", "dev"],
+              port: 5173,
+              autoVerify: false,
+            },
+          ],
+        }),
+        lockfiles: [],
+      }),
       resolveCwd: async (root) => root,
       probe: async () => probe,
       start: async (input) => {
@@ -198,6 +215,7 @@ describe("the turn watch", () => {
         env: {},
         port: 5173,
         autoPort: false,
+        scriptBody: "vite --port 5173",
       },
       confirmedByUser: true,
     });

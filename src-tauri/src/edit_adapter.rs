@@ -27,7 +27,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use patch::{command_for, EditCall};
 use rewrite::{rewrite_request, CallMap, StreamRewriter};
@@ -35,6 +35,11 @@ use rewrite::{rewrite_request, CallMap, StreamRewriter};
 const MAX_HEAD_BYTES: usize = 64 * 1024;
 const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CONNECTIONS: usize = 32;
+/// The request head must arrive within this, before the route token is
+/// known. A local process that trickles bytes frees its slot quickly.
+const HEAD_DEADLINE: Duration = Duration::from_secs(15);
+/// The body, once the Host and the route token have been checked.
+const BODY_DEADLINE: Duration = Duration::from_secs(120);
 const MAX_ROUTES: usize = 256;
 /// No byte from the model server for this long ends the request. Codex's own
 /// stream idle timeout is 300 seconds unless raised for a slow server.
@@ -183,22 +188,32 @@ fn serve(listener: TcpListener, proxy: Arc<Proxy>) {
             let _ = respond(&mut stream, 503, "too many connections");
             continue;
         }
-        let proxy = proxy.clone();
+        // The slot is given back when the guard drops: at the end of the
+        // connection, on a panic in it (unwinding runs Drop), or here if the
+        // thread cannot start.
+        let slot = OpenSlot(proxy.clone());
         let spawned = std::thread::Builder::new()
             .name("edit-adapter-conn".into())
             .spawn({
                 let proxy = proxy.clone();
                 move || {
+                    let _slot = slot;
                     let mut stream = stream;
                     if let Err(message) = handle(&mut stream, &proxy) {
                         let _ = respond(&mut stream, message.0, &message.1);
                     }
-                    proxy.open.fetch_sub(1, Ordering::SeqCst);
                 }
             });
-        if spawned.is_err() {
-            proxy.open.fetch_sub(1, Ordering::SeqCst);
-        }
+        drop(spawned);
+    }
+}
+
+/// One counted connection. Dropping it frees the slot.
+struct OpenSlot(Arc<Proxy>);
+
+impl Drop for OpenSlot {
+    fn drop(&mut self) {
+        self.0.open.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -220,6 +235,7 @@ fn reason(status: u16) -> &'static str {
         400 => "Bad Request",
         403 => "Forbidden",
         404 => "Not Found",
+        408 => "Request Timeout",
         413 => "Payload Too Large",
         502 => "Bad Gateway",
         503 => "Service Unavailable",
@@ -245,16 +261,32 @@ impl Request {
 
 type Failure = (u16, String);
 
-fn read_request(stream: &TcpStream) -> Result<Request, Failure> {
-    let bad = |m: &str| (400, m.to_string());
+/// Before each read, the time left until `deadline`, as the socket's read
+/// timeout. Past it, the request fails.
+fn arm(stream: &TcpStream, deadline: Instant) -> Result<(), Failure> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return Err((408, "request timed out".into()));
+    }
     stream
-        .set_read_timeout(Some(Duration::from_secs(60)))
-        .map_err(|_| bad("socket"))?;
-    let mut reader = BufReader::new(stream);
+        .set_read_timeout(Some(left.min(Duration::from_secs(60))))
+        .map_err(|_| (400, "socket".to_string()))
+}
+
+/// The request line and headers, nothing of the body.
+fn read_head(
+    reader: &mut BufReader<&TcpStream>,
+    stream: &TcpStream,
+    deadline: Instant,
+) -> Result<Request, Failure> {
+    let bad = |m: &str| (400, m.to_string());
     let mut head = Vec::new();
     loop {
+        arm(stream, deadline)?;
         let mut line = Vec::new();
         let n = reader
+            .by_ref()
+            .take((MAX_HEAD_BYTES + 1 - head.len().min(MAX_HEAD_BYTES)) as u64)
             .read_until(b'\n', &mut line)
             .map_err(|_| bad("read"))?;
         if n == 0 {
@@ -279,25 +311,44 @@ fn read_request(stream: &TcpStream) -> Result<Request, Failure> {
             headers.push((k.trim().to_string(), v.trim().to_string()));
         }
     }
-    let mut request = Request {
+    Ok(Request {
         method,
         target,
         headers,
         body: Vec::new(),
-    };
+    })
+}
+
+/// The body, chunked or by length, at most `MAX_BODY_BYTES`.
+fn read_body(
+    reader: &mut BufReader<&TcpStream>,
+    stream: &TcpStream,
+    request: &mut Request,
+    deadline: Instant,
+) -> Result<(), Failure> {
+    let bad = |m: &str| (400, m.to_string());
+    let too_large = || (413, "request body too large".to_string());
     let chunked = request
         .header("transfer-encoding")
         .is_some_and(|v| v.to_ascii_lowercase().contains("chunked"));
     if chunked {
         loop {
+            arm(stream, deadline)?;
             let mut size_line = String::new();
-            reader.read_line(&mut size_line).map_err(|_| bad("chunk"))?;
+            reader
+                .by_ref()
+                .take(1024)
+                .read_line(&mut size_line)
+                .map_err(|_| bad("chunk"))?;
             let size = usize::from_str_radix(size_line.trim().split(';').next().unwrap_or(""), 16)
                 .map_err(|_| bad("chunk size"))?;
-            if request.body.len() + size > MAX_BODY_BYTES {
-                return Err((413, "request body too large".into()));
+            // Checked: a size near usize::MAX must not wrap past the limit.
+            let total = request.body.len().checked_add(size).ok_or_else(too_large)?;
+            if total > MAX_BODY_BYTES {
+                return Err(too_large());
             }
-            let mut chunk = vec![0; size + 2];
+            let mut chunk = vec![0; size.checked_add(2).ok_or_else(too_large)?];
+            arm(stream, deadline)?;
             reader.read_exact(&mut chunk).map_err(|_| bad("chunk"))?;
             if size == 0 {
                 break;
@@ -307,37 +358,69 @@ fn read_request(stream: &TcpStream) -> Result<Request, Failure> {
     } else if let Some(length) = request.header("content-length") {
         let length: usize = length.parse().map_err(|_| bad("content-length"))?;
         if length > MAX_BODY_BYTES {
-            return Err((413, "request body too large".into()));
+            return Err(too_large());
         }
-        request.body = vec![0; length];
-        reader
-            .read_exact(&mut request.body)
-            .map_err(|_| bad("body"))?;
+        let mut body = Vec::new();
+        while body.len() < length {
+            arm(stream, deadline)?;
+            let want = (length - body.len()).min(1 << 20);
+            let mut part = vec![0; want];
+            let n = reader.read(&mut part).map_err(|_| bad("body"))?;
+            if n == 0 {
+                return Err(bad("body"));
+            }
+            body.extend_from_slice(&part[..n]);
+        }
+        request.body = body;
     }
+    Ok(())
+}
+
+/// A whole request, for the tests' fake model server.
+#[cfg(test)]
+fn read_request(stream: &TcpStream) -> Result<Request, Failure> {
+    let mut reader = BufReader::new(stream);
+    let mut request = read_head(&mut reader, stream, Instant::now() + HEAD_DEADLINE)?;
+    read_body(&mut reader, stream, &mut request, Instant::now() + BODY_DEADLINE)?;
     Ok(request)
 }
 
 fn handle(stream: &mut TcpStream, proxy: &Proxy) -> Result<(), Failure> {
-    let request = read_request(stream)?;
-    let host_ok = request.header("host").is_some_and(|host| {
-        host == format!("127.0.0.1:{}", proxy.port) || host == format!("localhost:{}", proxy.port)
-    });
-    if !host_ok {
-        return Err((403, "unexpected host".into()));
-    }
-    let rest = request
-        .target
-        .strip_prefix("/s/")
-        .ok_or((404, "no route".to_string()))?;
-    let (token, tail) = rest.split_at(rest.find(['/', '?']).unwrap_or(rest.len()));
-    let route = proxy
-        .routes
-        .lock()
-        .map_err(|_| (503, "lock".to_string()))?
-        .get(token)
-        .cloned()
-        .ok_or((404, "no route".to_string()))?;
-    let upstream_url = join_upstream(&route.upstream, tail).ok_or((400, "bad path".to_string()))?;
+    // The Host and the route token are checked on the head alone, before any
+    // of the body is read or allocated, so a process without the token
+    // cannot hold memory or a slot for long.
+    let (request, route, tail) = {
+        let reader_stream: &TcpStream = stream;
+        let mut reader = BufReader::new(reader_stream);
+        let mut request = read_head(&mut reader, reader_stream, Instant::now() + HEAD_DEADLINE)?;
+        let host_ok = request.header("host").is_some_and(|host| {
+            host == format!("127.0.0.1:{}", proxy.port) || host == format!("localhost:{}", proxy.port)
+        });
+        if !host_ok {
+            return Err((403, "unexpected host".into()));
+        }
+        let rest = request
+            .target
+            .strip_prefix("/s/")
+            .ok_or((404, "no route".to_string()))?;
+        let (token, tail) = rest.split_at(rest.find(['/', '?']).unwrap_or(rest.len()));
+        let tail = tail.to_string();
+        let route = proxy
+            .routes
+            .lock()
+            .map_err(|_| (503, "lock".to_string()))?
+            .get(token)
+            .cloned()
+            .ok_or((404, "no route".to_string()))?;
+        read_body(
+            &mut reader,
+            reader_stream,
+            &mut request,
+            Instant::now() + BODY_DEADLINE,
+        )?;
+        (request, route, tail)
+    };
+    let upstream_url = join_upstream(&route.upstream, &tail).ok_or((400, "bad path".to_string()))?;
 
     let is_responses = request.method == "POST" && upstream_url.path().ends_with("/responses");
     let encoded = request
@@ -663,6 +746,100 @@ mod tests {
         assert!(matches!(error, ureq::Error::Status(502, _)), "{error:?}");
         assert!(started.elapsed() < Duration::from_secs(15));
         close_route("s-down");
+    }
+
+    /// Sends raw bytes to the proxy and returns the status line it answers.
+    fn raw_exchange(base: &str, request: &str) -> String {
+        let address = base
+            .trim_start_matches("http://")
+            .split('/')
+            .next()
+            .unwrap()
+            .to_string();
+        let mut stream = TcpStream::connect(&address).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut reply = String::new();
+        let _ = BufReader::new(&stream).read_line(&mut reply);
+        reply
+    }
+
+    #[test]
+    fn a_huge_chunk_size_is_refused_not_a_panic() {
+        let base = open_route(
+            "s-chunk",
+            "http://127.0.0.1:9/v1",
+            std::env::temp_dir().to_str().unwrap(),
+        )
+        .unwrap();
+        let path = base.split_once("127.0.0.1:").unwrap().1;
+        let (port, route) = path.split_once('/').unwrap();
+        let before = proxy().unwrap().open.load(Ordering::SeqCst);
+        let reply = raw_exchange(
+            &base,
+            &format!(
+                "POST /{route}/responses HTTP/1.1\r\nhost: 127.0.0.1:{port}\r\ntransfer-encoding: chunked\r\n\r\nffffffffffffffff\r\n"
+            ),
+        );
+        assert!(reply.starts_with("HTTP/1.1 413"), "{reply:?}");
+        // The connection's slot came back.
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(proxy().unwrap().open.load(Ordering::SeqCst) <= before);
+        close_route("s-chunk");
+    }
+
+    #[test]
+    fn a_request_without_the_token_is_refused_before_its_body() {
+        let base = open_route(
+            "s-early",
+            "http://127.0.0.1:9/v1",
+            std::env::temp_dir().to_str().unwrap(),
+        )
+        .unwrap();
+        let port = base
+            .split_once("127.0.0.1:")
+            .unwrap()
+            .1
+            .split('/')
+            .next()
+            .unwrap()
+            .to_string();
+        let started = Instant::now();
+        // Announces 60 MB and sends none of it: the refusal must not wait.
+        let reply = raw_exchange(
+            &base,
+            &format!(
+                "POST /s/not-a-token/responses HTTP/1.1\r\nhost: 127.0.0.1:{port}\r\ncontent-length: 62914560\r\n\r\n"
+            ),
+        );
+        assert!(reply.starts_with("HTTP/1.1 404"), "{reply:?}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let reply = raw_exchange(
+            &base,
+            "POST /s/x/responses HTTP/1.1\r\nhost: evil.example\r\ncontent-length: 62914560\r\n\r\n",
+        );
+        assert!(reply.starts_with("HTTP/1.1 403"), "{reply:?}");
+        close_route("s-early");
+    }
+
+    #[test]
+    fn a_panicking_connection_gives_its_slot_back() {
+        let proxy = Arc::new(Proxy {
+            port: 0,
+            routes: Mutex::new(HashMap::new()),
+            sessions: Mutex::new(VecDeque::new()),
+            open: AtomicUsize::new(1),
+        });
+        let slot = OpenSlot(proxy.clone());
+        let joined = std::thread::spawn(move || {
+            let _slot = slot;
+            panic!("a bug in one connection");
+        })
+        .join();
+        assert!(joined.is_err());
+        assert_eq!(proxy.open.load(Ordering::SeqCst), 0);
     }
 
     #[test]

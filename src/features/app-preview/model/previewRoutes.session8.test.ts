@@ -37,6 +37,10 @@ beforeEach(async () => {
   const processes = new Map<string, OwnedProcess>();
   let n = 0;
   setPreviewDepsForTest({
+    readConfig: async () => ({
+      packageJson: JSON.stringify({ scripts: { dev: "vite" } }),
+      lockfiles: [],
+    }),
     resolveCwd: async (root) => root,
     probe: async () => ({ status: 200 }),
     start: async (input) => {
@@ -73,6 +77,7 @@ beforeEach(async () => {
       cwd: "",
       env: {},
       autoPort: false,
+      scriptBody: "vite",
     },
     confirmedByUser: true,
   });

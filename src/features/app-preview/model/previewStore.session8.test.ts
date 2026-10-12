@@ -9,7 +9,11 @@ import {
   isPreviewConfirmed,
   recordPreviewConfirmed,
 } from "./confirmations";
-import { previewFingerprint, type PreviewCandidate } from "./launchConfig";
+import {
+  parseLaunchJson,
+  previewFingerprint,
+  type PreviewCandidate,
+} from "./launchConfig";
 import { handlePreviewAction, tailLines } from "./previewActions";
 import { previewPreamblePart, previewStatusLine } from "./previewPreamble";
 import {
@@ -38,6 +42,8 @@ type Fake = {
   resolved: [string, string][];
   /** The dev script package.json holds now. */
   script: string;
+  /** A launch.json the fake project holds, for candidates no script gives. */
+  launch?: string;
 };
 
 let fake: Fake;
@@ -82,6 +88,7 @@ beforeEach(() => {
   setPreviewDepsForTest({
     readConfig: async () => ({
       packageJson: JSON.stringify({ scripts: { dev: fake.script } }),
+      launchJson: fake.launch ?? null,
       lockfiles: [],
     }),
     resolveCwd: async (root, relative) => {
@@ -134,12 +141,42 @@ beforeEach(() => {
 
 afterEach(() => setPreviewDepsForTest(null));
 
+/**
+ * Start what the user picked, as the panel does: a candidate the project's
+ * files give. One the dev script cannot give (an environment, a free port, a
+ * folder) is written into the fake project's launch.json first, since a
+ * start reads the files again right before the spawn.
+ */
 async function start(input: Partial<PreviewCandidate> = {}) {
+  const wanted = { ...candidate, ...input };
+  const onDisk = (await loadPreviewCandidates("/work/app-wt")).candidates.find(
+    (entry) => entry.key === wanted.key,
+  );
+  let picked = wanted;
+  if (!onDisk || previewFingerprint(onDisk) !== previewFingerprint(wanted)) {
+    fake.launch = JSON.stringify({
+      configurations: [
+        {
+          name: wanted.label,
+          runtimeExecutable: wanted.program,
+          runtimeArgs: wanted.args,
+          cwd: wanted.cwd,
+          env: wanted.env,
+          ...(wanted.port !== undefined ? { port: wanted.port } : {}),
+          ...(wanted.url ? { url: wanted.url } : {}),
+          autoPort: wanted.autoPort,
+        },
+      ],
+    });
+    // A candidate the parser refuses (a folder with `..`) is passed as is,
+    // to show Rust's folder check stops it first.
+    picked = parseLaunchJson(fake.launch).candidates[0] ?? wanted;
+  }
   return startPreview({
     sessionId: "s1",
     project: "/work/app",
     workCwd: "/work/app-wt",
-    candidate: { ...candidate, ...input },
+    candidate: picked,
     confirmedByUser: true,
   });
 }
@@ -425,15 +462,30 @@ describe("confirmations", () => {
     recordPreviewConfirmed("/a", print);
     expect(isPreviewConfirmed("/a", print)).toBe(true);
     expect(isPreviewConfirmed("/b", print)).toBe(false);
-    for (let i = 0; i < 9; i += 1) recordPreviewConfirmed("/a", `${i}`.padStart(14, "0"));
+    for (let i = 0; i < 9; i += 1) recordPreviewConfirmed("/a", `${i}`.padStart(64, "0"));
     expect(isPreviewConfirmed("/a", print)).toBe(false);
-    localStorage.setItem("monocode.preview.confirmed.v1", "{not json");
+    localStorage.setItem("monocode.preview.confirmed.v2", "{not json");
     expect(isPreviewConfirmed("/a", print)).toBe(false);
     localStorage.setItem(
-      "monocode.preview.confirmed.v1",
+      "monocode.preview.confirmed.v2",
       JSON.stringify({ "/a": ["<script>", 5, print] }),
     );
     expect(isPreviewConfirmed("/a", print)).toBe(true);
     expect(isPreviewConfirmed("", print)).toBe(false);
+  });
+
+  it("drops a short or old-format print, so it can never stand in for a command", () => {
+    const print = previewFingerprint(candidate);
+    expect(print).toMatch(/^[0-9a-f]{64}$/);
+    localStorage.setItem(
+      "monocode.preview.confirmed.v2",
+      JSON.stringify({ "/c": [print.slice(0, 14), print.slice(0, 32)] }),
+    );
+    expect(isPreviewConfirmed("/c", print.slice(0, 14))).toBe(false);
+    expect(isPreviewConfirmed("/c", print.slice(0, 32))).toBe(false);
+    // A v1 store from before this change is ignored.
+    localStorage.setItem("monocode.preview.confirmed.v1", JSON.stringify({ "/c": [print] }));
+    localStorage.removeItem("monocode.preview.confirmed.v2");
+    expect(isPreviewConfirmed("/c", print)).toBe(false);
   });
 });

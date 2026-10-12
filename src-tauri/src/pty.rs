@@ -362,8 +362,9 @@ fn spawn_unix(
     use std::process::Command;
 
     // A given command is a process MonoCode starts for a session, such as a
-    // preview server (#37). It gets the environment editor's values (#28), as
-    // a harness does; a terminal's login shell does not.
+    // preview server (#37). It gets the environment editor's plain values
+    // (#28), never its secrets: it runs the project's code, which an agent
+    // edits, with full rights and network. A terminal's login shell gets none.
     let owned = command.is_some();
     let (shell, args, extra_env) = match command {
         Some(command) => (command.program, command.args, command.env),
@@ -390,7 +391,7 @@ fn spawn_unix(
     }
     cmd.env("PWD", &workdir);
     if owned {
-        crate::env_store::apply_to_child(&app, &mut cmd, &workdir);
+        crate::env_store::apply_plain_to_child(&app, &mut cmd, &workdir);
     }
     // The command's own values come last: a launch configuration wins.
     for (name, value) in &extra_env {

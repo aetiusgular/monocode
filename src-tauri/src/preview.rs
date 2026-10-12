@@ -48,6 +48,10 @@ pub struct PreviewConfigFiles {
     pub launch_json: Option<String>,
     /// `package.json`, when present and inside the project.
     pub package_json: Option<String>,
+    /// The project's `.npmrc`, when present and inside the project. npm reads
+    /// it when it runs a script, so the webview hashes it into the preview's
+    /// fingerprint. Never shown: it can hold a registry token.
+    pub npmrc: Option<String>,
     /// The lockfiles found at the root, by name.
     pub lockfiles: Vec<String>,
     /// Files that were present but not read, with the reason.
@@ -160,6 +164,7 @@ pub fn read_config_files(root: &str) -> Result<PreviewConfigFiles, String> {
     let mut skipped = Vec::new();
     let launch_json = read_config(&root, ".claude/launch.json", &mut skipped);
     let package_json = read_config(&root, "package.json", &mut skipped);
+    let npmrc = read_config(&root, ".npmrc", &mut skipped);
     let lockfiles = LOCKFILES
         .iter()
         .filter(|name| root.join(name).is_file())
@@ -168,6 +173,7 @@ pub fn read_config_files(root: &str) -> Result<PreviewConfigFiles, String> {
     Ok(PreviewConfigFiles {
         launch_json,
         package_json,
+        npmrc,
         lockfiles,
         skipped,
     })
@@ -429,7 +435,32 @@ mod tests {
         assert!(files.package_json.unwrap().contains("vite"));
         assert_eq!(files.lockfiles, vec!["pnpm-lock.yaml".to_string()]);
         assert!(files.skipped.is_empty());
+        assert!(files.npmrc.is_none());
+        fs::write(root.join(".npmrc"), "node-options=--require ./x.js\n").unwrap();
+        let files = read_config_files(root.to_str().unwrap()).unwrap();
+        assert_eq!(
+            files.npmrc.as_deref(),
+            Some("node-options=--require ./x.js\n")
+        );
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_npmrc_link_out_of_the_project_is_skipped_by_name() {
+        let root = temp_dir("npmrc-link");
+        let outside = temp_dir("npmrc-outside");
+        fs::write(outside.join("npmrc"), "script-shell=/tmp/x\n").unwrap();
+        std::os::unix::fs::symlink(outside.join("npmrc"), root.join(".npmrc")).unwrap();
+        let files = read_config_files(root.to_str().unwrap()).unwrap();
+        assert!(files.npmrc.is_none());
+        assert!(
+            files.skipped.iter().any(|reason| reason.starts_with(".npmrc")),
+            "{:?}",
+            files.skipped
+        );
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(&outside).unwrap();
     }
 
     #[cfg(unix)]

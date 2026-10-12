@@ -301,22 +301,22 @@ export function PreviewChoices({
           data-preview-confirm
         >
           <p className="text-content/75">MonoCode will run, in {text.folder}:</p>
-          <code className="block break-all rounded bg-content/7 px-1.5 py-1 font-mono text-[11px] text-content">
+          <code
+            className="block max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-content/7 px-1.5 py-1 font-mono text-[11px] text-content"
+            data-preview-command
+          >
             {text.command}
           </code>
-          {text.script ? (
-            <p className="text-content/65">
-              The script it runs:{" "}
-              <code className="break-all font-mono text-[11px] text-content/85">{text.script}</code>
-            </p>
+          {text.preScript !== undefined ? (
+            <ShownScript label="First, the pre script:" body={text.preScript} />
           ) : null}
+          {text.script ? <ShownScript label="The script it runs:" body={text.script} /> : null}
+          {text.postScript !== undefined ? (
+            <ShownScript label="After it, the post script:" body={text.postScript} />
+          ) : null}
+          {text.npmrc ? <p className="text-content/65">{text.npmrc}</p> : null}
           {text.env.length ? (
-            <p className="text-content/65">
-              With:{" "}
-              <code className="break-all font-mono text-[11px] text-content/85">
-                {text.env.join(" ")}
-              </code>
-            </p>
+            <ShownScript label="With:" body={text.env.join("\n")} />
           ) : null}
           {text.port ? <p className="text-content/65">Port: {text.port}</p> : null}
           <p className="text-content/50">From {text.source}.</p>
@@ -352,6 +352,18 @@ export function PreviewChoices({
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+/** A value from the project's files, in full: it scrolls rather than cut. */
+function ShownScript({ label, body }: { label: string; body: string }) {
+  return (
+    <div className="flex flex-col gap-0.5 text-content/65">
+      <span>{label}</span>
+      <code className="block max-h-32 overflow-auto whitespace-pre-wrap break-all rounded bg-content/5 px-1.5 py-1 font-mono text-[11px] text-content/85">
+        {body}
+      </code>
     </div>
   );
 }

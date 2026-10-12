@@ -75,6 +75,8 @@ describe("the preview pane", () => {
     expect(frame.getAttribute("src")).toBe("http://localhost:5173/");
     const sandbox = frame.getAttribute("sandbox")!;
     expect(sandbox).toBe(PREVIEW_FRAME_SANDBOX);
+    for (const token of ["allow-modals", "allow-popups", "allow-top-navigation", "allow-downloads"])
+      expect(PREVIEW_FRAME_SANDBOX).not.toContain(token);
     expect(sandbox).not.toContain("allow-top-navigation");
     expect(frame.getAttribute("referrerpolicy")).toBe("no-referrer");
   });

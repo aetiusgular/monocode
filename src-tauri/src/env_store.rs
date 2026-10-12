@@ -361,6 +361,21 @@ pub fn project_for(file: &EnvFile, workdir: &Path) -> Option<String> {
 /// The variables for a child started in `workdir`: global first, then the
 /// project's, which win. Secrets missing from the keychain are left out.
 pub fn resolve(file: &EnvFile, secrets: &dyn SecretStore, workdir: &Path) -> Vec<(String, String)> {
+    resolve_with(file, Some(secrets), workdir)
+}
+
+/// The plain values only, never a secret: for a process that runs the
+/// project's own code outside the sandbox, such as a preview server (#37).
+/// Code an agent edits there could send its environment anywhere.
+pub fn resolve_plain(file: &EnvFile, workdir: &Path) -> Vec<(String, String)> {
+    resolve_with(file, None, workdir)
+}
+
+fn resolve_with(
+    file: &EnvFile,
+    secrets: Option<&dyn SecretStore>,
+    workdir: &Path,
+) -> Vec<(String, String)> {
     let mut out: BTreeMap<String, String> = BTreeMap::new();
     let mut add = |project: Option<&str>, vars: &[StoredVar]| {
         for var in vars {
@@ -369,7 +384,7 @@ pub fn resolve(file: &EnvFile, secrets: &dyn SecretStore, workdir: &Path) -> Vec
                 continue;
             }
             let value = if var.secret {
-                secrets.get(&secret_key(project, &var.name))
+                secrets.and_then(|store| store.get(&secret_key(project, &var.name)))
             } else {
                 var.value.clone()
             };
@@ -405,6 +420,20 @@ pub fn apply_to_child(app: &AppHandle, cmd: &mut Command, workdir: &Path) {
         return;
     }
     for (name, value) in resolve(&file, &Keychain, workdir) {
+        cmd.env(name, value);
+    }
+}
+
+/// For a process MonoCode starts to run the project's code, such as a
+/// preview server: the editor's plain values, never its secrets, and the
+/// keychain is not read at all.
+pub fn apply_plain_to_child(app: &AppHandle, cmd: &mut Command, workdir: &Path) {
+    let Ok(path) = env_path(app) else { return };
+    let file = load_file(&path);
+    if file.global.is_empty() && file.projects.is_empty() {
+        return;
+    }
+    for (name, value) in resolve_plain(&file, workdir) {
         cmd.env(name, value);
     }
 }
@@ -533,6 +562,29 @@ mod tests {
                 0o600
             );
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_preview_gets_plain_values_and_never_a_secret() {
+        let dir = temp();
+        let path = dir.join(FILE);
+        let secrets = Memory::default();
+        let project = dir.join("app");
+        std::fs::create_dir_all(&project).unwrap();
+        let key = project.to_string_lossy().into_owned();
+        set_var(&path, &secrets, None, "REGION", "eu", false).unwrap();
+        set_var(&path, &secrets, None, "GITHUB_TOKEN", "ghp_x", true).unwrap();
+        set_var(&path, &secrets, Some(&key), "API_URL", "http://x", false).unwrap();
+        set_var(&path, &secrets, Some(&key), "DB_PASSWORD", "hunter2", true).unwrap();
+        let file = load_file(&path);
+        let all = resolve(&file, &secrets, &project);
+        assert!(all.iter().any(|(name, _)| name == "GITHUB_TOKEN"));
+        assert!(all.iter().any(|(name, _)| name == "DB_PASSWORD"));
+        let plain = resolve_plain(&file, &project);
+        let names: Vec<&str> = plain.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, vec!["API_URL", "REGION"]);
+        assert!(plain.iter().all(|(_, value)| value != "ghp_x" && value != "hunter2"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

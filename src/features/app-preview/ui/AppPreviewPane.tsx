@@ -14,8 +14,10 @@ import { normalizePreviewUrl } from "../model/previewUrl";
  * #37: the preview pane. An iframe on the chat's own server, on localhost.
  *
  * - The frame is sandboxed. It may run scripts, keep its own origin
- *   (`http://localhost:<port>`, never the app's), submit forms and show
- *   alerts. It may not navigate the app's window (no `allow-top-navigation`),
+ *   (`http://localhost:<port>`, never the app's) and submit forms. It may not
+ *   show alerts or prompts (no `allow-modals`), which could pass for the
+ *   app's own and ask for a password. It may not navigate the app's window
+ *   (no `allow-top-navigation`),
  *   open windows (no `allow-popups`) or download files. "Open in browser" is
  *   there for those.
  * - The app's CSP allows `frame-src http://localhost:*` and nothing else
@@ -25,7 +27,7 @@ import { normalizePreviewUrl } from "../model/previewUrl";
 
 /** What the frame may do. Exported for the tests. */
 export const PREVIEW_FRAME_SANDBOX =
-  "allow-scripts allow-same-origin allow-forms allow-modals";
+  "allow-scripts allow-same-origin allow-forms";
 
 export function useAppPreview(sessionId: string): AppPreview | undefined {
   useSyncExternalStore(subscribePreviews, previewsVersion, previewsVersion);

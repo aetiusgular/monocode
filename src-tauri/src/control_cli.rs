@@ -284,8 +284,8 @@ Actions:
                   and whether it answers. MonoCode runs it; never start another.
   preview.logs    {"lines":40}  The newest lines of its output. Add
                   "errorsOnly":true for error lines only. At most 200 lines.
-  preview.restart {}  Stop and start the command the user confirmed. It never
-                  starts a different command, or one the user has not started.
+  preview.restart {}  Restart the running server, same command the user
+                  confirmed. Never a changed command, never a stopped server.
   chat.card      Mono or habit only. Post a card to the Mono's chat:
                   {"type":"pr","repo":"owner/repo","number":123,"note":"..."}
                   {"type":"session","sessionId":"...","note":"..."}

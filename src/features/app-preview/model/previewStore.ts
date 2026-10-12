@@ -343,6 +343,18 @@ async function launch(
     args: [...candidate.args],
     ...(Object.keys(env).length ? { env } : {}),
   };
+  // Read the files once more, right before the spawn. An agent can rewrite
+  // the launch file or the script while the confirm box is open, or between
+  // the restart check and here, and npm reads package.json again when it
+  // runs. A command that is no longer the one confirmed does not start.
+  const latest = await loadPreviewCandidates(workCwd);
+  const now = latest.candidates.find((entry) => entry.key === candidate.key);
+  if (!now || previewFingerprint(now) !== fingerprint)
+    throw new Error(
+      fromUser
+        ? "The command changed while you were confirming it. Look at it again before you start it."
+        : "The preview's command changed since it was confirmed. Start it again from the session panel, where the new command is shown.",
+    );
   if (fromUser) recordPreviewConfirmed(project, fingerprint);
   const known =
     (candidate.url ? normalizePreviewUrl(candidate.url) : undefined) ??
@@ -388,15 +400,32 @@ export async function stopPreview(sessionId: string): Promise<boolean> {
   return live ? deps.stop(preview.processId).catch(() => false) : false;
 }
 
+export type RestartPreviewOptions = {
+  /**
+   * The restart comes from an agent (the `preview.restart` app action), not
+   * from the user's click. An agent may restart only a server that is
+   * running now: one the user stopped, or one that failed, stays down until
+   * the user starts it.
+   */
+  byAgent?: boolean;
+};
+
 /**
  * Stop and start the same command. Allowed only while that exact command is
  * still the confirmed one, so an agent can restart a server and never start
  * a different one.
  */
-export async function restartPreview(sessionId: string): Promise<AppPreview> {
+export async function restartPreview(
+  sessionId: string,
+  options: RestartPreviewOptions = {},
+): Promise<AppPreview> {
   const preview = previews.get(sessionId);
   if (!preview)
     throw new Error("No preview has been started in this chat. Start one from the session panel.");
+  if (options.byAgent && !isPreviewLive(preview))
+    throw new Error(
+      "The preview is not running. Only the user can start it again, from the session panel.",
+    );
   // The files are read again: an agent may have changed the launch file or
   // the dev script since the user confirmed it, and a package manager runs the
   // script as it is now. A changed command waits for the user.

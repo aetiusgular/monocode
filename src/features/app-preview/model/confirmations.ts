@@ -11,7 +11,9 @@ import { pathKey } from "../../../shared/lib/paths";
  * not ask every time; anything else asks.
  */
 
-const KEY = "monocode.preview.confirmed.v1";
+/** v2: SHA-256 fingerprints. v1 held 53-bit ones, which are dropped, so
+ * every command asks once more. */
+const KEY = "monocode.preview.confirmed.v2";
 const PER_PROJECT = 8;
 const MAX_PROJECTS = 200;
 
@@ -27,7 +29,7 @@ function load(): Store {
     for (const [project, list] of Object.entries(parsed as Record<string, unknown>)) {
       if (!Array.isArray(list)) continue;
       const prints = list.filter(
-        (entry): entry is string => typeof entry === "string" && /^[0-9a-f]{1,32}$/.test(entry),
+        (entry): entry is string => typeof entry === "string" && /^[0-9a-f]{64}$/.test(entry),
       );
       if (prints.length) out[project] = prints.slice(0, PER_PROJECT);
     }
