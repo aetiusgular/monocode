@@ -1,0 +1,231 @@
+{
+  "wave": 1,
+  "about": "Who edits what during a parallel wave. A path ending in / is a folder. Read by scripts/lane-scope.mjs. Shared files are found from the marker lines in the base commit, not listed here.",
+  "readOnly": [
+    "src/integrations/harness/core/capabilities.ts",
+    "src/features/model-traits/model/modelTraits.ts",
+    "scripts/lane-scope.mjs",
+    "scripts/lane-ownership.json",
+    "CHANGELOG.md",
+    "README.md",
+    ".github/"
+  ],
+  "lane3Only": [
+    "package.json",
+    "package-lock.json",
+    "Cargo.toml",
+    "Cargo.lock",
+    "src-tauri/Cargo.toml",
+    "src-tauri/tauri.conf.json",
+    "src-tauri/tauri.linux.conf.json",
+    "src-tauri/tauri.stable.conf.json",
+    "src-tauri/tauri.windows.conf.json",
+    "src-tauri/capabilities/",
+    "src-tauri/gen/"
+  ],
+  "lanes": {
+    "1": {
+      "name": "turns",
+      "branch": "lane/1-turns",
+      "owns": [
+        "src/features/sessions/model/editLastTurn.ts",
+        "src/features/sessions/model/checkpoint.ts",
+        "src/platform/tauri/pty.ts",
+        "src-tauri/src/pty.rs",
+        "src-tauri/src/checkpoint.rs",
+        "src-tauri/src/checkpoint/"
+      ],
+      "newPaths": [
+        "src/features/rewind/",
+        "src/features/owned-processes/",
+        "src/features/session-panel/ui/RunningSection.tsx",
+        "src/features/session-panel/model/sessionRunning.ts",
+        "src/integrations/harness/core/background.ts",
+        "src/integrations/harness/providers/codex/codexBackground.ts",
+        "src/integrations/harness/providers/claude/claudeBackground.ts"
+      ],
+      "ownedSpans": [
+        "types.ts: the background.updated member, and RewindLastTurnInput",
+        "apply.ts: the background.updated case and stopStreaming",
+        "registry.ts: the rewind functions",
+        "claude.ts: BackgroundTask, handleAgentLifecycle, syncBackgroundWait, cancelClaudeTurn, rewindClaudeLastTurn",
+        "codex.ts: cancelCodexTurn, rewindCodexLastTurn",
+        "AgentTranscript.tsx: UserMessageBlock",
+        "App.tsx: one statement after beginSessionTurn in submitSession, for F4"
+      ],
+      "wave2": [
+        "src/features/session-import/",
+        "src/integrations/harness/providers/codex/codexSessions.ts",
+        "src/integrations/harness/providers/claude/claudeSessions.ts",
+        "src-tauri/src/claude_sessions.rs"
+      ]
+    },
+    "2": {
+      "name": "context",
+      "branch": "lane/2-context",
+      "owns": [
+        "src-tauri/src/control_cli.rs",
+        "src-tauri/src/harness.rs",
+        "src/integrations/harness/core/child.ts",
+        "src/features/monos/model/monoFiles.ts",
+        "src/features/reply-actions/",
+        "src/features/sessions/ui/TranscriptSelectionMenu.tsx"
+      ],
+      "newPaths": [
+        "src/features/session-preamble/",
+        "src/features/project-context/",
+        "src/features/project-memory/",
+        "src/features/environment/",
+        "src/features/app-proposals/",
+        "src-tauri/src/project_context.rs",
+        "src-tauri/src/env_store.rs"
+      ],
+      "ownedSpans": [
+        "App.tsx, in submitSession: the rewind and sendTurn calls, and the appContext and <monocode_app> block",
+        "App.tsx: the bodies of onDeleteHistorySession and onDeleteHistorySessions, and the <SettingsView> element props",
+        "codexProtocol.ts: the developer_instructions: null line in buildTurnStartParams",
+        "agentApp.ts: handleMemory",
+        "AgentTranscript.tsx: the <ReplyActions> and <TranscriptSelectionMenu> elements, and the turn cards beside TurnFileCards",
+        "session.ts: the artifactCards neighbourhood of Block, for the proposal card",
+        "SettingsView.tsx: the ProvidersPage Advanced group, and Props for an open-file callback"
+      ],
+      "wave2": [
+        "src/features/automations/",
+        "src-tauri/src/automations.rs",
+        "src/features/quick-composer/ui/QuickComposer.tsx",
+        "src/features/suggested-prompts/"
+      ]
+    },
+    "3": {
+      "name": "render",
+      "branch": "lane/3-render",
+      "owns": [
+        "src/features/files/",
+        "src/features/file-cards/",
+        "src/features/sessions/ui/AgentMarkdown.tsx",
+        "src/features/settings/model/appearance.ts",
+        "src/styles/index.css"
+      ],
+      "newPaths": [
+        "src/features/sandbox-frame/",
+        "src/features/markdown-visuals/",
+        "src/features/conversation-export/",
+        "src/features/sessions/hooks/useTranscriptDetail.ts",
+        "src/assets/fonts/",
+        "src/platform/tauri/sandboxFrame.ts",
+        "src-tauri/src/sandbox_frame.rs"
+      ],
+      "ownedSpans": [
+        "AgentTranscript.tsx: the fold defaults (openWork, ActivityThinkingRow, ActivityToolRow, ToolCall)",
+        "SettingsView.tsx: AppearancePage and useAppearanceSettings"
+      ],
+      "wave2": [
+        "src/features/workspace/model/layout.ts",
+        "src/features/workspace/ui/SurfaceTabs.tsx",
+        "src/main.tsx",
+        "src/features/app-preview/",
+        "src/features/verify/",
+        "src/features/deep-links/",
+        "src-tauri/src/preview.rs"
+      ]
+    },
+    "4": {
+      "name": "git",
+      "branch": "lane/4-git",
+      "owns": [
+        "src/features/source-control/",
+        "src/integrations/harness/core/textHarness.ts",
+        "src/integrations/harness/providers/codex/codexText.ts",
+        "src/integrations/harness/providers/codex/codexTitle.ts",
+        "src/integrations/harness/providers/codex/codexGit.ts",
+        "src/integrations/harness/providers/claude/claudeText.ts",
+        "src/integrations/harness/providers/claude/claudeTitle.ts",
+        "src/integrations/harness/providers/claude/claudeGit.ts",
+        "src/integrations/harness/providers/cursor/cursorGit.ts",
+        "src/integrations/harness/providers/grok/grokGit.ts",
+        "src/integrations/harness/providers/opencode/opencodeGit.ts",
+        "src/features/quick-composer/ui/QuickGitPopup.tsx",
+        "src/features/monos/ui/MonoProjectCommit.tsx",
+        "src/features/monos/ui/MonoChangesPanel.tsx",
+        "src/features/inbox/model/githubTasks.ts",
+        "src/features/inbox/model/ciRepair.ts",
+        "src-tauri/src/worktrees.rs",
+        "src-tauri/src/fs.rs",
+        "src-tauri/src/mcp.rs",
+        "src/features/settings/model/mcpSettingsCache.ts",
+        "src/features/settings/ui/McpSettings.tsx",
+        "src/features/gateway-connectors/ui/",
+        "src/features/session-tools/model/connectors.ts",
+        "src/features/session-tools/ui/ConnectorsPopover.tsx",
+        "src/features/server-locality/"
+      ],
+      "newPaths": [
+        "src/integrations/harness/core/helperPrompt.ts",
+        "src/features/code-review/",
+        "src/features/pr-bar/"
+      ],
+      "ownedSpans": [
+        "App.tsx: the title call and the branch-name call in submitSession, the textHarness prop on the source-control mount, and the Mono commit path",
+        "Composer.tsx: the two <BranchPicker> elements",
+        "Sidebar.tsx: the textHarness prop lines",
+        "registry.ts: TitleInput, the generateHarness* functions, and the commit, PR and branch members of HarnessAdapter",
+        "index.ts: the existing text-harness export lines"
+      ],
+      "wave2": [
+        "src-tauri/src/claude_plugin.rs",
+        "src/features/claude-plugins/",
+        "src/app/shell/TitleBar.tsx",
+        "src/app/model/windowTransfer.ts",
+        "src-tauri/src/window_transfer.rs",
+        "src-tauri/src/window.rs"
+      ]
+    },
+    "5": {
+      "name": "privacy",
+      "branch": "lane/5-privacy",
+      "owns": [
+        "src/features/sessions/ui/AccessPicker.tsx",
+        "src/features/quick-composer/ui/QuickPermissions.tsx",
+        "src/features/sessions/ui/ModelPicker.tsx",
+        "src/features/sessions/ui/ApprovalToasts.tsx",
+        "src/features/notifications/model/approvalToast.ts",
+        "src/features/tool-access/",
+        "src/features/sessions/model/linkPreview.ts",
+        "src/features/sessions/ui/UserLinkPreview.tsx",
+        "src/features/providers/model/rateLimitsFetch.ts",
+        "src/features/providers/model/piUsage.ts",
+        "src/features/providers/model/harnessUpdates.ts",
+        "src/features/providers/ui/HarnessUpdateNotice.tsx",
+        "src/app/shell/GithubStarPrompt.tsx",
+        "src/features/session-panel/model/sessionFacts.ts",
+        "src/features/sessions/model/projectProviders.ts"
+      ],
+      "newPaths": [
+        "src/features/model-setup/",
+        "src-tauri/src/model_setup.rs",
+        "src/features/privacy-view/",
+        "src/features/settings/model/outboundCalls.ts",
+        "src/integrations/harness/providers/codex/codexProviders.ts"
+      ],
+      "ownedSpans": [
+        "types.ts: the approval.requested member",
+        "apply.ts: attachApproval and approvalFromEvent",
+        "session.ts: Block.approval",
+        "sessionStore.ts: the approval part of sanitizeBlock",
+        "AgentTranscript.tsx, SessionPane.tsx and PaneTree.tsx: the onApproval prop types. AgentTranscript.tsx: ApprovalControls",
+        "registry.ts: respondApproval and respondHarnessApproval",
+        "codexProtocol.ts: mapApprovalRequest, isPlainCodexApproval, toCodexApprovalDecision",
+        "codex.ts: PendingApproval, handleServerRequest, respondCodexApproval",
+        "App.tsx: onApproval and onRuntimeModeChange",
+        "Composer.tsx: the <ModelPicker> and <AccessPicker> row",
+        "SettingsView.tsx: GeneralPage and UsageDisplaySettings",
+        "ModelsPage.tsx: under the models-page hook"
+      ],
+      "wave2": [
+        "src-tauri/src/docker_mcp.rs",
+        "src/features/gateway-connectors/model/",
+        "src/features/browser-tools/"
+      ]
+    }
+  }
+}
