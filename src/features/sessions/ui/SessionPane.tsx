@@ -237,6 +237,7 @@ export type SessionPaneProps = {
     sessionId: string,
     requestId: number,
     decision: ApprovalDecision,
+    options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
   ) => void;
   onQuestionReply: (
     sessionId: string,
@@ -489,8 +490,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
       } as CSSProperties)
     : undefined;
   const approve = useCallback(
-    (requestId: number, decision: ApprovalDecision) =>
-      onApproval(session.id, requestId, decision),
+    (
+      requestId: number,
+      decision: ApprovalDecision,
+      options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
+    ) => onApproval(session.id, requestId, decision, options),
     [onApproval, session.id],
   );
   const replyQuestion = useCallback(
@@ -1001,6 +1005,12 @@ const LocalSessionPane = memo(function LocalSessionPane({
       // [lane-3] composer-props
       // [lane-4] composer-props
       // [lane-5] composer-props
+      privacySession_l5={session}
+      onPrivacyPatch_l5={
+        sessionToolsAvailable && onSessionToolsChange
+          ? (patch) => onSessionToolsChange(session.id, patch)
+          : undefined
+      }
     />
   );
 

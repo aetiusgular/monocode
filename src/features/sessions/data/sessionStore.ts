@@ -364,6 +364,7 @@ function persistedSessionTools(
   // [lane-3] persisted-tools-body
   // [lane-4] persisted-tools-body
   // [lane-5] persisted-tools-body
+  const permissionsProfile_l5 = sanitizeModelProvider(source?.permissionsProfile);
   if (
     !extraDirs &&
     !disabledMcpServers &&
@@ -376,6 +377,7 @@ function persistedSessionTools(
     // [lane-3] persisted-tools-check
     // [lane-4] persisted-tools-check
     // [lane-5] persisted-tools-check
+    && !permissionsProfile_l5
   ) {
     return undefined;
   }
@@ -391,6 +393,7 @@ function persistedSessionTools(
     // [lane-3] persisted-tools-return
     // [lane-4] persisted-tools-return
     // [lane-5] persisted-tools-return
+    ...(permissionsProfile_l5 ? { permissionsProfile: permissionsProfile_l5 } : {}),
   };
 }
 
@@ -1029,10 +1032,94 @@ function sanitizeBlock(
     // The tool stays with a decided card, so the chat's tool list still
     // names what it was asked about after a restart.
     const tool = sanitizeApprovalTool(block.approval.tool);
+    // The network host is harness text. Keep it only when it looks like a
+    // host (bounded, host charset) with a known protocol, so a stored row can
+    // never carry markup or a long payload back into the card.
+    const network = ((): NonNullable<Block["approval"]>["network"] => {
+      const raw: unknown = block.approval.network;
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
+      const rec = raw as Record<string, unknown>;
+      const cleanHost = (value: unknown): string | undefined =>
+        typeof value === "string" &&
+        value.length > 0 &&
+        value.length <= 253 &&
+        /^[A-Za-z0-9.\-:[\]*]+$/.test(value)
+          ? value
+          : undefined;
+      const host = cleanHost(rec.host);
+      const protocol =
+        rec.protocol === "http" ||
+        rec.protocol === "https" ||
+        rec.protocol === "socks5Tcp" ||
+        rec.protocol === "socks5Udp"
+          ? rec.protocol
+          : undefined;
+      if (!host || !protocol) return;
+      const amendments = Array.isArray(rec.amendments)
+        ? rec.amendments
+            .slice(0, 8)
+            .flatMap((item: unknown): { host: string; action: "allow" | "deny" }[] => {
+            if (!item || typeof item !== "object") return [];
+            const entry = item as Record<string, unknown>;
+            const amendmentHost = cleanHost(entry.host);
+            const action =
+              entry.action === "allow" || entry.action === "deny"
+                ? entry.action
+                : undefined;
+            return amendmentHost && action
+              ? [{ host: amendmentHost, action }]
+              : [];
+          })
+        : [];
+      return {
+        host,
+        protocol,
+        ...(amendments.length > 0 ? { amendments } : {}),
+      };
+    })();
+    // A sign-in card keeps the server and host only. The page address can
+    // carry sign-in state and is never stored.
+    const signIn = ((): NonNullable<Block["approval"]>["signIn"] => {
+      const raw: unknown = block.approval.signIn;
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
+      const rec = raw as Record<string, unknown>;
+      const host =
+        typeof rec.host === "string" &&
+        rec.host.length > 0 &&
+        rec.host.length <= 260 &&
+        /^[A-Za-z0-9.\-:[\]]+$/.test(rec.host)
+          ? rec.host
+          : undefined;
+      const server =
+        typeof rec.server === "string"
+          ? rec.server.replace(/[^\p{L}\p{N} ._\-]/gu, "").slice(0, 80)
+          : "";
+      return host ? { server: server || "MCP server", host } : undefined;
+    })();
+    const site = ((): NonNullable<Block["approval"]>["site"] => {
+      const raw: unknown = block.approval.site;
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
+      const rec = raw as Record<string, unknown>;
+      const host =
+        typeof rec.host === "string" &&
+        rec.host.length > 0 &&
+        rec.host.length <= 260 &&
+        /^[a-z0-9.\-:[\]() ]+$/.test(rec.host)
+          ? rec.host
+          : undefined;
+      const server =
+        typeof rec.server === "string"
+          ? rec.server.replace(/[^\p{L}\p{N} ._\-]/gu, "").slice(0, 80)
+          : "";
+      return host && server ? { server, host } : undefined;
+    })();
     next.approval = {
       requestId: block.approval.requestId,
       decided: block.approval.decided,
       ...(tool ? { tool } : {}),
+      ...(network ? { network } : {}),
+      ...(signIn ? { signIn } : {}),
+      ...(site ? { site } : {}),
     };
   } else if (block.approval && !block.approval.decided) {
     // Drop stale live approval prompts; request ids don't survive restarts.

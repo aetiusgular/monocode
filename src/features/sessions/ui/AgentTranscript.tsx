@@ -179,6 +179,13 @@ import {
 } from "../hooks/useTranscriptDetail";
 // [lane-4] imports
 // [lane-5] imports
+import {
+  alwaysAllowHostOptions as alwaysAllowHostOptions_l5,
+  networkApprovalView as networkApprovalView_l5,
+} from "../../tool-access/model/networkApproval";
+import { AllowForChatButton as AllowForChatButton_l5 } from "../../tool-access/ui/AllowForChatButton";
+import { SignInControls as SignInControls_l5 } from "../../mcp-signin/ui/SignInControls";
+import { SiteControls as SiteControls_l5 } from "../../browser-tools/ui/SiteControls";
 
 const NEAR_BOTTOM_PX = 16;
 const WHEEL_HOLD_MS = 150;
@@ -244,7 +251,11 @@ type Props = {
   pendingQuestion?: boolean;
   /** Work the agent left running when it yielded; the turn waits on it. */
   backgroundTasks?: string[];
-  onApproval?: (requestId: number, decision: ApprovalDecision) => void;
+  onApproval?: (
+    requestId: number,
+    decision: ApprovalDecision,
+    options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
+  ) => void;
   onAddToChat?: (text: string) => void;
   onSaveNote?: (text: string) => void | Promise<void>;
   onSendDraft?: (block: Block) => boolean | void;
@@ -2315,7 +2326,11 @@ const TranscriptBlock = memo(function TranscriptBlock({
   /** True when the parent surface already provides the horizontal gutter. */
   embedded?: boolean;
   cwd?: string;
-  onApproval?: (requestId: number, decision: ApprovalDecision) => void;
+  onApproval?: (
+    requestId: number,
+    decision: ApprovalDecision,
+    options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
+  ) => void;
   onSaveNote?: (text: string) => void | Promise<void>;
   onSendDraft?: (block: Block) => boolean | void;
   onRemoveDraft?: (block: Block) => boolean | void;
@@ -3112,7 +3127,11 @@ type ActivityPhasesProps = {
   done?: boolean;
   /** False inside a nested panel, which supplies its own gutter. */
   padded?: boolean;
-  onApproval?: (requestId: number, decision: ApprovalDecision) => void;
+  onApproval?: (
+    requestId: number,
+    decision: ApprovalDecision,
+    options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
+  ) => void;
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
 };
@@ -3586,7 +3605,11 @@ function ActivityPhaseGroup({
   phase: ActivityPhase;
   cwd?: string;
   active: boolean;
-  onApproval?: (requestId: number, decision: ApprovalDecision) => void;
+  onApproval?: (
+    requestId: number,
+    decision: ApprovalDecision,
+    options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
+  ) => void;
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
 }) {
@@ -4173,7 +4196,11 @@ function ActivityRow({
   block: Block;
   cwd?: string;
   live?: boolean;
-  onApproval?: (requestId: number, decision: ApprovalDecision) => void;
+  onApproval?: (
+    requestId: number,
+    decision: ApprovalDecision,
+    options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
+  ) => void;
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
 }) {
@@ -4466,7 +4493,11 @@ function ActivityToolRow({
   cwd?: string;
   live?: boolean;
   bare?: boolean;
-  onApproval?: (requestId: number, decision: ApprovalDecision) => void;
+  onApproval?: (
+    requestId: number,
+    decision: ApprovalDecision,
+    options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
+  ) => void;
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
 }) {
@@ -4596,7 +4627,11 @@ function MonoCodeCallRow({
 }: {
   block: Block;
   call: MonoCodeToolCall;
-  onApproval?: (requestId: number, decision: ApprovalDecision) => void;
+  onApproval?: (
+    requestId: number,
+    decision: ApprovalDecision,
+    options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
+  ) => void;
 }) {
   const state = toolCallState(block);
   const output =
@@ -4767,7 +4802,11 @@ function ToolCall({
 }: {
   block: Block;
   cwd?: string;
-  onApproval?: (requestId: number, decision: ApprovalDecision) => void;
+  onApproval?: (
+    requestId: number,
+    decision: ApprovalDecision,
+    options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
+  ) => void;
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
   embedded?: boolean;
@@ -5020,16 +5059,38 @@ function ToolCallIcon({ state }: { state: ToolCallState }) {
   return null;
 }
 
-function ApprovalControls({
+export function ApprovalControls({
   block,
   onApproval,
 }: {
   block: Block;
-  onApproval?: (requestId: number, decision: ApprovalDecision) => void;
+  onApproval?: (
+    requestId: number,
+    decision: ApprovalDecision,
+    options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
+  ) => void;
 }) {
   const approval = block.approval;
   if (!approval || approval.decided || !onApproval) return null;
-  return (
+  if (approval.site)
+    return (
+      <SiteControls_l5
+        requestId={approval.requestId}
+        site={approval.site}
+        onApproval={onApproval}
+      />
+    );
+  if (approval.signIn)
+    return (
+      <SignInControls_l5
+        requestId={approval.requestId}
+        signIn={approval.signIn}
+        onApproval={onApproval}
+      />
+    );
+  // Host text comes from the harness: plain text only, never a link.
+  const network = networkApprovalView_l5(approval);
+  const controls = (
     <div className="mt-1.5 flex gap-2">
       <button
         type="button"
@@ -5038,6 +5099,22 @@ function ApprovalControls({
       >
         Allow
       </button>
+      <AllowForChatButton_l5 approval={approval} onApproval={onApproval} />
+      {network?.alwaysAllowHost ? (
+        <button
+          type="button"
+          className="max-w-[16rem] truncate rounded-md bg-content/10 px-2.5 py-0.5 text-[11px] text-content/80 hover:bg-content/20"
+          onClick={() =>
+            onApproval(
+              approval.requestId,
+              "allow",
+              alwaysAllowHostOptions_l5(network.alwaysAllowHost!),
+            )
+          }
+        >
+          Always allow {network.alwaysAllowHost}
+        </button>
+      ) : null}
       <button
         type="button"
         className="rounded-md bg-content/10 px-2.5 py-0.5 text-[11px] text-content/70 hover:bg-content/20"
@@ -5047,6 +5124,16 @@ function ApprovalControls({
       </button>
       <ApprovalRuleMenu approval={approval} onApproval={onApproval} />
     </div>
+  );
+  if (!network) return controls;
+  return (
+    <>
+      <div className="mt-1.5 break-all text-[11px] text-content/60">
+        Network access to <span className="font-mono">{network.host}</span> (
+        {network.protocol})
+      </div>
+      {controls}
+    </>
   );
 }
 

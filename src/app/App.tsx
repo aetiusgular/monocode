@@ -10385,7 +10385,14 @@ function Workspace({
   }, [onStop]);
 
   const onApproval = useCallback(
-    (sessionId: string, requestId: number, decision: ApprovalDecision) => {
+    (
+      sessionId: string,
+      requestId: number,
+      decision: ApprovalDecision,
+      // "Always allow <host>" on a network approval. Only the local Codex
+      // adapter reads it; a Mono relay or a remote project answers plainly.
+      options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
+    ) => {
       const session = sessionsRef.current.find((s) => s.id === sessionId);
       if (!session || session.worktreeRemoved) return;
       // An approval a habit's hidden run asked for, put to the user in the
@@ -10422,7 +10429,13 @@ function Workspace({
         remoteSessionActions(sessionId)?.approve(requestId, decision);
         return;
       }
-      respondHarnessApproval(session.harness, sessionId, requestId, decision);
+      respondHarnessApproval(
+        session.harness,
+        sessionId,
+        requestId,
+        decision,
+        options,
+      );
     },
     [],
   );

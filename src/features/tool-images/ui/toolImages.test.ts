@@ -451,7 +451,12 @@ describe("the session panel", () => {
   it("has a Preview section only for a session with tool-result images", async () => {
     renderPanel([user, tool("bash", "npm test", 0)]);
     await settle();
-    expect(sections()).toEqual(["Outputs", "Used in this session", "Session"]);
+    expect(sections()).toEqual([
+      "Outputs",
+      "Used in this session",
+      "Sandbox and privacy",
+      "Session",
+    ]);
 
     renderPanel(blocks);
     await settle();
@@ -459,6 +464,7 @@ describe("the session panel", () => {
       "Preview",
       "Outputs",
       "Used in this session",
+      "Sandbox and privacy",
       "Session",
     ]);
   });

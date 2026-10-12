@@ -1,4 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
+import {
+  OUTBOUND_CALL_OFF_MESSAGE,
+  outboundCallAllowed,
+} from "../../settings/model/outboundCalls";
 
 export type UserLink = {
   url: string;
@@ -138,6 +142,11 @@ function count(value: string, character: string): number {
 export function fetchLinkPreviewMetadata(
   url: string,
 ): Promise<LinkPreviewMetadata> {
+  // Off in Settings: reject before any request, and cache nothing, so
+  // switching it on again fetches normally.
+  if (!outboundCallAllowed("link-previews")) {
+    return Promise.reject(new Error(OUTBOUND_CALL_OFF_MESSAGE));
+  }
   const cached = metadataCache.get(url);
   if (cached) return cached;
 

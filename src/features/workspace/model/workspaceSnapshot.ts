@@ -73,6 +73,7 @@ export type WorkspaceSessionStub = {
   // [lane-3] stub-fields
   // [lane-4] stub-fields
   // [lane-5] stub-fields
+  permissionsProfile?: string;
 };
 
 export type WorkspaceSnapshot = {
@@ -406,6 +407,9 @@ function sessionStub(session: Session): WorkspaceSessionStub | null {
     // [lane-3] stub-from-session
     // [lane-4] stub-from-session
     // [lane-5] stub-from-session
+    ...(session.permissionsProfile
+      ? { permissionsProfile: session.permissionsProfile }
+      : {}),
   };
 }
 
@@ -448,6 +452,9 @@ function sessionFromStub(stub: WorkspaceSessionStub): Session {
     // [lane-3] session-from-stub
     // [lane-4] session-from-stub
     // [lane-5] session-from-stub
+    ...(stub.permissionsProfile
+      ? { permissionsProfile: stub.permissionsProfile }
+      : {}),
   };
 }
 
@@ -481,6 +488,7 @@ function sanitizeStub(raw: unknown): WorkspaceSessionStub | null {
   // [lane-3] sanitize-stub-body
   // [lane-4] sanitize-stub-body
   // [lane-5] sanitize-stub-body
+  const permissionsProfile_l5 = sanitizeModelProvider(value.permissionsProfile);
   return {
     id: value.id,
     cwd:
@@ -520,6 +528,7 @@ function sanitizeStub(raw: unknown): WorkspaceSessionStub | null {
     // [lane-3] sanitize-stub
     // [lane-4] sanitize-stub
     // [lane-5] sanitize-stub
+    ...(permissionsProfile_l5 ? { permissionsProfile: permissionsProfile_l5 } : {}),
   };
 }
 

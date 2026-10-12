@@ -124,6 +124,33 @@ export type HarnessEvent =
        * rule can be kept for. Absent on requests no rule can answer.
        */
       tool?: ApprovalTool;
+      /**
+       * The network destination a sandboxed command asks to reach, when the
+       * request is for network access. Untrusted harness text: show as plain
+       * text only. `amendments` are the standing host rules the harness
+       * proposed; the UI offers only an `allow` for this exact host.
+       */
+      network?: {
+        host: string;
+        protocol: string;
+        amendments?: { host: string; action: "allow" | "deny" }[];
+      };
+      /**
+       * An MCP server asks the user to sign in on a web page. Untrusted
+       * server text: show as plain text, and open the page only on a click.
+       */
+      signIn?: { server: string; message: string; host: string; url: string };
+      /**
+       * A browser tool asks to open this host. The card keeps a site rule
+       * under `chatKey` (the session) or `projectKey` (its folder), the keys
+       * the adapter reads. Untrusted: plain text only.
+       */
+      site?: {
+        server: string;
+        host: string;
+        chatKey: string;
+        projectKey: string;
+      };
     }
   | {
       type: "approval.resolved";
@@ -296,6 +323,11 @@ export type HarnessSessionInput = {
   // [lane-3] session-input
   // [lane-4] session-input
   // [lane-5] session-input
+  /**
+   * A named permissions profile for the chat, by the harness's own id. Only
+   * Codex honors it, in place of MonoCode's sandbox settings.
+   */
+  permissionsProfile?: string;
 };
 
 export type SendTurnInput = HarnessSessionInput & {

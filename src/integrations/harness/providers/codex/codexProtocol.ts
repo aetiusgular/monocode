@@ -146,6 +146,16 @@ export function buildThreadStartParams(input: {
   // [lane-3] thread-start-input
   // [lane-4] thread-start-input
   // [lane-5] thread-start-input
+  /** Codex `model_providers` key; sent on thread/start and thread/resume. */
+  modelProvider?: string;
+  /**
+   * Named Codex permissions profile. It replaces `sandbox`/`sandboxPolicy`
+   * for the thread, so `extraDirs` and the agent-control network flag do not
+   * apply while one is set.
+   */
+  permissionsProfile?: string;
+  /** The chat runs off OpenAI: Auto falls back to review by you. */
+  autoReviewOff?: boolean;
 }): Record<string, unknown> {
   const config = runtimeModeToCodexConfig(
     input.runtimeMode,
@@ -170,6 +180,24 @@ export function buildThreadStartParams(input: {
     // [lane-3] thread-start-return
     // [lane-4] thread-start-return
     // [lane-5] thread-start-return
+    // Auto's auto-review is tested on OpenAI models only (step 3).
+    ...(input.autoReviewOff && config.approvalsReviewer === "auto_review"
+      ? { approvalsReviewer: "user" }
+      : {}),
+    ...(isCodexConfigId_l5(input.modelProvider)
+      ? { modelProvider: input.modelProvider }
+      : {}),
+    // A named profile cannot be combined with `sandbox`. The undefined keys
+    // drop out when the request is serialized to JSON. Full access keeps
+    // MonoCode's own policy, as on turn/start.
+    ...(isCodexConfigId_l5(input.permissionsProfile) &&
+    input.runtimeMode !== "full-access"
+      ? {
+          permissions: input.permissionsProfile,
+          sandbox: undefined,
+          sandboxPolicy: undefined,
+        }
+      : {}),
   };
 }
 
@@ -202,6 +230,10 @@ export function buildTurnStartParams(input: {
   // [lane-3] turn-start-input
   // [lane-4] turn-start-input
   // [lane-5] turn-start-input
+  /** Named Codex permissions profile; see `buildThreadStartParams`. */
+  permissionsProfile?: string;
+  /** The chat runs off OpenAI: Auto falls back to review by you. */
+  autoReviewOff?: boolean;
 }): Record<string, unknown> {
   const runtimeConfig = runtimeModeToCodexConfig(
     input.runtimeMode,
@@ -252,6 +284,18 @@ export function buildTurnStartParams(input: {
     // [lane-3] turn-start-return
     // [lane-4] turn-start-return
     // [lane-5] turn-start-return
+    ...(input.autoReviewOff && config.approvalsReviewer === "auto_review"
+      ? { approvalsReviewer: "user" }
+      : {}),
+    // A named profile replaces the per-turn sandbox policy (it cannot be
+    // combined with `sandboxPolicy`), so `extraDirs` and the agent-control
+    // network flag no longer apply. A plan turn stays read only with no
+    // profile, and full access keeps MonoCode's own policy.
+    ...(isCodexConfigId_l5(input.permissionsProfile) &&
+    input.intent !== "plan" &&
+    input.runtimeMode !== "full-access"
+      ? { permissions: input.permissionsProfile, sandboxPolicy: undefined }
+      : {}),
   };
 }
 
@@ -540,13 +584,21 @@ export type CodexApprovalKind = "command" | "file-change" | "permissions";
 export type CodexApprovalDecisionWire =
   "accept" | "acceptForSession" | "decline" | "cancel";
 
+/**
+ * The answer to a command or file change request. A one-shot `accept` unless
+ * the caller asks for a session grant, which Codex v2 has for commands and
+ * file changes (`acceptForSession`). The caller asks only for a plain request
+ * whose files sit inside the chat's folders, so Codex's own cache never holds
+ * a grant MonoCode would refuse. A sandbox escalation never gets one.
+ */
 export function toCodexApprovalDecision(
   decision: "allow" | "deny",
   kind: CodexApprovalKind,
+  options?: { forSession?: boolean },
 ): CodexApprovalDecisionWire {
   if (decision === "deny") return "decline";
-  // Prefer one-shot accept; session-scoped grants can be added later.
-  void kind;
+  if (options?.forSession && (kind === "command" || kind === "file-change"))
+    return "acceptForSession";
   return "accept";
 }
 
@@ -1575,6 +1627,36 @@ export function mapApprovalRequest(
     const reason = stringField(rec, "reason");
     const presentation = codexCommandPresentation(rec, command);
     const readable = presentation.title !== command;
+    // Network access to a host: show the host and protocol, and the standing
+    // host rules Codex proposed. All of it is untrusted text, so it is kept
+    // only when it looks like a host and a known protocol.
+    const networkRec = asRecord(rec.networkApprovalContext);
+    const networkHost = networkRec
+      ? codexApprovalHost_l5(networkRec.host)
+      : undefined;
+    const networkProtocol = networkRec
+      ? codexApprovalProtocol_l5(networkRec.protocol)
+      : undefined;
+    const amendments = Array.isArray(rec.proposedNetworkPolicyAmendments)
+      ? rec.proposedNetworkPolicyAmendments
+          .slice(0, 8)
+          .flatMap((item): { host: string; action: "allow" | "deny" }[] => {
+            const entry = asRecord(item);
+            const host = entry ? codexApprovalHost_l5(entry.host) : undefined;
+            const action = entry?.action;
+            return host && (action === "allow" || action === "deny")
+              ? [{ host, action }]
+              : [];
+          })
+      : [];
+    const network =
+      networkHost && networkProtocol
+        ? {
+            host: networkHost,
+            protocol: networkProtocol,
+            ...(amendments.length > 0 ? { amendments } : {}),
+          }
+        : undefined;
     return {
       kind: "command",
       event: {
@@ -1589,6 +1671,7 @@ export function mapApprovalRequest(
         callId,
         preview: presentation.preview,
         tool: { key: CODEX_COMMAND_TOOL, label: toolLabel(CODEX_COMMAND_TOOL) },
+        ...(network ? { network } : {}),
       },
     };
   }
@@ -1637,3 +1720,28 @@ export function mapApprovalRequest(
 // [lane-3] exports
 // [lane-4] exports
 // [lane-5] exports
+/** A host from a network approval: bounded, host characters only. */
+function codexApprovalHost_l5(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const host = value.trim();
+  if (!host || host.length > 253) return undefined;
+  return /^[A-Za-z0-9.\-:[\]*]+$/.test(host) ? host : undefined;
+}
+
+function codexApprovalProtocol_l5(value: unknown): string | undefined {
+  return value === "http" ||
+    value === "https" ||
+    value === "socks5Tcp" ||
+    value === "socks5Udp"
+    ? value
+    : undefined;
+}
+
+/** A Codex config key: letters, digits, `.`, `_`, `-`, at most 64 long. */
+function isCodexConfigId_l5(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length <= 64 &&
+    /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value)
+  );
+}

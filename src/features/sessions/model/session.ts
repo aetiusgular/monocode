@@ -368,6 +368,31 @@ export type Block = {
     decided?: "allow" | "deny" | "cancelled";
     /** What the request is for, where the harness names it; see `ToolAccess`. */
     tool?: ApprovalTool;
+    /**
+     * The host and protocol a network approval asks for, and the standing
+     * host rules the harness proposed. Untrusted: render as plain text only.
+     */
+    network?: {
+      host: string;
+      protocol: string;
+      amendments?: { host: string; action: "allow" | "deny" }[];
+    };
+    /**
+     * An MCP server's browser sign-in request. Untrusted: plain text only.
+     * `url` and `message` live only while the card is open; a saved card
+     * keeps the server and host.
+     */
+    signIn?: { server: string; host: string; message?: string; url?: string };
+    /**
+     * A browser tool's site request. The keys live only while the card is
+     * open; a saved card keeps the server and host.
+     */
+    site?: {
+      server: string;
+      host: string;
+      chatKey?: string;
+      projectKey?: string;
+    };
   };
   /** Inner activity of a delegated run. Present on Agent/Task tool blocks. */
   agentRun?: AgentRunMeta;
@@ -443,6 +468,7 @@ export type PersistedSessionTools = {
   // [lane-3] persisted-tools
   // [lane-4] persisted-tools
   // [lane-5] persisted-tools
+  permissionsProfile?: string;
 };
 
 /** A standing answer for one tool's approval requests in one chat. */
@@ -630,6 +656,12 @@ export type Session = {
   // [lane-3] session-fields
   // [lane-4] session-fields
   // [lane-5] session-fields
+  /**
+   * A named permissions profile this chat runs under, by the harness's own id
+   * (a Codex permissions profile). Unset keeps MonoCode's sandbox settings.
+   * Saved like `modelProvider`.
+   */
+  permissionsProfile?: string;
 };
 
 export type PendingHarnessSwitch = {

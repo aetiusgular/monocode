@@ -5,6 +5,10 @@ import {
   compareSemver,
   parseOpenCodeVersion,
 } from "../../../integrations/harness/providers/opencode/opencodeProtocol";
+import {
+  OUTBOUND_CALL_OFF_MESSAGE,
+  outboundCallAllowed,
+} from "../../settings/model/outboundCalls";
 
 /**
  * Harnesses with an npm version feed and a self-updater MonoCode can run.
@@ -56,7 +60,11 @@ export function claimLaunchHarnessUpdateCheck(): Promise<boolean> {
   return invoke<boolean>("harness_update_check_claim");
 }
 
+/** Off in Settings: rejects before any request to registry.npmjs.org. */
 export function fetchLatestHarnessVersion(harness: HarnessId): Promise<string> {
+  if (!outboundCallAllowed("version-check")) {
+    return Promise.reject(new Error(OUTBOUND_CALL_OFF_MESSAGE));
+  }
   return invoke<string>("harness_latest_version", { provider: harness });
 }
 

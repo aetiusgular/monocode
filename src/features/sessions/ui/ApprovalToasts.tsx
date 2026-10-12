@@ -6,6 +6,11 @@ import { knownNotificationProject } from "../../notifications/model/notification
 import { useProjectNotificationPreferences } from "../../notifications/hooks/useProjectNotificationPreferences";
 import type { ApprovalDecision } from "../../../integrations/harness";
 import type { PendingApprovalNotice } from "../../notifications/model/approvalToast";
+import {
+  alwaysAllowHostOptions,
+  networkApprovalView,
+  type ApprovalOptions,
+} from "../../tool-access/model/networkApproval";
 import { LAYER } from "../../../shared/lib/layers";
 import {
   HARNESS_TITLE,
@@ -24,6 +29,7 @@ type Props = {
     sessionId: string,
     requestId: number,
     decision: ApprovalDecision,
+    options?: ApprovalOptions,
   ) => void;
 };
 
@@ -78,7 +84,7 @@ function ProjectApprovalToast(props: {
   return <ApprovalToastCard {...props} />;
 }
 
-function ApprovalToastCard({
+export function ApprovalToastCard({
   notice,
   onFocusSession,
   onApproval,
@@ -92,6 +98,9 @@ function ApprovalToastCard({
   const harness = HARNESS_TITLE[session.harness];
 
   const openSession = () => onFocusSession(session.id);
+  // Host text comes from the harness: plain text only, never a link.
+  const network =
+    notice.kind === "approval" ? networkApprovalView(notice.block?.approval) : null;
 
   return (
     <article
@@ -116,9 +125,16 @@ function ApprovalToastCard({
         <span className="line-clamp-3 text-[12px] leading-relaxed text-content/70">
           {label}
         </span>
+        {network ? (
+          <span className="break-all text-[11px] text-content/60">
+            Network access to {network.host} ({network.protocol})
+          </span>
+        ) : null}
         <span className="text-[11px] text-content/40">{harness}</span>
       </button>
-      {notice.kind === "question" ? null : (
+      {/* A sign-in is answered on its card, where the page can be opened. */}
+      {notice.kind === "question" ||
+      (notice.kind === "approval" && notice.block?.approval?.signIn) ? null : (
         <div className="flex gap-2 border-t border-stroke px-3.5 py-2.5">
           <button
             type="button"
@@ -127,6 +143,22 @@ function ApprovalToastCard({
           >
             Allow
           </button>
+          {network?.alwaysAllowHost ? (
+            <button
+              type="button"
+              className="min-w-0 flex-1 truncate rounded-md bg-content/10 px-2.5 py-1 text-[11px] font-medium text-content/80 hover:bg-content/20"
+              onClick={() =>
+                onApproval(
+                  session.id,
+                  requestId,
+                  "allow",
+                  alwaysAllowHostOptions(network.alwaysAllowHost!),
+                )
+              }
+            >
+              Always allow {network.alwaysAllowHost}
+            </button>
+          ) : null}
           <button
             type="button"
             className="flex-1 rounded-md bg-content/10 px-2.5 py-1 text-[11px] font-medium text-content/70 hover:bg-content/20"

@@ -41,6 +41,7 @@ type SessionTools = Pick<
   // [lane-3] tools-pick
   // [lane-4] tools-pick
   // [lane-5] tools-pick
+  | "permissionsProfile"
 > &
   // The chat, for its claude.ai connectors switched back on over a Docker
   // gateway copy.
@@ -68,6 +69,7 @@ export function sessionToolsInput(
   // [lane-3] tools-input-type
   // [lane-4] tools-input-type
   // [lane-5] tools-input-type
+  permissionsProfile?: string;
 } {
   const extraDirs = harnessExtraDirs(
     session.harness,
@@ -114,6 +116,9 @@ export function sessionToolsInput(
     // [lane-3] tools-input-return
     // [lane-4] tools-input-return
     // [lane-5] tools-input-return
+    ...(session.permissionsProfile
+      ? { permissionsProfile: session.permissionsProfile }
+      : {}),
   };
 }
 
@@ -150,6 +155,8 @@ export type SessionToolsPatch = {
   // [lane-3] tools-patch
   // [lane-4] tools-patch
   // [lane-5] tools-patch
+  /** A permissions profile id; an empty string returns to MonoCode's sandbox. */
+  permissionsProfile?: string;
 };
 
 /** The session with a plus-menu change applied. */
@@ -165,6 +172,7 @@ export function withSessionToolsPatch<
     // [lane-3] tools-apply-pick
     // [lane-4] tools-apply-pick
     // [lane-5] tools-apply-pick
+    | "permissionsProfile"
   >,
 >(session: T, patch: SessionToolsPatch): T {
   let next = session;
@@ -200,6 +208,12 @@ export function withSessionToolsPatch<
   // [lane-3] tools-apply-body
   // [lane-4] tools-apply-body
   // [lane-5] tools-apply-body
+  if (patch.permissionsProfile !== undefined) {
+    next = {
+      ...next,
+      permissionsProfile: sanitizeModelProvider(patch.permissionsProfile),
+    };
+  }
   return next;
 }
 
@@ -270,6 +284,10 @@ export function sessionToolsSummary(
   // [lane-3] tools-summary
   // [lane-4] tools-summary
   // [lane-5] tools-summary
+  if (session.permissionsProfile) {
+    parts.push(`Profile ${session.permissionsProfile}`);
+    lines.push(`Permissions profile: ${session.permissionsProfile}`);
+  }
   return parts.length > 0
     ? { label: parts.join(" · "), title: lines.join("\n") }
     : null;

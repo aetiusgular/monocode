@@ -36,6 +36,7 @@ export type SessionPanelSection =
   // [lane-3] section-ids
   // [lane-4] section-ids
   // [lane-5] section-ids
+  | "privacy"
 ;
 
 const SECTION_COLLAPSED_KEY: Record<SessionPanelSection, string> = {
@@ -50,6 +51,7 @@ const SECTION_COLLAPSED_KEY: Record<SessionPanelSection, string> = {
   // [lane-3] section-keys
   // [lane-4] section-keys
   // [lane-5] section-keys
+  privacy: "monocode.sessionPanel.privacyCollapsed",
 };
 
 /** What the session runs on rarely changes, so it starts folded. */
@@ -65,6 +67,7 @@ export const SECTION_COLLAPSED_DEFAULT: Record<SessionPanelSection, boolean> = {
   // [lane-3] section-defaults
   // [lane-4] section-defaults
   // [lane-5] section-defaults
+  privacy: false,
 };
 
 /** Fired on `window` when a section of the panel is folded or unfolded. */

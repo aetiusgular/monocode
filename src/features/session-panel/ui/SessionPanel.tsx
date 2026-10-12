@@ -38,6 +38,10 @@ import { ContextSection as ContextSection_l2 } from "../../session-preamble/ui/C
 // [lane-3] imports
 // [lane-4] imports
 // [lane-5] imports
+import {
+  SessionPrivacySection as SessionPrivacySection_l5,
+  SessionPrivateBadge as SessionPrivateBadge_l5,
+} from "../../privacy-view/ui/SessionPrivacy";
 
 type PanelSession = Pick<
   Session,
@@ -61,6 +65,10 @@ type PanelSession = Pick<
   // [lane-3] panel-session
   // [lane-4] panel-session
   // [lane-5] panel-session
+  | "modelProvider"
+  | "providerAccountId"
+  | "permissionsProfile"
+  | "disabledMcpServers"
 >;
 
 type PanelActions = {
@@ -278,6 +286,7 @@ export function SessionPanelView({
           {/* [lane-3] header */}
           {/* [lane-4] header */}
           {/* [lane-5] header */}
+          <SessionPrivateBadge_l5 session={session} />
           <SessionPanelCloseButton controls={id} onClose={onClose} />
         </header>
         <div
@@ -315,6 +324,7 @@ export function SessionPanelView({
           {/* [lane-3] sections */}
           {/* [lane-4] sections */}
           {/* [lane-5] sections */}
+          <SessionPrivacySection_l5 session={session} />
           <PanelSection title="Session" fold="facts">
             <dl className="flex flex-col gap-0.5 px-2">
               {facts.map((fact) => (

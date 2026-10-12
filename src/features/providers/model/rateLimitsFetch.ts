@@ -21,6 +21,10 @@ import {
 } from "../../../integrations/harness/core/child";
 import { asRecord } from "../../../integrations/harness/providers/codex/codexProtocol";
 import { JsonRpcClient } from "../../../integrations/harness/core/jsonRpc";
+import {
+  OUTBOUND_CALL_OFF_MESSAGE,
+  outboundCallAllowed,
+} from "../../settings/model/outboundCalls";
 
 const USAGE_CHILD_ID = "monocode-codex-usage";
 const DISCOVERY_TIMEOUT_MS = 15_000;
@@ -38,6 +42,9 @@ type OpencodeGoUsageFetch = {
  * Runs through a Tauri command so the webview CORS policy does not apply.
  */
 export async function fetchOpencodeGoRateLimits(): Promise<ProviderRateLimits> {
+  if (!outboundCallAllowed("usage")) {
+    return unavailableRateLimits("opencode", OUTBOUND_CALL_OFF_MESSAGE);
+  }
   let result: OpencodeGoUsageFetch;
   try {
     result = await invoke<OpencodeGoUsageFetch>("fetch_opencode_go_usage");
@@ -94,6 +101,11 @@ export function cachedDevinIdentity(): ProviderAccountIdentity | null {
  * names the installed CLI's version, read from the binary rather than pinned.
  */
 export async function fetchDevinRateLimits(): Promise<ProviderRateLimits> {
+  // Off in Settings: no request to server.codeium.com. The identity from an
+  // earlier read stays, as it does after a network failure.
+  if (!outboundCallAllowed("usage")) {
+    return unavailableRateLimits("devin", OUTBOUND_CALL_OFF_MESSAGE);
+  }
   let cliVersion: string | undefined;
   try {
     const inspected = await inspectHarnessBinary("devin");
@@ -142,6 +154,9 @@ type ClaudeUsageFetch = {
 export async function fetchClaudeRateLimits(
   accountId = "default",
 ): Promise<ProviderRateLimits> {
+  if (!outboundCallAllowed("usage")) {
+    return unavailableRateLimits("claude", OUTBOUND_CALL_OFF_MESSAGE);
+  }
   try {
     const result = await invoke<ClaudeUsageFetch>("fetch_claude_usage", {
       accountId,

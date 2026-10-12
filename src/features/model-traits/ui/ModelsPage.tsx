@@ -19,6 +19,7 @@ import {
   useTraitOverridesVersion,
   type TraitSource,
 } from "../model/modelTraits";
+import { ModelSetupSection as ModelSetupSection_l5 } from "../../model-setup/ui/ModelSetupSection";
 
 const NOTE = "text-[11px] leading-4 text-content/45";
 const SELECT =
@@ -241,6 +242,7 @@ export function ModelsPage() {
       {/* [lane-3] models-page */}
       {/* [lane-4] models-page */}
       {/* [lane-5] models-page */}
+      <ModelSetupSection_l5 />
       <form
         className="flex flex-wrap items-center gap-2"
         onSubmit={(event) => {

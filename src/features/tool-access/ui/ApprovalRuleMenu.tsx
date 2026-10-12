@@ -1,3 +1,5 @@
+import type { ApprovalOptions } from "../model/networkApproval";
+import { FOR_CHAT_OPTIONS } from "./AllowForChatButton";
 import { useRef, useState } from "react";
 import type { ApprovalDecision } from "../../../integrations/harness/core/types";
 import { MoreHorizontal } from "../../../shared/ui/icons";
@@ -18,7 +20,11 @@ export function ApprovalRuleMenu({
   onApproval,
 }: {
   approval: NonNullable<Block["approval"]>;
-  onApproval: (requestId: number, decision: ApprovalDecision) => void;
+  onApproval: (
+    requestId: number,
+    decision: ApprovalDecision,
+    options?: ApprovalOptions,
+  ) => void;
 }) {
   const rules = useApprovalRules();
   const [open, setOpen] = useState(false);
@@ -29,7 +35,9 @@ export function ApprovalRuleMenu({
     setOpen(false);
     // The rule goes first, so the harness knows why a blocked call is refused.
     rules.remember(tool, rule);
-    onApproval(approval.requestId, rule === "always" ? "allow" : "deny");
+    if (rule === "always")
+      onApproval(approval.requestId, "allow", FOR_CHAT_OPTIONS);
+    else onApproval(approval.requestId, "deny");
   };
   return (
     <>

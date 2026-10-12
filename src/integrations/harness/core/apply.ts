@@ -960,6 +960,9 @@ function approvalFromEvent(
   return {
     requestId: event.requestId,
     ...(event.tool ? { tool: event.tool } : {}),
+    ...(event.network ? { network: event.network } : {}),
+    ...(event.signIn ? { signIn: event.signIn } : {}),
+    ...(event.site ? { site: event.site } : {}),
   };
 }
 

@@ -71,6 +71,26 @@ import type {
 // [lane-3] imports
 // [lane-4] imports
 // [lane-5] imports
+import { codexMcpResultImages as codexMcpResultImages_l5 } from "../../../../features/browser-tools/model/codexMcpImages";
+import { keepToolResultImages as keepToolResultImages_l5 } from "../../../../features/tool-images/data/toolImageStore";
+import {
+  codexElicitationContent as codexElicitationContent_l5,
+  codexElicitationForm as codexElicitationForm_l5,
+  codexElicitationSignIn as codexElicitationSignIn_l5,
+} from "./codexElicitation";
+import {
+  chatFolders as chatFolders_l5,
+  codexRequestInsideChatFolders as codexRequestInsideChatFolders_l5,
+  recordCodexFileChange as recordCodexFileChange_l5,
+  type CodexFileChangeLog as CodexFileChangeLog_l5,
+} from "../../../../features/tool-access/model/chatFolders";
+import {
+  codexThreadIdentity as codexThreadIdentity_l5,
+  codexThreadIdentityKey as codexThreadIdentityKey_l5,
+  pickCodexNetworkAmendment as pickCodexNetworkAmendment_l5,
+  codexNetworkAmendmentDecision as codexNetworkAmendmentDecision_l5,
+  type CodexNetworkAmendment as CodexNetworkAmendment_l5,
+} from "./codexProviders";
 
 type ApprovalOutcome = ApprovalDecision | "cancelled";
 
@@ -80,6 +100,17 @@ type PendingApproval = {
   kind: CodexApprovalKind;
   /** The per-chat rule key of the request, where it has one. */
   toolKey?: string;
+  /** Host rules Codex proposed with a network request; see `respondCodexApproval`. */
+  networkAmendments?: CodexNetworkAmendment_l5[];
+  /** The proposed `allow` the user picked with "Always allow <host>". */
+  chosenAmendment?: { host: string; action: "allow" };
+  /**
+   * The request is plain, so Codex may keep its grant for the session if
+   * its files are inside the chat's folders (checked when answered).
+   */
+  sessionGrantOk?: boolean;
+  /** The user picked "Allow for this chat". */
+  forChat?: boolean;
   resolve: (decision: ApprovalOutcome) => void;
 };
 
@@ -164,6 +195,12 @@ type Live = {
   // [lane-3] live
   // [lane-4] live
   // [lane-5] live
+  /** Paths of recent file change items, by item id. */
+  fileChanges_l5: CodexFileChangeLog_l5;
+  /** The chat's working folder and added folders, for automatic yeses. */
+  chatFolders_l5: string[];
+  /** Model provider and permissions profile the thread was opened with. */
+  identityKey_l5: string;
 };
 
 function trackNotificationQueue(live: Live, queued: Promise<void>): void {
@@ -355,10 +392,24 @@ export function respondCodexApproval(
   sessionId: string,
   requestId: number,
   decision: ApprovalDecision,
+  options?: {
+    networkAmendment?: { host: string; action: "allow" };
+    forChat?: boolean;
+  },
 ): void {
   const live = liveByThread.get(sessionId);
   const pending = live?.approvals.get(requestId);
   if (!pending) return;
+  // Only an allow Codex proposed for this request is ever sent back; any
+  // other host falls back to a plain accept.
+  if (decision === "allow") {
+    const chosen = pickCodexNetworkAmendment_l5(
+      pending.networkAmendments,
+      options?.networkAmendment,
+    );
+    if (chosen) pending.chosenAmendment = chosen;
+    if (options?.forChat) pending.forChat = true;
+  }
   pending.resolve(decision);
 }
 
@@ -586,6 +637,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   // [lane-3] reuse-key
   // [lane-4] reuse-key
   // [lane-5] reuse-key
+  const identity_l5 = codexThreadIdentity_l5(input);
+  const identityKey_l5 = codexThreadIdentityKey_l5(identity_l5);
   // The servers this session's Codex has an entry for, once it was asked;
   // null when it could not say.
   let mcpConfigured: Set<string> | null | undefined;
@@ -605,6 +658,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     // [lane-3] reuse
     // [lane-4] reuse
     // [lane-5] reuse
+    && existing.identityKey_l5 === identityKey_l5
   ) {
     if (existing.mcpRequested === mcpRequested) {
       existing.onEvent = input.onEvent;
@@ -681,6 +735,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     {
       onNotification: (method, params) => {
         const live = liveRef.current;
+        if (live) noteCodexNotification_l5(live, input.sessionId, method, params);
         if (!live || live.muteUpdates) return;
         if (live.notificationQueue) {
           const turnGeneration = live.turnGeneration;
@@ -853,6 +908,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
           // [lane-3] thread-resume-call
           // [lane-4] thread-resume-call
           // [lane-5] thread-resume-call
+          ...identity_l5,
         });
         const opened = await openThread("thread/resume", {
           threadId: resume.threadId,
@@ -884,6 +940,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
         // [lane-3] thread-start-call
         // [lane-4] thread-start-call
         // [lane-5] thread-start-call
+        ...identity_l5,
       });
       const opened = await openThread("thread/start", {
         ...params,
@@ -939,6 +996,9 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       // [lane-3] live-init
       // [lane-4] live-init
       // [lane-5] live-init
+      fileChanges_l5: new Map(),
+      chatFolders_l5: chatFolders_l5(input.cwd, input.extraDirs),
+      identityKey_l5,
     };
     liveRef.current = live;
     liveByThread.set(input.sessionId, live);
@@ -1021,6 +1081,9 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
     // [lane-3] turn-start-call
     // [lane-4] turn-start-call
     // [lane-5] turn-start-call
+    ...noteCodexChatFolders_l5(live, input.extraDirs),
+    permissionsProfile: codexThreadIdentity_l5(input).permissionsProfile,
+    autoReviewOff: codexThreadIdentity_l5(input).autoReviewOff,
   });
 
   if (Array.isArray(params.input) && params.input.length === 0) {
@@ -1631,11 +1694,19 @@ async function handleServerRequest(
 
   if (method === "mcpServer/elicitation/request") {
     const confirmation = codexMcpConfirmation(params);
+    // A form or a browser sign-in: never answered without the user.
+    if (
+      !confirmation &&
+      !live.cancelled &&
+      !live.muteUpdates &&
+      (await handleCodexSignIn_l5(live, id, threadId, params))
+    )
+      return;
     if (!confirmation || live.cancelled || live.muteUpdates) {
       if (!live.cancelled && !live.muteUpdates)
         live.onEvent({
           type: "status",
-          text: "This MCP server requested a form or browser sign-in that MonoCode does not support yet. Complete it in the server's own interface.",
+          text: "An MCP server sent a request MonoCode cannot show faithfully (an unsupported form field, a page that is not https, or a device check). It was cancelled. Complete it in the server's own interface.",
         });
       await live.rpc.respond(id, {
         action: "cancel",
@@ -1750,9 +1821,19 @@ async function handleServerRequest(
   // that also asks for more access goes on to the mode and the user below.
   const toolKey = mapped.event.tool?.key;
   const rule = ruleDecision(live.toolRules, toolKey);
+  // An automatic yes is held to the chat's folders: a file change outside
+  // them, or one whose files are not known, goes to the card.
+  const plain = isPlainCodexApproval(method, params);
+  const insideFolders = () =>
+    codexRequestInsideChatFolders_l5(
+      live.fileChanges_l5,
+      live.chatFolders_l5,
+      method,
+      params,
+    );
   if (
     rule === "deny" ||
-    (rule === "allow" && isPlainCodexApproval(method, params))
+    (rule === "allow" && plain && (await insideFolders()))
   ) {
     await live.rpc.respond(id, {
       decision: toCodexApprovalDecision(rule, mapped.kind),
@@ -1769,6 +1850,13 @@ async function handleServerRequest(
   }
 
   const pending = waitApproval(live, uiId, id, mapped.kind, threadId, toolKey);
+  // The entry exists once waitApproval returns. Keep it to read the user's
+  // "Always allow <host>" pick after it resolves.
+  const entry = live.approvals.get(uiId);
+  if (entry && mapped.event.network?.amendments) {
+    entry.networkAmendments = mapped.event.network.amendments;
+  }
+  if (entry) entry.sessionGrantOk = plain;
   live.onEvent(mapped.event);
   const decision = await pending;
   live.onEvent({
@@ -1777,8 +1865,22 @@ async function handleServerRequest(
     decision,
   });
   if (decision === "cancelled") return;
+  const amendment =
+    decision === "allow" && mapped.kind === "command"
+      ? entry?.chosenAmendment
+      : undefined;
+  // "Allow for this chat": Codex keeps the grant only for a plain request
+  // whose files are inside the chat's folders. Otherwise it is a one-shot
+  // accept, and the chat's own rule still checks the next request.
+  const forSession =
+    decision === "allow" &&
+    !amendment &&
+    Boolean(entry?.forChat && entry.sessionGrantOk) &&
+    (await insideFolders());
   await live.rpc.respond(id, {
-    decision: toCodexApprovalDecision(decision, mapped.kind),
+    decision: amendment
+      ? codexNetworkAmendmentDecision_l5(amendment)
+      : toCodexApprovalDecision(decision, mapped.kind, { forSession }),
   });
 }
 
@@ -1867,3 +1969,128 @@ export function codexLiveThread_l1(
 // [lane-3] exports
 // [lane-4] exports
 // [lane-5] exports
+/**
+ * Read before a notification is queued: the paths of file change items, for
+ * the chat-folder check, and the images of finished MCP tool calls, such as
+ * browser screenshots, kept for the transcript as Claude Code's are.
+ */
+function noteCodexNotification_l5(
+  live: Live,
+  sessionId: string,
+  method: string,
+  params: unknown,
+): void {
+  recordCodexFileChange_l5(live.fileChanges_l5, method, params);
+  if (live.muteUpdates || live.cancelled) return;
+  const found = codexMcpResultImages_l5(method, params, live.threadId);
+  if (!found) return;
+  void keepToolResultImages_l5({
+    sessionId,
+    callId: found.callId,
+    images: found.images,
+    emit: (event) => live.onEvent(event),
+    wanted: () => liveByThread.get(sessionId) === live,
+  });
+}
+/**
+ * MCP sign-in requests: a form gets a question card, a browser request gets a
+ * card that opens the page on the user's click. Returns false when the
+ * request is neither, so the caller cancels it with a note.
+ */
+async function handleCodexSignIn_l5(
+  live: Live,
+  id: JsonRpcId,
+  threadId: string,
+  params: unknown,
+): Promise<boolean> {
+  const form = codexElicitationForm_l5(params);
+  if (form) {
+    const uiId = live.nextApprovalUiId++;
+    const event: Extract<HarnessEvent, { type: "question.asked" }> = {
+      type: "question.asked",
+      requestId: uiId,
+      title: `${form.server} (MCP server) asks: ${form.message}`,
+      questions: form.questions,
+    };
+    const outcome = new Promise<UserQuestionReply | "cancelled">((resolve) => {
+      // Blocking, so no timer ever skips it.
+      live.questions.set(uiId, {
+        rpcId: id,
+        threadId,
+        event,
+        resolve,
+        isBlocking: true,
+      });
+    }).finally(() => {
+      clearTimeout(live.questions.get(uiId)?.timer);
+      live.questions.delete(uiId);
+    });
+    showNextQuestion(live);
+    const reply = await outcome;
+    live.onEvent({
+      type: "question.resolved",
+      requestId: uiId,
+      decision:
+        reply === "cancelled"
+          ? "cancelled"
+          : reply.kind === "answered"
+            ? "answered"
+            : "skipped",
+    });
+    showNextQuestion(live);
+    if (reply === "cancelled") return true;
+    if (reply.kind === "skipped") {
+      await live.rpc.respond(id, {
+        action: "decline",
+        content: null,
+        _meta: null,
+      });
+      return true;
+    }
+    const answer = codexElicitationContent_l5(form, reply);
+    if (!answer.ok)
+      live.onEvent({
+        type: "status",
+        text: `The answer was not sent to ${form.server}: ${answer.error}.`,
+      });
+    await live.rpc.respond(
+      id,
+      answer.ok
+        ? { action: "accept", content: answer.content, _meta: null }
+        : { action: "decline", content: null, _meta: null },
+    );
+    return true;
+  }
+  const signIn = codexElicitationSignIn_l5(params);
+  if (!signIn) return false;
+  const uiId = live.nextApprovalUiId++;
+  const pending = waitApproval(live, uiId, id, "permissions", threadId);
+  live.onEvent({
+    type: "approval.requested",
+    requestId: uiId,
+    title: `${signIn.server} (MCP server) asks you to sign in at ${signIn.host}`,
+    kind: "other",
+    signIn,
+  });
+  const decision = await pending;
+  live.onEvent({ type: "approval.resolved", requestId: uiId, decision });
+  if (decision === "cancelled") return true;
+  // Accept means the user opened the page. The server finishes on its own.
+  await live.rpc.respond(id, {
+    action: decision === "allow" ? "accept" : "decline",
+    content: null,
+    _meta: null,
+  });
+  return true;
+}
+/**
+ * Keep the chat's folders current: a folder added mid-session applies from
+ * the next turn. Spread into the `turn/start` params, where it adds nothing.
+ */
+function noteCodexChatFolders_l5(
+  live: Live,
+  extraDirs: string[] | undefined,
+): Record<string, never> {
+  live.chatFolders_l5 = chatFolders_l5(live.cwd, extraDirs);
+  return {};
+}

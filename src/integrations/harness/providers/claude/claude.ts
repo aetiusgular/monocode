@@ -111,6 +111,16 @@ import { agentsMdPluginConfig as agentsMdPluginConfig_l2 } from "../../../../fea
 // [lane-4] imports
 import { loadClaudeToolLoading as loadClaudeToolLoading_l4 } from "../../../../features/gateway-connectors/model/toolLoading";
 // [lane-5] imports
+import {
+  chatFolders as chatFolders_l5,
+  claudeWritePath as claudeWritePath_l5,
+  pathsInsideChatFolders as pathsInsideChatFolders_l5,
+} from "../../../../features/tool-access/model/chatFolders";
+import {
+  blockedSiteMessage as blockedSiteMessage_l5,
+  browserSiteRequest as browserSiteRequest_l5,
+} from "../../../../features/browser-tools/model/browserTools";
+import { siteRule as siteRule_l5 } from "../../../../features/browser-tools/model/siteRules";
 
 /**
  * A PermissionRequest hook can decide before the user touches the prompt; Claude
@@ -227,6 +237,8 @@ type Live = {
   // [lane-3] live
   // [lane-4] live
   // [lane-5] live
+  /** The chat's working folder and added folders, for automatic yeses. */
+  chatFolders_l5: string[];
 };
 
 type Resume = {
@@ -765,6 +777,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     // [lane-3] live-init
     // [lane-4] live-init
     // [lane-5] live-init
+    chatFolders_l5: chatFolders_l5(input.cwd, input.extraDirs),
   };
   liveRef.current = live;
 
@@ -1400,9 +1413,44 @@ async function handleControlRequest(
     return;
   }
 
+  // A browser tool that opens a site: the site's rule decides, for this chat
+  // or this project. With no rule, the card names the host, even when the
+  // tool itself is always allowed: that rule does not cover new sites. Full
+  // access never asks, as for any tool.
+  const site = browserSiteRequest_l5(toolName, input);
+  if (site) {
+    const rule = siteRule_l5(sessionId, live.cwd, site.host);
+    if (rule === "never") {
+      await writeJson(
+        sessionId,
+        buildControlResponse(control.requestId, {
+          behavior: "deny",
+          message: blockedSiteMessage_l5(site.host),
+        }),
+      );
+      return;
+    }
+    if (rule === "always") {
+      await writeJson(
+        sessionId,
+        buildControlResponse(
+          control.requestId,
+          toClaudePermissionResult("allow", input),
+        ),
+      );
+      return;
+    }
+  }
+
   // "Always allow" comes after the plan branch on purpose: a plan turn stays
-  // read-only whatever the chat's rules say.
-  if (live.toolRules.always.has(toolName)) {
+  // read-only whatever the chat's rules say. For a tool that writes a file,
+  // it answers only when the file sits inside the chat's folders; anything
+  // else goes on to the mode and the card.
+  if (
+    !site &&
+    live.toolRules.always.has(toolName) &&
+    (await claudeRuleHeldToFolders_l5(live, toolName, input))
+  ) {
     await writeJson(
       sessionId,
       buildControlResponse(
@@ -1436,6 +1484,9 @@ async function handleControlRequest(
     callId: control.toolUseId,
     preview: previewFromTool(toolName, input),
     ...(tool ? { tool } : {}),
+    ...(site
+      ? { site: { ...site, chatKey: sessionId, projectKey: live.cwd } }
+      : {}),
   });
   const decision = await pending;
   live.onEvent({ type: "approval.resolved", requestId: uiId, decision });
@@ -2416,3 +2467,15 @@ export async function stopClaudeBackgroundTask_l1(
 // [lane-3] exports
 // [lane-4] exports
 // [lane-5] exports
+async function claudeRuleHeldToFolders_l5(
+  live: Live,
+  toolName: string,
+  input: Record<string, unknown>,
+): Promise<boolean> {
+  const path = claudeWritePath_l5(toolName, input);
+  if (path === undefined) return true;
+  return pathsInsideChatFolders_l5(
+    path === null ? null : [path],
+    live.chatFolders_l5,
+  );
+}

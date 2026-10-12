@@ -438,6 +438,7 @@ import {
 } from "../model/appearance";
 // [lane-4] imports
 // [lane-5] imports
+import { OutboundCallsSettings as OutboundCallsSettings_l5 } from "../../privacy-view/ui/OutboundCallsSettings";
 
 /**
  * The `data-setting-id` Settings should reveal when it opens: one of the ids in
@@ -1017,6 +1018,8 @@ function GeneralPage({
           </Row>
         )}
       </Group>
+
+      <OutboundCallsSettings_l5 Group={Group} Row={Row} Toggle={Toggle} />
 
       <Group title="About">
         <UpdateRow onOpenWhatsNew={onOpenWhatsNew} />

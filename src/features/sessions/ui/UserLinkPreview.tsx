@@ -34,6 +34,10 @@ import {
   type LinkPreviewMetadata,
   type UserLink,
 } from "../model/linkPreview";
+import {
+  outboundCallAllowed,
+  useOutboundCallAllowed,
+} from "../../settings/model/outboundCalls";
 
 export function UserLinkPreview({
   link,
@@ -44,6 +48,9 @@ export function UserLinkPreview({
   cwd?: string;
   compact?: boolean;
 }) {
+  // Off in Settings: no fetch and no gh call. The link stays a plain link.
+  const previewsAllowed = useOutboundCallAllowed("link-previews");
+  if (!previewsAllowed) return <PlainUserLink link={link} />;
   if (link.githubWorkItem) {
     const workItem = link.githubWorkItem;
     return (
@@ -57,6 +64,20 @@ export function UserLinkPreview({
     );
   }
   return <GenericLinkPreview link={link} />;
+}
+
+function PlainUserLink({ link }: { link: UserLink }) {
+  return (
+    <a
+      href={link.url}
+      data-user-link-plain
+      title={link.url}
+      className="mx-0.5 break-all text-sky-400/90 hover:text-sky-300 hover:underline"
+      onClick={(event) => openExternalLink(event, link.url)}
+    >
+      {link.displayUrl}
+    </a>
+  );
 }
 
 function GenericLinkPreview({ link }: { link: UserLink }) {
@@ -151,6 +172,10 @@ function GithubWorkItemPreview({
 
   const load = useCallback(() => {
     if (requestStarted.current) return;
+    if (!outboundCallAllowed("link-previews")) {
+      setLoadState("unavailable");
+      return;
+    }
     requestStarted.current = true;
     const cachedItem =
       item ?? peekGithubWorkItem(workItem.repo, workItem.kind, workItem.number);

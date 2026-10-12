@@ -39,6 +39,7 @@ export async function requestOutgoingHandoff(input: {
   // [lane-3] input
   // [lane-4] input
   // [lane-5] input
+  permissionsProfile?: string;
   userRequest: string;
 }): Promise<string> {
   let brief = "";
@@ -77,6 +78,9 @@ export async function requestOutgoingHandoff(input: {
       // [lane-3] pass
       // [lane-4] pass
       // [lane-5] pass
+      ...(input.permissionsProfile
+        ? { permissionsProfile: input.permissionsProfile }
+        : {}),
       text: buildOutgoingHandoffPrompt(input.userRequest),
       onEvent: (event) => {
         if (event.type === "message.delta") {

@@ -44,7 +44,8 @@ describe("locality stubs", () => {
     expect(serverLocality({ name: "playwright", command: "npx" })).toBe(
       "unknown",
     );
-    expect(providerLocality("ollama")).toBe("unknown");
+    // Lane 5 filled providerLocality: an id nobody set up stays unknown.
+    expect(providerLocality("nobody-set-this-up")).toBe("unknown");
   });
 
   it("never count unknown as local", () => {

@@ -14,6 +14,8 @@ const writeChild = vi.fn(async (_id: string, line: string) => {
   sent.push(line);
 });
 
+// The disk half of the chat-folder check (lane 5): every path counts as inside.
+vi.mock("@tauri-apps/api/core", () => ({ invoke: async () => true }));
 vi.mock("../../core/existingDirs", () => ({
   existingDirs: async (dirs?: readonly string[]) => [...(dirs ?? [])],
 }));

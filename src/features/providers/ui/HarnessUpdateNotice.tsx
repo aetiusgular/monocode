@@ -32,6 +32,10 @@ import {
   UPDATABLE_HARNESSES,
   type HarnessUpdate,
 } from "../model/harnessUpdates";
+import {
+  outboundCallAllowed,
+  useOutboundCallAllowed,
+} from "../../settings/model/outboundCalls";
 
 /**
  * Shared by every mount in this window: a StrictMode remount must reuse the
@@ -40,6 +44,11 @@ import {
 let launchCheck: Promise<HarnessUpdate[]> | null = null;
 
 function checkForHarnessUpdates(): Promise<HarnessUpdate[]> {
+  // Off in Settings: no claim and no lookup, and nothing cached, so switching
+  // it on later in this launch runs the check then.
+  if (!launchCheck && !outboundCallAllowed("version-check")) {
+    return Promise.resolve([]);
+  }
   launchCheck ??= runLaunchCheck().catch(() => []);
   return launchCheck;
 }
@@ -115,7 +124,9 @@ export function HarnessUpdateNotice({
     };
   }, []);
 
+  const versionCheckAllowed = useOutboundCallAllowed("version-check");
   useEffect(() => {
+    if (!versionCheckAllowed) return;
     let cancelled = false;
     void checkForHarnessUpdates().then((next) => {
       if (!cancelled) setUpdates(next);
@@ -123,7 +134,7 @@ export function HarnessUpdateNotice({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [versionCheckAllowed]);
 
   const visible = updates.length > 0;
   useLayoutEffect(() => {

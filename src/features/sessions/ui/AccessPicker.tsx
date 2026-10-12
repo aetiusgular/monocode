@@ -26,6 +26,16 @@ type Props = {
   busy?: boolean;
   side?: "top" | "bottom";
   variant?: "pill" | "plain";
+  /**
+   * Auto hands approvals to Codex's auto-review, tested only on OpenAI
+   * models. Hidden when the chat runs on another provider.
+   */
+  hideAuto?: boolean;
+  /** The harness runs commands with your full rights: no sandbox. */
+  unsandboxed?: boolean;
+  /** Codex permissions profile for this chat, and how to change it. */
+  profile?: string;
+  onProfileChange?: (profile: string) => void;
 };
 
 const MENU_WIDTH = 288;
@@ -44,11 +54,18 @@ export function AccessPicker({
   busy = false,
   side = "top",
   variant = "pill",
+  hideAuto = false,
+  unsandboxed = false,
+  profile,
+  onProfileChange,
 }: Props) {
-  const [open, setOpen] = useState(false);
-  const [active, setActive] = useState(() =>
-    Math.max(0, RUNTIME_MODES.indexOf(value)),
+  // A chat already in Auto keeps the row, so its state stays visible.
+  const modes = RUNTIME_MODES.filter(
+    (mode) => !(hideAuto && mode === "auto" && value !== "auto"),
   );
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(() => Math.max(0, modes.indexOf(value)));
+  const [profileDraft, setProfileDraft] = useState(profile ?? "");
   const root = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
@@ -61,8 +78,10 @@ export function AccessPicker({
 
   useEffect(() => {
     if (!open) return;
-    setActive(Math.max(0, RUNTIME_MODES.indexOf(value)));
-  }, [open, value]);
+    setActive(Math.max(0, modes.indexOf(value)));
+    setProfileDraft(profile ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, value, profile]);
 
   const pick = (mode: RuntimeMode) => {
     onChange(mode);
@@ -72,7 +91,7 @@ export function AccessPicker({
   const onMenuKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setActive((i) => Math.min(RUNTIME_MODES.length - 1, i + 1));
+      setActive((i) => Math.min(modes.length - 1, i + 1));
       return;
     }
     if (e.key === "ArrowUp") {
@@ -82,7 +101,7 @@ export function AccessPicker({
     }
     if (e.key === "Enter") {
       e.preventDefault();
-      const mode = RUNTIME_MODES[active];
+      const mode = modes[active];
       if (mode) pick(mode);
     }
   };
@@ -92,7 +111,8 @@ export function AccessPicker({
       <button
         type="button"
         data-access-picker-trigger
-        title={`${RUNTIME_MODE_HINT[value]}${busy ? " Changes apply to the next turn." : ""}`}
+        title={`${RUNTIME_MODE_HINT[value]}${unsandboxed ? " This agent has no sandbox: commands run with your full rights." : ""}${profile ? ` Codex profile ${profile}.` : ""}${busy ? " Changes apply to the next turn." : ""}`}
+        data-unsandboxed={unsandboxed || undefined}
         aria-label={RUNTIME_MODE_LABEL[value]}
         aria-expanded={open}
         aria-haspopup="listbox"
@@ -125,6 +145,12 @@ export function AccessPicker({
         >
           {RUNTIME_MODE_LABEL[value]}
         </span>
+        {unsandboxed ? (
+          <span
+            aria-label="No sandbox"
+            className="size-1.5 shrink-0 rounded-full bg-amber-500"
+          />
+        ) : null}
         <ChevronDown
           className={`size-3 shrink-0 text-content/50 ${open ? "rotate-180" : ""}`}
           strokeWidth={1.75}
@@ -144,7 +170,7 @@ export function AccessPicker({
           onKeyDown={onMenuKey}
           className="p-1"
         >
-          {RUNTIME_MODES.map((mode, index) => {
+          {modes.map((mode, index) => {
             const ModeIcon = ICONS[mode];
             const selected = mode === value;
             const highlighted = index === active;
@@ -178,6 +204,53 @@ export function AccessPicker({
               </button>
             );
           })}
+          {hideAuto ? (
+            <p className="px-2 py-1.5 text-[11px] leading-4 text-content/50">
+              {value === "auto"
+                ? "Auto runs as Auto-accept edits on this provider. Auto-review is tested on OpenAI models only."
+                : "Auto is hidden on this provider. Auto-review is tested on OpenAI models only."}
+            </p>
+          ) : null}
+          {unsandboxed ? (
+            <p
+              className="px-2 py-1.5 text-[11px] leading-4 text-amber-500"
+              data-unsandboxed-note
+            >
+              No sandbox. This agent runs commands with your full rights in
+              every mode. Only Codex sessions are sandboxed.
+            </p>
+          ) : null}
+          {onProfileChange ? (
+            <form
+              className="flex items-center gap-1.5 px-2 py-1.5"
+              onSubmit={(event) => {
+                event.preventDefault();
+                onProfileChange(profileDraft.trim());
+                dismiss(true);
+              }}
+            >
+              <input
+                aria-label="Codex permissions profile"
+                placeholder="Permissions profile"
+                value={profileDraft}
+                onChange={(event) => setProfileDraft(event.target.value)}
+                onKeyDown={(event) => event.stopPropagation()}
+                className="h-6.5 min-w-0 flex-1 rounded-md border border-content/10 bg-transparent px-1.5 text-[11px] text-content"
+              />
+              <button
+                type="submit"
+                className="h-6.5 shrink-0 rounded-md px-1.5 text-[11px] text-content/70 hover:bg-content/8"
+              >
+                {profileDraft.trim() ? "Use" : "Clear"}
+              </button>
+            </form>
+          ) : null}
+          {onProfileChange ? (
+            <p className="px-2 pb-1.5 text-[11px] leading-4 text-content/45">
+              A named profile from this Codex home's config. It replaces the
+              mode's sandbox, extra folders included. Plan turns stay read only.
+            </p>
+          ) : null}
           {busy ? (
             <p className="px-2 py-1.5 text-[11px] leading-4 text-content/50">
               Access changes apply to the next turn. Stop and resend to apply

@@ -264,6 +264,20 @@ import type { SuggestedPrompt as SuggestedPrompt_l2 } from "../../suggested-prom
 // [lane-4] imports
 import { helperRouteForSession as helperRouteForSession_l4 } from "../../../integrations/harness/core/helperPrompt";
 // [lane-5] imports
+import {
+  BrowserToolsMenuItem as BrowserToolsMenuItem_l5,
+  useBrowserServers as useBrowserServers_l5,
+} from "../../browser-tools/ui/BrowserToolsMenuItem";
+import {
+  SessionPrivateBadge as SessionPrivateBadge_l5,
+  type PrivacyPanelSession as PrivacyPanelSession_l5,
+} from "../../privacy-view/ui/SessionPrivacy";
+import { ProviderBadge as ProviderBadge_l5 } from "../../privacy-view/ui/ProviderBadge";
+import {
+  autoModeAllowed as autoModeAllowed_l5,
+  type SessionProviderInput as SessionProviderInput_l5,
+} from "../../model-setup/model/sessionProvider";
+import { harnessCan as harnessCan_l5 } from "../../../integrations/harness/core/capabilities";
 
 type Props = {
   enabled?: boolean;
@@ -396,6 +410,13 @@ type Props = {
   // [lane-3] props
   // [lane-4] props
   // [lane-5] props
+  /** The chat's provider, account and Codex permissions profile (lane 5). */
+  privacySession_l5?: SessionProviderInput_l5 & PrivacyPanelSession_l5;
+  /** Sets the chat's provider or profile; "" clears it. */
+  onPrivacyPatch_l5?: (patch: {
+    modelProvider?: string;
+    permissionsProfile?: string;
+  }) => void;
 };
 
 const NO_DISABLED_MCP_SERVERS: string[] = [];
@@ -536,6 +557,8 @@ export function Composer({
   // [lane-3] destructure
   // [lane-4] destructure
   // [lane-5] destructure
+  privacySession_l5,
+  onPrivacyPatch_l5,
 }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -1953,6 +1976,17 @@ export function Composer({
     ...(sessionId ? { id: sessionId } : {}),
   });
   // [lane-5] body
+  const browserServers_l5 = useBrowserServers_l5({
+    harness,
+    cwd: executionCwd,
+    sessionId,
+    providerAccountId:
+      providerAccountId ??
+      (supportsProviderAccounts(harness)
+        ? selectedProviderAccountId(harness, cwd)
+        : undefined),
+    on: connectorsSupported,
+  });
   return (
     <div
       data-composer
@@ -2526,6 +2560,15 @@ export function Composer({
                   {/* [lane-3] plus-menu */}
                   {/* [lane-4] plus-menu */}
                   {/* [lane-5] plus-menu */}
+                  {connectorsSupported ? (
+                    <BrowserToolsMenuItem_l5
+                      servers={browserServers_l5}
+                      disabled={disabledMcpServers}
+                      harness={harness}
+                      runtimeMode={runtimeMode}
+                      onChange={(names) => onDisabledMcpServersChange?.(names)}
+                    />
+                  ) : null}
                   {!remote || remoteFeatures?.plan ? (
                     <button
                       type="button"
@@ -2878,6 +2921,19 @@ export function Composer({
               }}
             >
               <div className="flex shrink-0 items-center gap-1">
+                {privacySession_l5 ? (
+                  <ProviderBadge_l5
+                    session={privacySession_l5}
+                    onChange={
+                      onPrivacyPatch_l5
+                        ? (modelProvider) => onPrivacyPatch_l5({ modelProvider })
+                        : undefined
+                    }
+                  />
+                ) : null}
+                {privacySession_l5 && !compact ? (
+                  <SessionPrivateBadge_l5 session={privacySession_l5} />
+                ) : null}
                 <ModelPicker
                   harness={harness}
                   model={model}
@@ -2909,6 +2965,19 @@ export function Composer({
                     busy={busy}
                     onChange={onRuntimeModeChange}
                     onClose={() => ref.current?.focus()}
+                    hideAuto={
+                      privacySession_l5
+                        ? !autoModeAllowed_l5(privacySession_l5)
+                        : false
+                    }
+                    unsandboxed={!harnessCan_l5(harness, "sandboxed")}
+                    profile={privacySession_l5?.permissionsProfile}
+                    onProfileChange={
+                      harnessCan_l5(harness, "sandboxed") && onPrivacyPatch_l5
+                        ? (permissionsProfile) =>
+                            onPrivacyPatch_l5({ permissionsProfile })
+                        : undefined
+                    }
                   />
                 ) : null}
               </div>

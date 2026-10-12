@@ -139,6 +139,7 @@ type Shared = {
     sessionId: string,
     requestId: number,
     decision: ApprovalDecision,
+    options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
   ) => void;
   onQuestionReply: (
     sessionId: string,

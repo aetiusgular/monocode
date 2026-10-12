@@ -24,6 +24,8 @@ vi.mock("../../core/child", () => ({
     sent.push(line);
   },
 }));
+// The disk half of the chat-folder check (lane 5): every path counts as inside.
+vi.mock("@tauri-apps/api/core", () => ({ invoke: async () => true }));
 vi.mock("../../../../platform/tauri/fs", () => ({
   saveGeneratedImage: async () => undefined,
   deleteGeneratedImages: async () => undefined,
@@ -198,6 +200,21 @@ describe("Codex per-chat tool rules", () => {
     const { events, turn } = await startTurn({
       toolAccess: { always: ["codex:file-change"] },
     });
+    // The rule answers only for files it knows, inside the chat's folder.
+    onLine!(
+      JSON.stringify({
+        method: "item/started",
+        params: {
+          threadId: "thr_1",
+          item: {
+            type: "fileChange",
+            id: "edit_1",
+            changes: [{ path: "/repo/src/a.ts", kind: { type: "update" } }],
+            status: "inProgress",
+          },
+        },
+      }),
+    );
     request(91, FILE_CHANGE, { itemId: "edit_1" });
     expect(await answer(91)).toEqual({ decision: "accept" });
     expect(cards(events)).toHaveLength(0);

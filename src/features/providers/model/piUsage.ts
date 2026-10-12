@@ -8,6 +8,10 @@ import {
   type ProviderRateLimits,
   type RateLimitWindow,
 } from "./rateLimits";
+import {
+  OUTBOUND_CALL_OFF_MESSAGE,
+  outboundCallAllowed,
+} from "../../settings/model/outboundCalls";
 
 export type PiUsageProvider = "anthropic" | "openai-codex";
 
@@ -31,6 +35,10 @@ export async function fetchPiUsage(
   provider: PiUsageProvider,
 ): Promise<ProviderRateLimits> {
   const billingProvider = piBillingProvider(provider);
+  // Off in Settings: no request to api.anthropic.com or chatgpt.com.
+  if (!outboundCallAllowed("usage")) {
+    return unavailableRateLimits(billingProvider, OUTBOUND_CALL_OFF_MESSAGE);
+  }
   try {
     const result = asRecord(
       await invoke<unknown>("fetch_pi_usage", { provider }),

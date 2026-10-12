@@ -2311,9 +2311,10 @@ describe("codex live turn sequence", () => {
         method: "mcpServer/elicitation/request",
         params: {
           mode: "form",
+          // A nested object field is still beyond what MonoCode can show.
           requestedSchema: {
             type: "object",
-            properties: { name: { type: "string" } },
+            properties: { name: { type: "object" } },
             required: ["name"],
           },
         },
@@ -2327,7 +2328,7 @@ describe("codex live turn sequence", () => {
     });
     expect(events).toContainEqual({
       type: "status",
-      text: expect.stringContaining("does not support yet"),
+      text: expect.stringContaining("cannot show faithfully"),
     });
     onLine!(
       JSON.stringify({ id: 92, method: "future/requestApproval", params: {} }),

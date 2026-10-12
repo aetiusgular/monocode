@@ -83,6 +83,11 @@ export type HarnessAdapter = {
     sessionId: string,
     requestId: number,
     decision: ApprovalDecision,
+    /**
+     * Extra choices on an allow. Only Codex reads `networkAmendment`, and
+     * only when it matches a host rule Codex proposed; others ignore it.
+     */
+    options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
   ): void;
   respondQuestion?(
     sessionId: string,
@@ -447,8 +452,12 @@ export function respondHarnessApproval(
   sessionId: string,
   requestId: number,
   decision: ApprovalDecision,
+  options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
 ): void {
-  getHarness(harness)?.respondApproval(sessionId, requestId, decision);
+  const adapter = getHarness(harness);
+  if (!adapter) return;
+  if (options) adapter.respondApproval(sessionId, requestId, decision, options);
+  else adapter.respondApproval(sessionId, requestId, decision);
 }
 
 export function respondHarnessQuestion(

@@ -70,6 +70,7 @@ mod project_context;
 mod sandbox_frame;
 // [lane-4] mods
 // [lane-5] mods
+mod model_setup;
 
 // Phase 1 seam: spawn / kill harness children per MonoCode thread.
 // Adapters own the protocol; this host only supervises processes.
@@ -660,6 +661,9 @@ pub fn run() {
             // [lane-4] commands
             fs::git_review_patch,
             // [lane-5] commands
+            model_setup::model_setup_detect,
+            model_setup::model_setup_write_codex_home,
+            model_setup::approval_paths_within,
         ])
         .build(tauri::generate_context!())
         .expect("error while building MonoCode");

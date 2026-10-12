@@ -655,6 +655,36 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
   },
   // [lane-4] index
   // [lane-5] index
+  {
+    id: "outbound-calls",
+    section: "general",
+    label: "Outbound calls",
+    keywords: "privacy network offline firewall hosts requests off",
+  },
+  {
+    id: "outbound-link-previews",
+    section: "general",
+    label: "Link previews",
+    keywords: "outbound privacy network title icon favicon gh github",
+  },
+  {
+    id: "outbound-usage",
+    section: "general",
+    label: "Usage figures",
+    keywords: "outbound privacy network anthropic opencode chatgpt codeium devin pi",
+  },
+  {
+    id: "outbound-version-check",
+    section: "general",
+    label: "Version check at launch",
+    keywords: "outbound privacy network npm registry update",
+  },
+  {
+    id: "outbound-star-check",
+    section: "general",
+    label: "GitHub star check",
+    keywords: "outbound privacy network gh github star",
+  },
 ];
 
 export type SettingsSearchResult = {

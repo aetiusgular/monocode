@@ -5,6 +5,10 @@ import {
   starMonocodeOnGithub,
 } from "../../features/inbox/model/githubTasks";
 import { Loader, Star, X } from "../../shared/ui/icons";
+import {
+  outboundCallAllowed,
+  subscribeOutboundCalls,
+} from "../../features/settings/model/outboundCalls";
 
 const MONOCODE_GITHUB_URL = "https://github.com/hardbeat920/monocode";
 const DISMISSED_STORAGE_KEY = "monocode.githubStarPrompt.dismissed.v1";
@@ -51,6 +55,12 @@ function dismissPrompt() {
 function checkStarStatus(force = false): Promise<void> {
   if (isPromptDismissed()) {
     setPromptSnapshot("hidden");
+    return Promise.resolve();
+  }
+  // Off in Settings: no gh call, and the prompt stays hidden. The next
+  // check after it is switched on runs as on a fresh launch.
+  if (!outboundCallAllowed("star-check")) {
+    setPromptSnapshot("loading");
     return Promise.resolve();
   }
   if (starRequest) return starRequest;
@@ -110,8 +120,10 @@ export function GithubStarPrompt() {
     void checkStarStatus();
     const refresh = () => void checkStarStatus(true);
     window.addEventListener("focus", refresh);
+    const stopOutbound = subscribeOutboundCalls(() => void checkStarStatus());
     return () => {
       window.removeEventListener("focus", refresh);
+      stopOutbound();
     };
   }, []);
 
