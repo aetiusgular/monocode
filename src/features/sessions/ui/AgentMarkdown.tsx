@@ -31,6 +31,10 @@ import { FileActionError } from "../../files/ui/FileActionError";
 import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
 import { boundedCode } from "../../files/editor/codeHighlightPlugin";
 import { createLazyMermaidPlugin } from "../../files/editor/mermaidPlugin";
+import { createMathPlugin } from "@streamdown/math";
+import "katex/dist/katex.min.css";
+import { SvgFence } from "../../markdown-visuals/ui/SvgFence";
+import { HtmlFence } from "../../markdown-visuals/ui/HtmlFence";
 import {
   displayPath,
   isExtensionlessFileName,
@@ -65,7 +69,13 @@ const mermaid = createLazyMermaidPlugin({
   },
 });
 
-const MARKDOWN_PLUGINS = { code: boundedCode, mermaid };
+// Math (#40): `$$...$$` inline or as a block. Single dollars stay text, so a
+// reply about "$5 and $10" is not set as math. KaTeX runs after the sanitizer
+// (Streamdown appends it last) with its default `trust: false`, so `\href`
+// and `\htmlClass` stay off.
+const math = createMathPlugin({ singleDollarTextMath: false });
+
+const MARKDOWN_PLUGINS = { code: boundedCode, mermaid, math };
 
 const MARKDOWN_REHYPE_PLUGINS: PluggableList = [
   defaultRehypePlugins.raw,
@@ -287,6 +297,7 @@ function MarkdownCode({
   ...props
 }: MarkdownCodeProps) {
   const incomplete = useIsCodeFenceIncomplete();
+  const strangerContent = useContext(RemoteMediaContext);
   const block = Object.prototype.hasOwnProperty.call(props, "data-block");
   if (!block) {
     const text = textContent(children);
@@ -357,7 +368,7 @@ function MarkdownCode({
     fence.language.toLowerCase(),
   );
 
-  return (
+  const shell = (
     <div className="markdown-code-shell" dir="ltr">
       {iconName ? (
         <span className="markdown-code-icon" aria-hidden="true">
@@ -379,6 +390,21 @@ function MarkdownCode({
       />
     </div>
   );
+  const language = fence.language.toLowerCase();
+  if (language === "svg") {
+    return <SvgFence code={code} incomplete={incomplete} source={shell} />;
+  }
+  if (language === "html") {
+    return (
+      <HtmlFence
+        code={code}
+        incomplete={incomplete}
+        allowRender={!strangerContent}
+        source={shell}
+      />
+    );
+  }
+  return shell;
 }
 
 function CodeCopyButton({ code }: { code: string }) {

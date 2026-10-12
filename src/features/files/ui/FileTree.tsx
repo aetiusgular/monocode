@@ -1,3 +1,5 @@
+import { requestAddToChat } from "../../sessions/model/quoteDraft";
+import { formatPathContext } from "../model/filePathContext";
 import {
   ChevronDown,
   ChevronRight,
@@ -215,6 +217,12 @@ function explorerItems(
       shortcut: `${MOD}${SHIFT}C`,
     },
     { kind: "item", id: "copy-relative-path", label: "Copy Relative Path" },
+    {
+      kind: "item",
+      id: "add-to-chat",
+      label: "Add to Chat",
+      disabled: target.isRoot,
+    },
     { kind: "sep" },
     {
       kind: "item",
@@ -674,6 +682,10 @@ export const FileTree = memo(function FileTree({
         return;
       case "copy-relative-path":
         await copyText(displayPath(target.path, cwd));
+        return;
+      case "add-to-chat":
+        if (target.isRoot) return;
+        requestAddToChat(formatPathContext(target.path, cwd, target.isDir), "plain");
         return;
       case "rename":
         startRename(target.path);

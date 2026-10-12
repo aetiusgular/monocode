@@ -20,6 +20,7 @@ import { consumeInstalledUpdate } from "./app/model/updateNotice";
 import { initializeProviderBinaryPaths } from "./features/providers/model/providerBinaryPaths";
 // Lets file commands reach a connected machine for `remote://` paths.
 import "./features/connections/model/remoteCommands";
+import { DeepLinks } from "./features/deep-links/ui/DeepLinks";
 import "./styles/index.css";
 
 performance.mark("monocode:bootstrap");
@@ -111,6 +112,8 @@ void Promise.all([
             history={history}
             historyCwd={historyCwd}
           />
+          {/* After App, so its add-to-chat listener exists first (#44). */}
+          <DeepLinks />
         </BootGate>
       </React.StrictMode>,
     );

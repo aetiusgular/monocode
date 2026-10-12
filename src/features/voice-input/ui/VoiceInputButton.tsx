@@ -49,10 +49,17 @@ export function formatElapsed(ms: number): string {
 export function VoiceInputButton({
   textareaRef,
   disabled = false,
+  releaseSignal,
   deps,
 }: {
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   disabled?: boolean;
+  /**
+   * When this number changes, a recording stops and is transcribed, and a
+   * microphone still starting is let go. The quick entry panel bumps it when
+   * it hides or loses focus, so the microphone never stays on out of sight.
+   */
+  releaseSignal?: number;
   /** Tests and browser fixtures pass fakes. */
   deps?: Partial<VoiceInputDeps>;
 }) {
@@ -63,6 +70,7 @@ export function VoiceInputButton({
     <VoiceInputControl
       textareaRef={textareaRef}
       disabled={disabled}
+      releaseSignal={releaseSignal}
       open={deps?.open}
       transcribe={deps?.transcribe}
     />
@@ -72,11 +80,13 @@ export function VoiceInputButton({
 function VoiceInputControl({
   textareaRef,
   disabled,
+  releaseSignal,
   open,
   transcribe,
 }: {
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   disabled: boolean;
+  releaseSignal?: number;
   open?: OpenCapture;
   transcribe?: (wav: Uint8Array) => Promise<string>;
 }) {
@@ -100,6 +110,17 @@ function VoiceInputControl({
     [],
   );
   useEffect(() => () => recorder.dispose(), [recorder]);
+  const lastRelease = useRef(releaseSignal);
+  useEffect(() => {
+    if (lastRelease.current === releaseSignal) return;
+    lastRelease.current = releaseSignal;
+    const kind = recorder.state.kind;
+    if (kind === "recording") void recorder.stop();
+    else if (kind === "starting") {
+      recorder.cancel();
+      caret.current = null;
+    }
+  }, [releaseSignal, recorder]);
   const phase = useSyncExternalStore(recorder.subscribe, recorder.getSnapshot);
   const [now, setNow] = useState(() => Date.now());
 

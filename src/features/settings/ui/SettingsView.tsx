@@ -418,6 +418,21 @@ import type { Session } from "../../sessions/model/session";
 // [lane-1] imports
 // [lane-2] imports
 // [lane-3] imports
+import {
+  applyChatFont as applyChatFont_l3,
+  CHAT_FONT_DEFAULT as CHAT_FONT_DEFAULT_l3,
+  CHAT_FONT_LABELS as CHAT_FONT_LABELS_l3,
+  CHAT_FONTS as CHAT_FONTS_l3,
+  loadChatFont as loadChatFont_l3,
+  loadTranscriptDetail as loadTranscriptDetail_l3,
+  saveChatFont as saveChatFont_l3,
+  saveTranscriptDetail as saveTranscriptDetail_l3,
+  TRANSCRIPT_DETAIL_DEFAULT as TRANSCRIPT_DETAIL_DEFAULT_l3,
+  TRANSCRIPT_DETAIL_LABELS as TRANSCRIPT_DETAIL_LABELS_l3,
+  TRANSCRIPT_DETAILS as TRANSCRIPT_DETAILS_l3,
+  type ChatFont as ChatFont_l3,
+  type TranscriptDetail as TranscriptDetail_l3,
+} from "../model/appearance";
 // [lane-4] imports
 // [lane-5] imports
 
@@ -1909,6 +1924,10 @@ function useAppearanceSettings(
   const [chatBackgroundScope, setChatBackgroundScope] =
     useState<ChatBackgroundScope>(loadChatBackgroundScope);
   const [diffPalette, setDiffPalette] = useState<DiffPalette>(loadDiffPalette);
+  const [chatFont, setChatFont] = useState<ChatFont_l3>(loadChatFont_l3);
+  const [transcriptDetail, setTranscriptDetail] = useState<TranscriptDetail_l3>(
+    loadTranscriptDetail_l3,
+  );
   const [newThreadBackgroundEffect, setBackgroundEffect] =
     useState<NewThreadBackgroundEffect>(loadNewThreadBackgroundEffect);
   const [chatBackgroundBusy, setChatBackgroundBusy] = useState(false);
@@ -2026,6 +2045,17 @@ function useAppearanceSettings(
     setChatBackgroundScope(next);
   }, []);
 
+  const onChatFont = useCallback((next: ChatFont_l3) => {
+    applyChatFont_l3(next);
+    saveChatFont_l3(next);
+    setChatFont(next);
+  }, []);
+
+  const onTranscriptDetail = useCallback((next: TranscriptDetail_l3) => {
+    saveTranscriptDetail_l3(next);
+    setTranscriptDetail(next);
+  }, []);
+
   const onDiffPalette = useCallback((next: DiffPalette) => {
     applyDiffPalette(next);
     saveDiffPalette(next);
@@ -2072,6 +2102,8 @@ function useAppearanceSettings(
     );
     onChatBackgroundScope(CHAT_BACKGROUND_SCOPE_DEFAULT);
     onDiffPalette(DIFF_PALETTE_DEFAULT);
+    onChatFont(CHAT_FONT_DEFAULT_l3);
+    onTranscriptDetail(TRANSCRIPT_DETAIL_DEFAULT_l3);
     onNewThreadBackgroundEffect(NEW_THREAD_BACKGROUND_EFFECT_DEFAULT);
     if (chatBackgroundPath) void onClearChatBackground();
     onUiScale(Math.round(UI_SCALE_DEFAULT * 100));
@@ -2084,6 +2116,8 @@ function useAppearanceSettings(
     onChatBackgroundSessionOpacity,
     onChatBackgroundScope,
     onDiffPalette,
+    onChatFont,
+    onTranscriptDetail,
     onNewThreadBackgroundEffect,
     onClearChatBackground,
     onAccentColor,
@@ -2111,6 +2145,8 @@ function useAppearanceSettings(
     chatBackgroundSessionOpacity,
     chatBackgroundScope,
     diffPalette,
+    chatFont,
+    transcriptDetail,
     newThreadBackgroundEffect,
     chatBackgroundBusy,
     chatBackgroundError,
@@ -2130,6 +2166,8 @@ function useAppearanceSettings(
     onChatBackgroundSessionOpacity,
     onChatBackgroundScope,
     onDiffPalette,
+    onChatFont,
+    onTranscriptDetail,
     onNewThreadBackgroundEffect,
     onUiScale,
     onCollapsedProjectRailMode,
@@ -2188,6 +2226,36 @@ function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
               { value: "high-contrast", label: "High contrast" },
             ]}
             onChange={appearance.onDiffPalette}
+          />
+        </Row>
+        <Row
+          id="chat-font"
+          label="Chat font"
+          description="The font of replies and your messages in a chat. Code and file previews keep theirs. Serif is bundled with the app."
+        >
+          <Segmented
+            label="Chat font"
+            value={appearance.chatFont}
+            options={CHAT_FONTS_l3.map((value) => ({
+              value,
+              label: CHAT_FONT_LABELS_l3[value],
+            }))}
+            onChange={appearance.onChatFont}
+          />
+        </Row>
+        <Row
+          id="transcript-detail"
+          label="Transcript detail"
+          description="How much of each turn's work starts open. Summary folds it under the status line. Steps opens the list of steps. Everything also expands each thinking and tool step. A fold you open or close yourself stays as you left it."
+        >
+          <Segmented
+            label="Transcript detail"
+            value={appearance.transcriptDetail}
+            options={TRANSCRIPT_DETAILS_l3.map((value) => ({
+              value,
+              label: TRANSCRIPT_DETAIL_LABELS_l3[value],
+            }))}
+            onChange={appearance.onTranscriptDetail}
           />
         </Row>
       </Group>

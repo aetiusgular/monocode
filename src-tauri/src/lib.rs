@@ -64,6 +64,7 @@ mod worktrees;
 // [lane-1] mods
 // [lane-2] mods
 // [lane-3] mods
+mod sandbox_frame;
 // [lane-4] mods
 // [lane-5] mods
 
@@ -298,6 +299,14 @@ pub fn run() {
         // [lane-1] builder
         // [lane-2] builder
         // [lane-3] builder
+        // Deep links (#44). The main window reads them and only fills a prompt.
+        .plugin(tauri_plugin_deep_link::init())
+        .manage(sandbox_frame::FrameStore::default())
+        .plugin(sandbox_frame::navigation_guard())
+        .register_uri_scheme_protocol(sandbox_frame::SCHEME, |ctx, request| {
+            let store = ctx.app_handle().state::<sandbox_frame::FrameStore>();
+            sandbox_frame::respond(&store, &request)
+        })
         // [lane-4] builder
         // [lane-5] builder
         .invoke_handler(tauri::generate_handler![
@@ -633,6 +642,8 @@ pub fn run() {
             // [lane-1] commands
             // [lane-2] commands
             // [lane-3] commands
+            sandbox_frame::sandbox_frame_put,
+            sandbox_frame::sandbox_frame_release,
             // [lane-4] commands
             // [lane-5] commands
         ])

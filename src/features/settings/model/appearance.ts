@@ -337,6 +337,20 @@ export function initAppearance() {
   applyChatBackgroundSessionOpacity(loadChatBackgroundSessionOpacity());
   applyChatBackgroundScope(loadChatBackgroundScope());
   applyDiffPalette(loadDiffPalette());
+  applyChatFont(loadChatFont());
+  // Same cross-window rule as the theme: other windows hear the change here.
+  window.addEventListener("storage", (event) => {
+    if (event.key === null || event.key === CHAT_FONT_KEY) {
+      applyChatFont(loadChatFont());
+    }
+    if (event.key === null || event.key === TRANSCRIPT_DETAIL_KEY) {
+      window.dispatchEvent(
+        new CustomEvent(TRANSCRIPT_DETAIL_CHANGE_EVENT, {
+          detail: loadTranscriptDetail(),
+        }),
+      );
+    }
+  });
   void applyUiScale(loadUiScale());
 }
 
@@ -954,4 +968,104 @@ export function subscribeShowExcludedFiles(onStoreChange: () => void) {
   window.addEventListener(SHOW_EXCLUDED_FILES_CHANGE_EVENT, onStoreChange);
   return () =>
     window.removeEventListener(SHOW_EXCLUDED_FILES_CHANGE_EVENT, onStoreChange);
+}
+
+// Chat font (#47). Replies and your own messages in the transcript; code,
+// documents and the rest of the app keep their fonts.
+const CHAT_FONT_KEY = "monocode.chatFont";
+
+export type ChatFont = "system" | "serif" | "mono";
+
+export const CHAT_FONTS: readonly ChatFont[] = ["system", "serif", "mono"];
+
+export const CHAT_FONT_DEFAULT: ChatFont = "system";
+
+export const CHAT_FONT_LABELS: Record<ChatFont, string> = {
+  system: "System",
+  serif: "Serif",
+  mono: "Monospace",
+};
+
+function isChatFont(value: unknown): value is ChatFont {
+  return value === "system" || value === "serif" || value === "mono";
+}
+
+export function loadChatFont(): ChatFont {
+  try {
+    const raw = localStorage.getItem(CHAT_FONT_KEY);
+    return isChatFont(raw) ? raw : CHAT_FONT_DEFAULT;
+  } catch {
+    return CHAT_FONT_DEFAULT;
+  }
+}
+
+export function saveChatFont(value: ChatFont) {
+  try {
+    localStorage.setItem(CHAT_FONT_KEY, value);
+  } catch {
+    // private mode / quota
+  }
+}
+
+/** Sets an html class that index.css reads. Returns the font applied. */
+export function applyChatFont(value: ChatFont): ChatFont {
+  const font = isChatFont(value) ? value : CHAT_FONT_DEFAULT;
+  const root = document.documentElement.classList;
+  for (const option of CHAT_FONTS) {
+    root.toggle(`chat-font-${option}`, option === font && option !== "system");
+  }
+  return font;
+}
+
+// Default transcript detail (#48): how much of each turn's work starts open.
+// Your own clicks on a fold always win over this default.
+const TRANSCRIPT_DETAIL_KEY = "monocode.transcriptDetail";
+
+/**
+ * - `summary`: the work of a finished turn is folded under its status line.
+ * - `steps`: the work is open, each thinking and tool row closed.
+ * - `full`: the work is open and every thinking and tool row is expanded.
+ */
+export type TranscriptDetail = "summary" | "steps" | "full";
+
+export const TRANSCRIPT_DETAILS: readonly TranscriptDetail[] = [
+  "summary",
+  "steps",
+  "full",
+];
+
+export const TRANSCRIPT_DETAIL_DEFAULT: TranscriptDetail = "summary";
+
+export const TRANSCRIPT_DETAIL_LABELS: Record<TranscriptDetail, string> = {
+  summary: "Summary",
+  steps: "Steps",
+  full: "Everything",
+};
+
+/** Fired on `window` when the default detail changes (detail: TranscriptDetail). */
+export const TRANSCRIPT_DETAIL_CHANGE_EVENT = "monocode:transcriptdetailchange";
+
+export function isTranscriptDetail(value: unknown): value is TranscriptDetail {
+  return value === "summary" || value === "steps" || value === "full";
+}
+
+export function loadTranscriptDetail(): TranscriptDetail {
+  try {
+    const raw = localStorage.getItem(TRANSCRIPT_DETAIL_KEY);
+    return isTranscriptDetail(raw) ? raw : TRANSCRIPT_DETAIL_DEFAULT;
+  } catch {
+    return TRANSCRIPT_DETAIL_DEFAULT;
+  }
+}
+
+export function saveTranscriptDetail(value: TranscriptDetail) {
+  const detail = isTranscriptDetail(value) ? value : TRANSCRIPT_DETAIL_DEFAULT;
+  try {
+    localStorage.setItem(TRANSCRIPT_DETAIL_KEY, detail);
+  } catch {
+    // private mode / quota
+  }
+  window.dispatchEvent(
+    new CustomEvent(TRANSCRIPT_DETAIL_CHANGE_EVENT, { detail }),
+  );
 }

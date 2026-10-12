@@ -206,6 +206,7 @@ import { parseRemotePath, remotePath, remoteProjectFor } from "../../features/co
 // [lane-1] imports
 // [lane-2] imports
 // [lane-3] imports
+import { exportConversationFromMenu as exportConversationFromMenu_l3 } from "../../features/conversation-export/model/exportConversation";
 // [lane-4] imports
 // [lane-5] imports
 
@@ -1248,6 +1249,16 @@ function SidebarComponent({
     // [lane-1] session-menu
     // [lane-2] session-menu
     // [lane-3] session-menu
+    ...(!multipleMenuSessions
+      ? [
+          { kind: "sep" as const },
+          {
+            kind: "item" as const,
+            id: "export-markdown",
+            label: "Export as Markdown…",
+          },
+        ]
+      : []),
     // [lane-4] session-menu
     // [lane-5] session-menu
   ];
@@ -1372,6 +1383,10 @@ function SidebarComponent({
     // [lane-1] session-menu-pick
     // [lane-2] session-menu-pick
     // [lane-3] session-menu-pick
+    if (id === "export-markdown") {
+      void exportConversationFromMenu_l3(sessionId);
+      return;
+    }
     // [lane-4] session-menu-pick
     // [lane-5] session-menu-pick
     if (id === "delete") {

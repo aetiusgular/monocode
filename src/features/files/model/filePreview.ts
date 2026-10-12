@@ -83,6 +83,39 @@ export function sniffImageMime(bytes: Uint8Array): string | null {
   return null;
 }
 
+/** HTML files get a sandboxed preview beside their source (#35). */
+export function isHtmlPath(path: string): boolean {
+  const extension = extensionOf(path);
+  return extension === ".html" || extension === ".htm";
+}
+
+/** PDFs open in the PDF view rather than the text editor (#35). */
+export function isPdfPath(path: string): boolean {
+  return extensionOf(path) === ".pdf";
+}
+
+/**
+ * Whether bytes are a PDF. The blob's MIME decides how the webview treats it,
+ * so an HTML file named `report.pdf` must fail here and never reach a frame.
+ * The header may follow up to 1024 bytes of junk, as readers allow.
+ */
+export function isPdfBytes(bytes: Uint8Array): boolean {
+  const limit = Math.min(bytes.length - 5, 1024);
+  for (let index = 0; index <= limit; index += 1) {
+    if (
+      bytes[index] === 0x25 &&
+      bytes[index + 1] === 0x50 &&
+      bytes[index + 2] === 0x44 &&
+      bytes[index + 3] === 0x46 &&
+      bytes[index + 4] === 0x2d
+    ) {
+      // Nothing that looks like markup may come before the header.
+      return !bytes.subarray(0, index).includes(0x3c);
+    }
+  }
+  return false;
+}
+
 /** Byte count for the viewer footer, in the units a file manager would show. */
 export function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;

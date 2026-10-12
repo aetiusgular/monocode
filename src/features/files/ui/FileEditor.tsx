@@ -95,6 +95,8 @@ import { editorLint } from "../editor/editorLint";
 import { editorSearch } from "../editor/editorSearch";
 import { editorScrollbar } from "../editor/editorScrollbar";
 import { FilePreviewSearch } from "./FilePreviewSearch";
+import { SandboxFrame } from "../../sandbox-frame/ui/SandboxFrame";
+import { isHtmlPath } from "../model/filePreview";
 
 type EditorNavigationRequest = EditorNavigation & { token: number };
 
@@ -146,6 +148,7 @@ export function FileEditor({
   } | null>(null);
   const markdown = isMarkdownPath(path);
   const svg = isSvgPath(path);
+  const html = isHtmlPath(path);
   // Diff tabs open as source: the git gutter only renders in the editor.
   const [mode, setMode] = useMarkdownMode(
     showDiff ? `review:${path}` : path,
@@ -155,13 +158,13 @@ export function FileEditor({
   useEffect(() => {
     if (
       !navigation ||
-      (!markdown && !svg) ||
+      (!markdown && !svg && !html) ||
       sourceNavigationToken.current === navigation.token
     )
       return;
     sourceNavigationToken.current = navigation.token;
     setMode("source");
-  }, [markdown, svg, navigation, setMode]);
+  }, [markdown, svg, html, navigation, setMode]);
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
   const saveGeneration = useRef(0);
   const loadGeneration = useRef(0);
@@ -458,7 +461,7 @@ export function FileEditor({
           changes. Line breaks are normalized in this view.
         </p>
       )}
-      {markdown || svg ? (
+      {markdown || svg || html ? (
         <MarkdownViewShell
           mode={mode}
           onModeChange={setMode}
@@ -475,6 +478,16 @@ export function FileEditor({
                   onOpenFile={onOpenFile}
                 />
               </FilePreviewSearch>
+            ) : html ? (
+              // Mounted only while shown, so a page's scripts stop when you
+              // switch to the source and never run behind it.
+              mode === "preview" ? (
+                <SandboxFrame
+                  html={draft}
+                  title={`Preview of ${basename(path)}`}
+                  className="h-full"
+                />
+              ) : null
             ) : (
               <SvgPreview source={draft} />
             )

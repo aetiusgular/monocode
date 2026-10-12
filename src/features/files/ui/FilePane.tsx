@@ -18,7 +18,7 @@ import {
   type EditorPane,
   type FilePaneTab,
 } from "../../workspace/model/layout";
-import { isImagePath, isVideoPath } from "../model/filePreview";
+import { isImagePath, isPdfPath, isVideoPath } from "../model/filePreview";
 import type { TerminalMetaPatch } from "../../terminal/model/terminalTab";
 import type { EditorNavigationTarget } from "../../search/model/search";
 import { editorPathsEqual } from "../../search/model/search";
@@ -32,6 +32,7 @@ import {
 import { AgentTabView } from "../../sessions/ui/AgentTabView";
 import { MarkdownPreview } from "../../sessions/ui/AgentMarkdown";
 import { BinaryFileView } from "./BinaryFileView";
+import { PdfFileView } from "./PdfFileView";
 import { ReleaseNotesSurface } from "../../../app/ui/ReleaseNotesSurface";
 import { isRemoteProjectPath } from "../../projects/model/recents";
 
@@ -212,6 +213,8 @@ function FilePaneComponent({
                     onTerminalMetaChange?.(file.id, patch)
                   }
                 />
+              ) : isPdfPath(file.path) ? (
+                <PdfFileView path={file.path} />
               ) : isImagePath(file.path) || isVideoPath(file.path) ? (
                 <BinaryFileView
                   path={file.path}

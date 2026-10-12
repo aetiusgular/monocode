@@ -18,7 +18,8 @@ export function formatEditorSelectionReference({
   return `${file} (${lines})`;
 }
 
-function formatFileReference(path: string): string {
+/** `@path` when it is a plain relative path, otherwise the path in backticks. */
+export function formatFileReference(path: string): string {
   const normalized = path.replace(/\\/g, "/");
   if (isMentionablePath(normalized)) return `@${normalized}`;
   return `\`${normalized.replace(/[`\r\n]/g, "'")}\``;

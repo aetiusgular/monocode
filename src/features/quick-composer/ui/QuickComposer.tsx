@@ -54,6 +54,7 @@ import { HarnessIcon } from "../../sessions/ui/HarnessIcon";
 import { QuickModelSelector } from "./QuickModelSelector";
 import { QuickPermissionIcon, QuickPermissions } from "./QuickPermissions";
 import { useQuickPickerMotion } from "./useQuickPickerMotion";
+import { VoiceInputButton } from "../../voice-input/ui/VoiceInputButton";
 import { OPERATOR_COMMAND } from "../../sessions/model/operatorCommand";
 import { ORCHESTRATOR_COMMAND } from "../../sessions/model/orchestratorCommand";
 import { PLAN_COMMAND } from "../../sessions/model/plan";
@@ -111,6 +112,64 @@ export function quickPromptMode(text: string): {
   return { prompt: text.slice(match![0].length), mode };
 }
 
+export type HideSources = {
+  /** The webview lost focus or its page was hidden. */
+  addDomListeners: (release: () => void) => () => void;
+  /** The native panel lost key focus. Resolves to an unlisten function. */
+  onWindowBlur: (release: () => void) => Promise<() => void>;
+};
+
+const tauriHideSources: HideSources = {
+  addDomListeners: (release) => {
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") release();
+    };
+    window.addEventListener("blur", release);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("blur", release);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  },
+  // async, so a missing Tauri window rejects instead of throwing in render.
+  onWindowBlur: async (release) =>
+    getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (!focused) release();
+    }),
+};
+
+/**
+ * A counter that goes up whenever the panel hides or loses focus, and a
+ * function to bump it by hand (dismiss). Dictation (#49) watches it, so the
+ * microphone never stays on while the panel is out of sight. Both the DOM
+ * and the native window are watched, because which one fires for a
+ * non-activating panel is seen only on the Mac.
+ */
+export function useReleaseOnHide(
+  sources: HideSources = tauriHideSources,
+): [number, () => void] {
+  const [signal, setSignal] = useState(0);
+  const release = useCallback(() => setSignal((value) => value + 1), []);
+  useEffect(() => {
+    let disposed = false;
+    let stopNative: (() => void) | undefined;
+    const stopDom = sources.addDomListeners(release);
+    sources
+      .onWindowBlur(release)
+      .then((stop) => {
+        if (disposed) stop();
+        else stopNative = stop;
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      stopDom();
+      stopNative?.();
+    };
+  }, [sources, release]);
+  return [signal, release];
+}
+
 export function QuickComposer({ onShown }: { onShown: () => void }) {
   const [projects, setProjects] = useState(loadQuickProjects);
   const [projectAppearance, setProjectAppearance] = useState(
@@ -157,6 +216,8 @@ export function QuickComposer({ onShown }: { onShown: () => void }) {
   const highlightRef = useRef<HTMLDivElement>(null);
   const queryRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  // Dictation (#49): the panel hiding or losing focus stops the microphone.
+  const [voiceRelease, releaseVoice] = useReleaseOnHide();
 
   const focusPrompt = useCallback(() => {
     requestAnimationFrame(() => {
@@ -346,6 +407,7 @@ export function QuickComposer({ onShown }: { onShown: () => void }) {
   };
 
   const dismiss = () => {
+    releaseVoice();
     void invoke("quick_composer_dismiss");
   };
 
@@ -685,6 +747,11 @@ export function QuickComposer({ onShown }: { onShown: () => void }) {
             <ChevronDown className="size-3 shrink-0 opacity-60" />
           </button>
         ) : null}
+        <VoiceInputButton
+          textareaRef={promptRef}
+          disabled={!cwd || busy}
+          releaseSignal={voiceRelease}
+        />
         <span className="ml-auto flex shrink-0 items-center gap-3 text-[11px] text-content/45">
           {attachments.loading ? (
             <span role="status">Adding attachment…</span>

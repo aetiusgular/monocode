@@ -559,6 +559,18 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
   // [lane-1] index
   // [lane-2] index
   // [lane-3] index
+  {
+    id: "chat-font",
+    section: "appearance",
+    label: "Chat font",
+    keywords: "typeface serif monospace reading text size letters",
+  },
+  {
+    id: "transcript-detail",
+    section: "appearance",
+    label: "Transcript detail",
+    keywords: "fold expand collapse steps thinking tool calls work verbose",
+  },
   // [lane-4] index
   // [lane-5] index
 ];

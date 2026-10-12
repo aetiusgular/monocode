@@ -169,6 +169,11 @@ import { ResearchLabel } from "../../research-mode/ui/ResearchLabel";
 // [lane-1] imports
 // [lane-2] imports
 // [lane-3] imports
+import {
+  rowStartsOpen as rowStartsOpen_l3,
+  useTranscriptDetail as useTranscriptDetail_l3,
+  workStartsOpen as workStartsOpen_l3,
+} from "../hooks/useTranscriptDetail";
 // [lane-4] imports
 // [lane-5] imports
 
@@ -1049,6 +1054,7 @@ function AgentTranscriptComponent({
   // [lane-1] body
   // [lane-2] body
   // [lane-3] body
+  const transcriptDetail_l3 = useTranscriptDetail_l3();
   // [lane-4] body
   // [lane-5] body
   return (
@@ -1191,7 +1197,8 @@ function AgentTranscriptComponent({
                 item.type === "block" ? [] : item.blocks,
               )
             : folded;
-          const workOpen = openWork[turnId] ?? false;
+          const workOpen =
+            openWork[turnId] ?? workStartsOpen_l3(transcriptDetail_l3);
           // The action keeps the pane's props, which go stale once parked.
           const turnEditAction =
             firstVisibleTurn + turnIndex === editTurnIndex && !parked
@@ -4283,7 +4290,8 @@ function ActivityThinkingRow({
   bare?: boolean;
   onOpenFile?: (path: string) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const transcriptDetail_l3 = useTranscriptDetail_l3();
+  const [open, setOpen] = useState(() => rowStartsOpen_l3(transcriptDetail_l3));
   const text = proseSummary(block.text) || "Thinking";
   // In a group the rail is the bullet, so there is nothing to breathe while
   // reasoning streams in — the line itself does.
@@ -4427,7 +4435,10 @@ function ActivityToolRow({
   onOpenDiff?: (path: string) => void;
 }) {
   const [errorOpen, setErrorOpen] = useState(false);
-  const [detailOpen, setDetailOpen] = useState(false);
+  const transcriptDetail_l3 = useTranscriptDetail_l3();
+  const [detailOpen, setDetailOpen] = useState(() =>
+    rowStartsOpen_l3(transcriptDetail_l3),
+  );
   const appCall = monoCodeToolCall(block);
   if (appCall) {
     return (
@@ -4725,7 +4736,8 @@ function ToolCall({
   onOpenDiff?: (path: string) => void;
   embedded?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const transcriptDetail_l3 = useTranscriptDetail_l3();
+  const [open, setOpen] = useState(() => rowStartsOpen_l3(transcriptDetail_l3));
   const preview = block.tool?.preview;
   const label = toolCallLabel(block, cwd);
   const detail = block.tool?.detail?.trim();
