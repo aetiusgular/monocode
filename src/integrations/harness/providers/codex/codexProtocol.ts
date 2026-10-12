@@ -141,6 +141,8 @@ export function buildThreadStartParams(input: {
   extraDirs?: string[];
   // [lane-1] thread-start-input
   // [lane-2] thread-start-input
+  /** F2: MonoCode's instructions, on a new thread only. */
+  developerInstructions?: string;
   // [lane-3] thread-start-input
   // [lane-4] thread-start-input
   // [lane-5] thread-start-input
@@ -162,6 +164,9 @@ export function buildThreadStartParams(input: {
       : {}),
     // [lane-1] thread-start-return
     // [lane-2] thread-start-return
+    ...(input.developerInstructions?.trim()
+      ? { developerInstructions: input.developerInstructions }
+      : {}),
     // [lane-3] thread-start-return
     // [lane-4] thread-start-return
     // [lane-5] thread-start-return

@@ -82,7 +82,8 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 32] = [
+/// A slice, not a fixed-size array: adding an action needs no length edit.
+const APP_ACTIONS: &[&str] = &[
     "models.list",
     "sessions.list",
     "sessions.read",
@@ -114,6 +115,11 @@ const APP_ACTIONS: [&str; 32] = [
     "habits.update",
     "habits.run",
     "habits.remove",
+    "automations.list",
+    "automations.create",
+    "automations.update",
+    "automations.run",
+    "automations.remove",
     "chat.card",
 ];
 const APP_USAGE: &str = r#"MonoCode app access — use in a thread enabled by /operator.
@@ -224,8 +230,12 @@ Actions:
                   Preserve the other instructions. If the file changed since
                   soul.read, read it again and reapply the requested changes.
                   Habit runs and other sessions cannot change a Mono's soul.
-  memory.read    {"topic":"releases"}  Mono only. Without topic:
+  memory.read    {"topic":"releases"}  In a Mono, without topic:
                   MEMORY.md, how much of it loads, and the topic names.
+                  In a regular session: the project's memory. Project
+                  memory has no topics; memory.add and memory.replace
+                  there save a proposal the user accepts in MonoCode,
+                  and memory.remove is the user's.
   memory.search  {"query":"release tags","since":"7d"}
                   Entries across MEMORY.md, topic notes and the archive that
                   share words with query, best first. since is a date or a
@@ -251,6 +261,20 @@ Actions:
                   "schedule":{...},"enabled":false}  Change or pause one.
   habits.run     {"id":"..."}  Run one within a minute, to try it out.
   habits.remove  {"id":"..."}
+  automations.list    {}  This project's automations: id, name, schedule,
+                  whether it is on, and how its last run went.
+  automations.create  {"name":"Nightly tests","prompt":"Run the tests...",
+                  "schedule":"weekdays 09:00"}  Optional: "runtimeMode",
+                  "workspaceMode" ("worktree" or "current"), "keepAwake".
+                  schedule: "hourly :15", "daily 09:00", "weekdays 09:00",
+                  "weekly monday 09:00", "once 2026-10-14 09:00",
+                  "every 30m" or "every 2h"; local time. Nothing is saved:
+                  the user accepts it on the Automations page.
+  automations.update  {"id":"...","schedule":"daily 18:00","enabled":false}
+                  Any of name, prompt, schedule, runtimeMode, workspaceMode,
+                  keepAwake, enabled. Waits for the user, like create.
+  automations.run     {"id":"..."}  Start a saved automation now, once.
+  automations.remove  {"id":"..."}  Waits for the user to confirm.
   chat.card      Mono or habit only. Post a card to the Mono's chat:
                   {"type":"pr","repo":"owner/repo","number":123,"note":"..."}
                   {"type":"session","sessionId":"...","note":"..."}
@@ -295,14 +319,88 @@ pub fn help() -> String {
 }
 
 pub fn app_help() -> String {
-    let exe = std::env::current_exe()
+    APP_USAGE.replace("{exe}", &exe_name())
+}
+
+fn exe_name() -> String {
+    std::env::current_exe()
         .map(|path| quoted(&path.to_string_lossy()))
-        .unwrap_or_else(|_| "monocode".into());
-    APP_USAGE.replace("{exe}", &exe)
+        .unwrap_or_else(|_| "monocode".into())
+}
+
+/// The lines of `APP_USAGE` that document one action: its own line and the
+/// more deeply indented lines after it. Taken from the usage text itself, so
+/// an action is documented in one place only.
+fn action_block(action: &str) -> Option<String> {
+    let mut lines = APP_USAGE.lines().skip_while(|line| *line != "Actions:");
+    lines.next()?;
+    let mut block: Vec<&str> = Vec::new();
+    for line in lines {
+        let starts_action = line.starts_with("  ") && !line.starts_with("   ");
+        if !block.is_empty() {
+            if starts_action || line.trim().is_empty() {
+                break;
+            }
+            block.push(line);
+            continue;
+        }
+        if starts_action {
+            let name = line.split_whitespace().next().unwrap_or("");
+            if name == action {
+                block.push(line);
+            }
+        }
+    }
+    if block.is_empty() {
+        None
+    } else {
+        Some(block.join("\n"))
+    }
+}
+
+/// Help for one action (`memory.add`) or one group (`memory`), a few hundred
+/// characters instead of the whole usage text. An agent on a small context
+/// window reads only what it needs.
+pub fn app_action_help(topic: &str) -> Result<String, String> {
+    let topic = topic.trim();
+    let names: Vec<&str> = if APP_ACTIONS.contains(&topic) {
+        vec![topic]
+    } else {
+        let prefix = format!("{topic}.");
+        APP_ACTIONS
+            .iter()
+            .copied()
+            .filter(|name| !topic.is_empty() && name.starts_with(&prefix))
+            .collect()
+    };
+    if names.is_empty() {
+        return Err(format!(
+            "No help for {topic}. Use one of: {}. Run app --help for everything.",
+            APP_ACTIONS.join(", ")
+        ));
+    }
+    let mut out = format!(
+        "Usage: {} app ACTION [--json JSON | --input FILE|-] [--request-id ID]\n\n",
+        exe_name()
+    );
+    for name in names {
+        match action_block(name) {
+            Some(block) => {
+                out.push_str(&block);
+                out.push('\n');
+            }
+            None => out.push_str(&format!("  {name}\n")),
+        }
+    }
+    out.push_str("\nThe output is one JSON line: {\"ok\":true,\"result\":...} or {\"ok\":false,\"error\":\"...\"}.\nKeep the same --request-id when retrying a call after an uncertain result.\n");
+    Ok(out)
 }
 
 enum Parsed {
     Help,
+    /// Help for one app action or group: `app help memory.add`,
+    /// `app memory.add --help`.
+    ActionHelp(String),
     Call(String, Value, String),
 }
 
@@ -326,6 +424,18 @@ fn run_mode(args: Vec<String>, app_mode: bool) -> i32 {
         Parsed::Help => {
             println!("{}", if app_mode { app_help() } else { help() });
             return 0;
+        }
+        Parsed::ActionHelp(topic) => {
+            return match app_action_help(&topic) {
+                Ok(text) => {
+                    println!("{text}");
+                    0
+                }
+                Err(error) => {
+                    println!("{}", json!({"ok": false, "error": error}));
+                    1
+                }
+            };
         }
         Parsed::Call(action, input, request_id) => (action, input, request_id),
     };
@@ -468,6 +578,16 @@ fn parse_args_for(args: &[String], app_mode: bool) -> Result<Parsed, String> {
         return Ok(Parsed::Help);
     };
     if is_help(action) {
+        // `app help memory.add` explains one action. The control CLI keeps
+        // its single usage text.
+        if app_mode {
+            if let Some(topic) = args.get(1) {
+                if args.len() > 2 {
+                    return Err("Use app help ACTION, with one action or group.".into());
+                }
+                return Ok(Parsed::ActionHelp(topic.clone()));
+            }
+        }
         return Ok(Parsed::Help);
     }
     let action = action.clone();
@@ -494,7 +614,11 @@ fn parse_args_for(args: &[String], app_mode: bool) -> Result<Parsed, String> {
         let flag = &args[index];
         // `control delegate --help` should explain the command, not fail.
         if is_help(flag) {
-            return Ok(Parsed::Help);
+            return Ok(if app_mode {
+                Parsed::ActionHelp(action)
+            } else {
+                Parsed::Help
+            });
         }
         if !flag.starts_with("--") {
             return Err(format!(
@@ -561,8 +685,91 @@ mod tests {
     fn call(values: &[&str]) -> Result<(String, Value, String), String> {
         match parse_args(&args(values))? {
             Parsed::Call(action, input, id) => Ok((action, input, id)),
-            Parsed::Help => Err("help".into()),
+            Parsed::Help | Parsed::ActionHelp(_) => Err("help".into()),
         }
+    }
+    #[test]
+    fn app_help_for_one_action_is_short_and_exact() {
+        let text = app_action_help("memory.add").unwrap();
+        assert!(text.contains("memory.add"));
+        assert!(text.contains("until"));
+        assert!(!text.contains("memory.search"));
+        assert!(!text.contains("sessions.start"));
+        // A fraction of the whole usage text, for a 16k context window.
+        assert!(text.len() < 900, "{} chars", text.len());
+        assert!(app_help().len() > 8_000);
+    }
+    #[test]
+    fn app_help_for_a_group_lists_its_actions_only() {
+        let text = app_action_help("memory").unwrap();
+        for action in [
+            "memory.read",
+            "memory.search",
+            "memory.add",
+            "memory.replace",
+            "memory.remove",
+        ] {
+            assert!(text.contains(action), "group help omits {action}");
+        }
+        assert!(!text.contains("habits.add"));
+        // A partial name is not a group.
+        assert!(app_action_help("mem").is_err());
+        assert!(app_action_help("").is_err());
+        assert!(app_action_help("../etc").is_err());
+    }
+    #[test]
+    fn automation_help_is_its_own_group_and_names_the_schedules() {
+        let text = app_action_help("automations").unwrap();
+        for action in [
+            "automations.list",
+            "automations.create",
+            "automations.update",
+            "automations.run",
+            "automations.remove",
+        ] {
+            assert!(text.contains(action), "group help omits {action}");
+        }
+        assert!(!text.contains("habits.add"));
+        let create = app_action_help("automations.create").unwrap();
+        assert!(create.contains("once 2026-10-14 09:00"));
+        assert!(create.contains("every 30m"));
+        // Small enough for a 16k window.
+        assert!(text.len() < 2_500, "{}", text.len());
+    }
+
+    #[test]
+    fn every_app_action_has_its_own_help_block() {
+        for action in APP_ACTIONS {
+            let block = action_block(action).unwrap_or_default();
+            assert!(
+                block.trim_start().starts_with(action),
+                "no help block for {action}"
+            );
+        }
+    }
+    #[test]
+    fn app_help_parses_both_spellings_and_keeps_the_control_cli_unchanged() {
+        assert!(matches!(
+            parse_args_for(&args(&["help", "notes.write"]), true),
+            Ok(Parsed::ActionHelp(topic)) if topic == "notes.write"
+        ));
+        assert!(matches!(
+            parse_args_for(&args(&["notes.write", "--help"]), true),
+            Ok(Parsed::ActionHelp(topic)) if topic == "notes.write"
+        ));
+        assert!(matches!(
+            parse_args_for(&args(&["help"]), true),
+            Ok(Parsed::Help)
+        ));
+        assert!(parse_args_for(&args(&["help", "a", "b"]), true).is_err());
+        assert!(matches!(
+            parse_args_for(&args(&["help", "delegate"]), false),
+            Ok(Parsed::Help)
+        ));
+        assert!(matches!(
+            parse_args_for(&args(&["delegate", "--help"]), false),
+            Ok(Parsed::Help)
+        ));
     }
     #[test]
     fn validates_inputs_without_invoking_a_shell() {

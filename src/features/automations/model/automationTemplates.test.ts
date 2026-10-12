@@ -23,9 +23,9 @@ describe("automation templates", () => {
     for (const category of AUTOMATION_TEMPLATE_CATEGORIES) {
       expect(templatesForCategory(category.id).length).toBeGreaterThan(0);
     }
-    expect(AUTOMATION_TEMPLATES.every((template) => template.prompt.trim())).toBe(
-      true,
-    );
+    expect(
+      AUTOMATION_TEMPLATES.every((template) => template.prompt.trim()),
+    ).toBe(true);
   });
 
   it("only uses inbox events that actually fire", () => {

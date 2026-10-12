@@ -1,4 +1,7 @@
-import type { AutomationScheduleKind, AutomationTriggerKind } from "./automations";
+import type {
+  AutomationScheduleKind,
+  AutomationTriggerKind,
+} from "./automations";
 
 export const AUTOMATION_TEMPLATE_CATEGORIES = [
   { id: "popular", label: "Popular" },
@@ -359,5 +362,7 @@ export function templatesForCategory(
   if (category === "popular") {
     return AUTOMATION_TEMPLATES.filter((template) => template.popular);
   }
-  return AUTOMATION_TEMPLATES.filter((template) => template.category === category);
+  return AUTOMATION_TEMPLATES.filter(
+    (template) => template.category === category,
+  );
 }

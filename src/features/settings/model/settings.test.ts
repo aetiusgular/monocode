@@ -623,6 +623,8 @@ describe("settings navigation", () => {
       "monos",
       // [lane-1] rail-agents
       // [lane-2] rail-agents
+      "instructions",
+      "memory",
       // [lane-3] rail-agents
       // [lane-4] rail-agents
       // [lane-5] rail-agents
@@ -631,6 +633,7 @@ describe("settings navigation", () => {
       "worktrees",
       // [lane-1] rail-workspace
       // [lane-2] rail-workspace
+      "environment",
       // [lane-3] rail-workspace
       // [lane-4] rail-workspace
       // [lane-5] rail-workspace

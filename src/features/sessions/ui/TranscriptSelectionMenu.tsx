@@ -1,4 +1,8 @@
-import { FilePlusCorner, MessageSquarePlus } from "../../../shared/ui/icons";
+import {
+  FilePlusCorner,
+  MessageSquarePlus,
+  StickyNote,
+} from "../../../shared/ui/icons";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Popover } from "../../../shared/ui/Popover";
 import { type TranscriptSelection } from "../model/transcriptSelection";
@@ -7,6 +11,8 @@ type Props = {
   selection: TranscriptSelection | null;
   onAddToChat?: (text: string) => void;
   onAddToNotes?: (text: string) => void | Promise<void>;
+  /** #36: save the selection to the project's memory. */
+  onRemember?: (text: string) => void | Promise<void>;
   onDismiss: () => void;
 };
 
@@ -14,6 +20,7 @@ export function TranscriptSelectionMenu({
   selection,
   onAddToChat,
   onAddToNotes,
+  onRemember,
   onDismiss,
 }: Props) {
   const onDismissRef = useRef(onDismiss);
@@ -68,6 +75,19 @@ export function TranscriptSelectionMenu({
             onDismiss={onDismiss}
           >
             <FilePlusCorner
+              aria-hidden="true"
+              className="size-3.5"
+              strokeWidth={1.75}
+            />
+          </SelectionAction>
+        ) : null}
+        {onRemember ? (
+          <SelectionAction
+            label="Remember this"
+            onSelect={() => onRemember(selection.text)}
+            onDismiss={onDismiss}
+          >
+            <StickyNote
               aria-hidden="true"
               className="size-3.5"
               strokeWidth={1.75}

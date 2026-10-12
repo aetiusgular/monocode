@@ -34,6 +34,7 @@ import type { SessionPanelControl } from "./useSessionPanel";
 // [lane-1] imports
 import { RunningSection as RunningSection_l1 } from "./RunningSection";
 // [lane-2] imports
+import { ContextSection as ContextSection_l2 } from "../../session-preamble/ui/ContextSection";
 // [lane-3] imports
 // [lane-4] imports
 // [lane-5] imports
@@ -54,6 +55,9 @@ type PanelSession = Pick<
   | "busy"
   | "backgroundItems"
   // [lane-2] panel-session
+  | "id"
+  | "providerAccountId"
+  | "modelSettings"
   // [lane-3] panel-session
   // [lane-4] panel-session
   // [lane-5] panel-session
@@ -303,6 +307,11 @@ export function SessionPanelView({
             onShowInChat={onShowInChat}
           />
           {/* [lane-2] sections */}
+          <ContextSection_l2
+            sessionId={session.id}
+            project={session.cwd}
+            session={session}
+          />
           {/* [lane-3] sections */}
           {/* [lane-4] sections */}
           {/* [lane-5] sections */}

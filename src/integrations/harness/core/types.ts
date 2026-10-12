@@ -277,6 +277,22 @@ export type HarnessSessionInput = {
   onEvent: (event: HarnessEvent) => void;
   // [lane-1] session-input
   // [lane-2] session-input
+  /**
+   * F2: a file of MonoCode's instructions for Claude Code's
+   * `--append-system-prompt-file`. Applied only when a new conversation
+   * starts; later changes go in the message. Other harnesses ignore it.
+   */
+  preambleFile?: string;
+  /**
+   * F2: the same instructions as Codex `developerInstructions`, sent on
+   * `thread/start` only. Other harnesses ignore it.
+   */
+  developerInstructions?: string;
+  /**
+   * #27: Claude Code's built-in AGENTS.md plugin id, so `AGENTS.md` loads
+   * beside an existing `CLAUDE.md`. Absent leaves Claude Code's default.
+   */
+  agentsMdPlugin?: string;
   // [lane-3] session-input
   // [lane-4] session-input
   // [lane-5] session-input

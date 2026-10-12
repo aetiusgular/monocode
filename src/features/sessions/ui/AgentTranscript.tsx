@@ -170,6 +170,7 @@ import { ResearchLabel } from "../../research-mode/ui/ResearchLabel";
 import type { TurnRewind as TurnRewind_l1 } from "../../rewind/model/turnRewind";
 import { TurnRewindMenu as TurnRewindMenu_l1 } from "../../rewind/ui/TurnRewindMenu";
 // [lane-2] imports
+import { rememberText as rememberText_l2 } from "../../project-memory/model/remember";
 // [lane-3] imports
 import {
   rowStartsOpen as rowStartsOpen_l3,
@@ -1058,6 +1059,17 @@ function AgentTranscriptComponent({
 
   // [lane-1] body
   // [lane-2] body
+  // #36: "Remember this" on a selection or a reply. Monos keep their own
+  // memory, so their transcripts do not offer it.
+  const onRemember_l2 = useMemo(
+    () =>
+      agentName || !cwd || cwd === "~" || !harness
+        ? undefined
+        : async (text: string) => {
+            await rememberText_l2(cwd, text, { harness, model });
+          },
+    [agentName, cwd, harness, model],
+  );
   // [lane-3] body
   const transcriptDetail_l3 = useTranscriptDetail_l3();
   // [lane-4] body
@@ -1676,11 +1688,12 @@ function AgentTranscriptComponent({
           );
         })}
       </TranscriptContent>
-      {onAddToChat || onSaveSelectionNote ? (
+      {onAddToChat || onSaveSelectionNote || onRemember_l2 ? (
         <TranscriptSelectionMenu
           selection={selection}
           onAddToChat={onAddToChat}
           onAddToNotes={onSaveSelectionNote}
+          onRemember={onRemember_l2}
           onDismiss={dismissSelection}
         />
       ) : null}

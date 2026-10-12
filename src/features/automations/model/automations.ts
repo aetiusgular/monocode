@@ -6,7 +6,15 @@ export const AUTOMATIONS_CHANGED = "monocode:automations-changed";
 const LOCAL_CHANGED = "monocode:automations-local-changed";
 
 export type AutomationWorkspaceMode = "current" | "worktree" | "existing";
-export type AutomationScheduleKind = "hourly" | "daily" | "weekdays" | "weekly";
+export type AutomationScheduleKind =
+  | "hourly"
+  | "daily"
+  | "weekdays"
+  | "weekly"
+  /** One run at `at`; the automation turns itself off after it fires. */
+  | "once"
+  /** Every `intervalMinutes`, from the last run. */
+  | "interval";
 export type AutomationTriggerKind =
   "time" | "github" | "linear" | "jira" | "gitlab" | "azuredevops";
 
@@ -22,7 +30,14 @@ export type AutomationTrigger = {
   repo: string;
   branch: string;
   actor: string;
+  /** A one-time schedule's moment, epoch ms. */
+  at?: number;
+  /** An interval schedule's period, 5 minutes to 30 days. */
+  intervalMinutes?: number;
 };
+
+export const INTERVAL_MINUTES_MIN = 5;
+export const INTERVAL_MINUTES_MAX = 43_200;
 
 export type AutomationRunStatus =
   "pending" | "running" | "succeeded" | "failed" | "skipped" | "cancelled";
@@ -50,6 +65,8 @@ export type Automation = {
   dayOfWeek: number;
   triggers?: AutomationTrigger[] | null;
   missedRunGraceMinutes: number;
+  /** macOS: keep the Mac awake while a run is active. */
+  keepAwake?: boolean;
   enabled: boolean;
   nextRunAt: number;
   lastRunAt?: number;
@@ -143,6 +160,7 @@ export type AutomationDraft = {
   dayOfWeek: number;
   triggers: AutomationTrigger[];
   missedRunGraceMinutes: number;
+  keepAwake: boolean;
   enabled: boolean;
 };
 
@@ -161,7 +179,9 @@ export function isScheduleKind(value: string): value is AutomationScheduleKind {
     value === "hourly" ||
     value === "daily" ||
     value === "weekdays" ||
-    value === "weekly"
+    value === "weekly" ||
+    value === "once" ||
+    value === "interval"
   );
 }
 
@@ -184,7 +204,25 @@ export function createAutomationTrigger(
     repo: extras.repo ?? "",
     branch: extras.branch ?? "",
     actor: extras.actor ?? "anyone",
+    ...(kind === "time" && (extras.scheduleKind ?? event) === "once"
+      ? { at: extras.at ?? defaultOnceAt() }
+      : extras.at != null
+        ? { at: extras.at }
+        : {}),
+    ...(kind === "time" && (extras.scheduleKind ?? event) === "interval"
+      ? { intervalMinutes: extras.intervalMinutes ?? 60 }
+      : extras.intervalMinutes != null
+        ? { intervalMinutes: extras.intervalMinutes }
+        : {}),
   };
+}
+
+/** Tomorrow at 09:00 local: a sensible first pick for a one-time run. */
+export function defaultOnceAt(now = Date.now()): number {
+  const date = new Date(now);
+  date.setDate(date.getDate() + 1);
+  date.setHours(9, 0, 0, 0);
+  return date.getTime();
 }
 
 export function automationTriggers(
@@ -239,10 +277,13 @@ export function nextTriggersRunAt(
   after = Date.now(),
 ): number {
   const times = triggers.filter((trigger) => trigger.kind === "time");
-  if (times.length === 0) return after + YEAR_MS;
-  return Math.min(
+  const next = Math.min(
+    Infinity,
     ...times.map((trigger) => nextAutomationRunAt(trigger, after)),
   );
+  // No time trigger, or only spent one-time ones: a placeholder a year out.
+  // The store disables a spent one-time automation, and refuses to claim one.
+  return Number.isFinite(next) ? next : after + YEAR_MS;
 }
 
 export function overdueTriggerOccurrences(
@@ -295,9 +336,23 @@ export function nextAutomationRunAt(
   schedule: Pick<
     AutomationDraft,
     "scheduleKind" | "minute" | "time" | "dayOfWeek"
-  >,
+  > &
+    Partial<Pick<AutomationTrigger, "at" | "intervalMinutes">>,
   after = Date.now(),
 ): number {
+  if (schedule.scheduleKind === "once") {
+    const at = schedule.at ?? 0;
+    // Infinity, not a date: a spent one-time run has no next occurrence.
+    return Number.isFinite(at) && at > after ? at : Infinity;
+  }
+  if (schedule.scheduleKind === "interval") {
+    const minutes = clamp(
+      schedule.intervalMinutes ?? 60,
+      INTERVAL_MINUTES_MIN,
+      INTERVAL_MINUTES_MAX,
+    );
+    return Math.floor(after / 60_000) * 60_000 + minutes * 60_000;
+  }
   const start = new Date(after);
   start.setSeconds(0, 0);
   const [hour, minute] = parseTime(schedule.time);
@@ -336,8 +391,17 @@ export function automationScheduleLabel(
   automation: Pick<
     Automation,
     "scheduleKind" | "minute" | "time" | "dayOfWeek"
-  >,
+  > &
+    Partial<Pick<AutomationTrigger, "at" | "intervalMinutes">>,
 ): string {
+  if (automation.scheduleKind === "once") {
+    return automation.at
+      ? `Once, ${formatAutomationRunAt(automation.at)}`
+      : "Once";
+  }
+  if (automation.scheduleKind === "interval") {
+    return `Every ${intervalLabel(automation.intervalMinutes ?? 60)}`;
+  }
   const time = formatClock(automation.time);
   if (automation.scheduleKind === "hourly") {
     return `Hourly at :${String(automation.minute).padStart(2, "0")}`;
@@ -372,6 +436,7 @@ export function newAutomationDraft(
     dayOfWeek: 1,
     triggers: [],
     missedRunGraceMinutes: 720,
+    keepAwake: false,
     enabled: true,
   };
 }
@@ -436,6 +501,7 @@ export function draftFromAutomation(automation: Automation): AutomationDraft {
     dayOfWeek: automation.dayOfWeek,
     triggers: automationTriggers(automation),
     missedRunGraceMinutes: automation.missedRunGraceMinutes,
+    keepAwake: automation.keepAwake ?? false,
     enabled: automation.enabled,
   };
 }
@@ -503,6 +569,22 @@ export async function createManualAutomationRun(
   return run;
 }
 
+/**
+ * Run a saved automation now, as the Run now button does, for an agent's
+ * `automations.run` (#39). `launch` is the app's own launcher.
+ */
+export async function startManualAutomationRun(
+  automationId: string,
+  launch: (automation: Automation, run: AutomationRun) => Promise<void>,
+): Promise<void> {
+  const automation = (await listAutomations()).find(
+    (item) => item.id === automationId,
+  );
+  if (!automation) throw new Error("Automation not found.");
+  const run = await createManualAutomationRun(automationId);
+  await launch(automation, run);
+}
+
 export async function claimDueAutomations(
   now = Date.now(),
 ): Promise<DueAutomationRun[]> {
@@ -510,7 +592,9 @@ export async function claimDueAutomations(
   const due = automations.filter(
     (automation) =>
       automation.enabled &&
-      automationTriggers(automation).some((trigger) => trigger.kind === "time") &&
+      automationTriggers(automation).some(
+        (trigger) => trigger.kind === "time",
+      ) &&
       automation.nextRunAt <= now,
   );
   const claimed: DueAutomationRun[] = [];
@@ -591,6 +675,44 @@ export function subscribeAutomations(onChange: () => void): () => void {
 function emitLocalChange() {
   cachedAutomations = null;
   window.dispatchEvent(new Event(LOCAL_CHANGED));
+}
+
+export function intervalLabel(minutes: number): string {
+  const value = clamp(minutes, INTERVAL_MINUTES_MIN, INTERVAL_MINUTES_MAX);
+  if (value % 1440 === 0) {
+    const days = value / 1440;
+    return days === 1 ? "day" : `${days} days`;
+  }
+  if (value % 60 === 0) {
+    const hours = value / 60;
+    return hours === 1 ? "hour" : `${hours} hours`;
+  }
+  return `${value} minutes`;
+}
+
+/** A local date and clock for a moment, for the one-time schedule's fields. */
+export function splitLocalMoment(at: number): { date: string; time: string } {
+  const date = new Date(Number.isFinite(at) && at > 0 ? at : defaultOnceAt());
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return {
+    date: `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
+    time: `${pad(date.getHours())}:${pad(date.getMinutes())}`,
+  };
+}
+
+/** The moment for a local date and clock, or null when either is not valid. */
+export function joinLocalMoment(date: string, time: string): number | null {
+  const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  const clock = /^(\d{2}):(\d{2})$/.exec(time);
+  if (!day || !clock) return null;
+  const [year, month, dom] = [Number(day[1]), Number(day[2]), Number(day[3])];
+  const [hour, minute] = [Number(clock[1]), Number(clock[2])];
+  if (hour > 23 || minute > 59 || month < 1 || month > 12 || dom < 1)
+    return null;
+  const moment = new Date(year, month - 1, dom, hour, minute, 0, 0);
+  // Rejects 31 February and the like, which Date would roll over.
+  if (moment.getMonth() !== month - 1 || moment.getDate() !== dom) return null;
+  return moment.getTime();
 }
 
 function parseTime(value: string): [number, number] {

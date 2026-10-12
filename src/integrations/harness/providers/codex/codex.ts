@@ -880,6 +880,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
         extraDirs: input.extraDirs,
         // [lane-1] thread-start-call
         // [lane-2] thread-start-call
+        developerInstructions: input.developerInstructions,
         // [lane-3] thread-start-call
         // [lane-4] thread-start-call
         // [lane-5] thread-start-call

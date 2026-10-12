@@ -87,6 +87,8 @@ export type ClaudeCliSettings = {
   enabledPlugins?: Record<string, boolean>;
   // [lane-1] cli-settings
   // [lane-2] cli-settings
+  /** Options for Claude Code's built-in plugins, such as AGENTS.md (#27). */
+  pluginConfigs?: Record<string, { options: Record<string, string> }>;
   // [lane-3] cli-settings
   // [lane-4] cli-settings
   // [lane-5] cli-settings
@@ -348,6 +350,8 @@ export function buildClaudeSpawnArgs(input: {
   /** With `resume`: copy the conversation into a new one (`--fork-session`). */
   forkSession?: boolean;
   // [lane-2] spawn-input
+  /** F2: MonoCode's instructions, for a new conversation only. */
+  appendSystemPromptFile?: string;
   // [lane-3] spawn-input
   // [lane-4] spawn-input
   // [lane-5] spawn-input
@@ -419,6 +423,11 @@ export function buildClaudeSpawnArgs(input: {
   // [lane-1] spawn-flags
   if (input.resume && input.forkSession) args.push("--fork-session");
   // [lane-2] spawn-flags
+  // Never on a resumed conversation: Claude Code keeps the system prompt it
+  // started with, and MonoCode sends later changes in the message (F2).
+  if (input.appendSystemPromptFile && !input.resume && !input.isolated) {
+    args.push("--append-system-prompt-file", input.appendSystemPromptFile);
+  }
   // [lane-3] spawn-flags
   // [lane-4] spawn-flags
   // [lane-5] spawn-flags

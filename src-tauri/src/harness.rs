@@ -940,6 +940,9 @@ pub fn harness_spawn(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     prepare_child(&mut cmd, &command);
+    // #28: your variables, after the GUI environment and before the provider
+    // account, which still removes the API key variables.
+    crate::env_store::apply_to_child(&app, &mut cmd, &workdir);
     apply_provider_account(&app, &mut cmd, account.as_ref())?;
     let codex_store = match codex_store.as_deref() {
         None => None,

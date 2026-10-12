@@ -26,6 +26,28 @@ const ACTION_LABELS: Record<string, string> = {
   "artifacts.write": "Write an artifact",
   // [lane-1] labels
   // [lane-2] labels
+  // F7: the 15 actions that had no label showed as a plain shell row.
+  "worktrees.list": "List worktrees",
+  "worktrees.create": "Create a worktree",
+  "soul.read": "Read instructions",
+  "soul.update": "Update instructions",
+  "memory.read": "Read memory",
+  "memory.search": "Search memory",
+  "memory.add": "Remember",
+  "memory.replace": "Update a memory",
+  "memory.remove": "Forget a memory",
+  "habits.list": "List habits",
+  "habits.add": "Add a habit",
+  "habits.update": "Update a habit",
+  "habits.run": "Run a habit",
+  "habits.remove": "Remove a habit",
+  "chat.card": "Post a card",
+  // #39: automation actions.
+  "automations.list": "List automations",
+  "automations.create": "Propose an automation",
+  "automations.update": "Propose an automation change",
+  "automations.run": "Run an automation",
+  "automations.remove": "Propose removing an automation",
   // [lane-3] labels
   // [lane-4] labels
   // [lane-5] labels
@@ -105,6 +127,14 @@ export function monoCodeToolCall(block: Block): MonoCodeToolCall | undefined {
   if (words[1] !== "app") return undefined;
   const action = words[2] ?? "--help";
   if (action === "--help" || action === "help" || action === "-h") {
+    // F7: `app help memory.add` reads one action's fields.
+    const topic = words[3];
+    if (
+      words.length === 4 &&
+      action === "help" &&
+      /^[a-z]+(?:\.[a-z]+)?$/.test(topic)
+    )
+      return { action: "help", label: `View help for ${topic}`, command };
     return words.length > 3
       ? undefined
       : { action: "--help", label: "View CLI commands", command };

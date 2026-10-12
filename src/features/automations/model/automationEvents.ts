@@ -85,7 +85,9 @@ function pendingRetryItems(): Map<string, InboxItem> {
   if (retryItems) return retryItems;
   retryItems = new Map();
   try {
-    const saved = JSON.parse(window.localStorage.getItem(RETRY_STORAGE_KEY) ?? "[]");
+    const saved = JSON.parse(
+      window.localStorage.getItem(RETRY_STORAGE_KEY) ?? "[]",
+    );
     if (Array.isArray(saved)) {
       for (const item of saved as InboxItem[]) {
         const key = automationEventKey(item);
@@ -209,7 +211,8 @@ function triggerMatchesInboxItem(
   item: InboxItem,
   event: { kind: AutomationTriggerKind; event: string },
 ): boolean {
-  if (trigger.kind !== event.kind || trigger.event !== event.event) return false;
+  if (trigger.kind !== event.kind || trigger.event !== event.event)
+    return false;
   if (!matchesInboxProject(item, cwd)) return false;
   if (!matchesActor(trigger.actor)) return false;
   const repos = [...trigger.repos, trigger.repo]
@@ -225,7 +228,8 @@ function matchesInboxProject(item: InboxItem, cwd: string): boolean {
   if (
     (item.provider === "linear" || item.provider === "jira") &&
     !item.projectPath.trim()
-  ) return true;
+  )
+    return true;
   return sameProjectPath(item.projectPath, cwd);
 }
 

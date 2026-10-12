@@ -258,6 +258,8 @@ import { PickUpMenuItem as PickUpMenuItem_l1 } from "../../session-import/ui/Pic
 import { PickUpSessionPopover as PickUpSessionPopover_l1 } from "../../session-import/ui/PickUpSessionPopover";
 import type { PickUpTarget as PickUpTarget_l1 } from "../../session-import/model/pickUp";
 // [lane-2] imports
+import { SuggestedPromptChips as SuggestedPromptChips_l2 } from "../../suggested-prompts/ui/SuggestedPromptChips";
+import type { SuggestedPrompt as SuggestedPrompt_l2 } from "../../suggested-prompts/model/suggestions";
 // [lane-3] imports
 // [lane-4] imports
 // [lane-5] imports
@@ -387,6 +389,9 @@ type Props = {
   /** #45: offers the harness's own sessions for this folder, when set. */
   pickUp_l1?: PickUpTarget_l1;
   // [lane-2] props
+  /** #46: chips from the project's state; a click fills the input. */
+  suggestedPrompts?: readonly SuggestedPrompt_l2[];
+  onDismissSuggestedPrompts?: () => void;
   // [lane-3] props
   // [lane-4] props
   // [lane-5] props
@@ -525,6 +530,8 @@ export function Composer({
   // [lane-1] destructure
   pickUp_l1,
   // [lane-2] destructure
+  suggestedPrompts,
+  onDismissSuggestedPrompts,
   // [lane-3] destructure
   // [lane-4] destructure
   // [lane-5] destructure
@@ -1921,6 +1928,18 @@ export function Composer({
 
   // [lane-1] body
   // [lane-2] body
+  /** #46: fill the input with a suggestion; it is never sent from here. */
+  const fillSuggestion_l2 = (prompt: SuggestedPrompt_l2) => {
+    const el = ref.current;
+    if (!el || el.value.trim()) return;
+    el.value = prompt.prompt;
+    resizeComposer(el);
+    setDraft(prompt.prompt);
+    onDraftChange?.(prompt.prompt);
+    syncHasValue(prompt.prompt, attachmentsRef.current);
+    el.focus();
+    el.setSelectionRange(prompt.prompt.length, prompt.prompt.length);
+  };
   // [lane-3] body
   // [lane-4] body
   // [lane-5] body
@@ -2242,6 +2261,17 @@ export function Composer({
           ) : null}
           {/* [lane-1] chips */}
           {/* [lane-2] chips */}
+          {!compact &&
+          !busy &&
+          !draft.trim() &&
+          attachments.length === 0 &&
+          suggestedPrompts?.length ? (
+            <SuggestedPromptChips_l2
+              prompts={suggestedPrompts}
+              onPick={fillSuggestion_l2}
+              onDismiss={() => onDismissSuggestedPrompts?.()}
+            />
+          ) : null}
           {/* [lane-3] chips */}
           {/* [lane-4] chips */}
           {/* [lane-5] chips */}

@@ -13,6 +13,10 @@ const MAX_NAME: usize = 200;
 const MAX_PROMPT: usize = 1_000_000;
 const MAX_TRIGGERS: usize = 20;
 const MAX_RUNS_PER_AUTOMATION: i64 = 100;
+const MIN_INTERVAL_MINUTES: i64 = 5;
+const MAX_INTERVAL_MINUTES: i64 = 43_200;
+/// Year 3000, so a typo in a one-time date fails here, not in the scheduler.
+const MAX_AT: i64 = 32_503_680_000_000;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,6 +47,9 @@ pub struct Automation {
     #[serde(default)]
     triggers: Option<Vec<AutomationTrigger>>,
     missed_run_grace_minutes: i64,
+    /// macOS: hold the Mac awake while a run of this automation is active.
+    #[serde(default)]
+    keep_awake: bool,
     enabled: bool,
     next_run_at: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -87,6 +94,8 @@ pub struct AutomationUpsert {
     #[serde(default)]
     triggers: Option<Vec<AutomationTrigger>>,
     missed_run_grace_minutes: i64,
+    #[serde(default)]
+    keep_awake: bool,
     #[serde(default = "default_true")]
     enabled: bool,
     next_run_at: i64,
@@ -143,6 +152,12 @@ pub struct AutomationTrigger {
     branch: String,
     #[serde(default = "default_actor")]
     actor: String,
+    /// A one-time schedule's moment, epoch ms.
+    #[serde(default)]
+    at: i64,
+    /// An interval schedule's period.
+    #[serde(default)]
+    interval_minutes: i64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -285,10 +300,7 @@ fn validate_upsert(input: &AutomationUpsert, now: i64) -> Result<(), String> {
     if input.trigger_event.len() > 200 {
         return Err("Invalid automation trigger event.".into());
     }
-    if !matches!(
-        input.schedule_kind.as_str(),
-        "hourly" | "daily" | "weekdays" | "weekly"
-    ) {
+    if !valid_schedule_kind(&input.schedule_kind) {
         return Err("Invalid automation schedule.".into());
     }
     if !(0..=59).contains(&input.minute)
@@ -310,6 +322,9 @@ fn validate_upsert(input: &AutomationUpsert, now: i64) -> Result<(), String> {
         for trigger in triggers {
             validate_trigger(trigger)?;
         }
+        if input.enabled && spent_after(triggers, now) {
+            return Err("Pick a time in the future for the one-time run.".into());
+        }
     }
     Ok(())
 }
@@ -330,10 +345,7 @@ fn validate_trigger(trigger: &AutomationTrigger) -> Result<(), String> {
     {
         return Err("Invalid automation trigger event.".into());
     }
-    if !matches!(
-        trigger.schedule_kind.as_str(),
-        "hourly" | "daily" | "weekdays" | "weekly"
-    ) {
+    if !valid_schedule_kind(&trigger.schedule_kind) {
         return Err("Invalid automation schedule.".into());
     }
     if !(0..=59).contains(&trigger.minute)
@@ -342,7 +354,49 @@ fn validate_trigger(trigger: &AutomationTrigger) -> Result<(), String> {
     {
         return Err("Invalid automation time.".into());
     }
+    if trigger.kind == "time" {
+        if trigger.schedule_kind == "once" && !(1..=MAX_AT).contains(&trigger.at) {
+            return Err("Choose a date and time for the one-time run.".into());
+        }
+        if trigger.schedule_kind == "interval"
+            && !(MIN_INTERVAL_MINUTES..=MAX_INTERVAL_MINUTES).contains(&trigger.interval_minutes)
+        {
+            return Err("An interval must be between 5 minutes and 30 days.".into());
+        }
+    }
     Ok(())
+}
+
+fn valid_schedule_kind(value: &str) -> bool {
+    matches!(
+        value,
+        "hourly" | "daily" | "weekdays" | "weekly" | "once" | "interval"
+    )
+}
+
+/// A time trigger that can still fire at or after `from`: every recurring
+/// schedule, and a one-time schedule whose moment has not passed.
+fn trigger_live_from(trigger: &AutomationTrigger, from: i64) -> bool {
+    trigger.kind == "time" && (trigger.schedule_kind != "once" || trigger.at >= from)
+}
+
+fn has_live_time_trigger(automation: &Automation, from: i64) -> bool {
+    match &automation.triggers {
+        Some(triggers) => triggers
+            .iter()
+            .any(|trigger| trigger_live_from(trigger, from)),
+        // Legacy rows predate one-time schedules.
+        None => automation.trigger_kind == "time",
+    }
+}
+
+/// Every trigger is a one-time schedule at or before `at`: nothing is left to
+/// run, so the automation turns itself off rather than waiting a year.
+fn spent_after(triggers: &[AutomationTrigger], at: i64) -> bool {
+    !triggers.is_empty()
+        && triggers.iter().all(|trigger| {
+            trigger.kind == "time" && trigger.schedule_kind == "once" && trigger.at <= at
+        })
 }
 
 fn hydrate_triggers(automation: &mut Automation) {
@@ -429,6 +483,8 @@ fn trigger_from_fields(
         repo: String::new(),
         branch: String::new(),
         actor: default_actor(),
+        at: 0,
+        interval_minutes: 0,
     }
 }
 
@@ -683,6 +739,7 @@ pub fn automations_upsert(
         day_of_week: automation.day_of_week,
         triggers,
         missed_run_grace_minutes: automation.missed_run_grace_minutes,
+        keep_awake: automation.keep_awake,
         enabled: automation.enabled,
         next_run_at: automation.next_run_at,
         last_run_at: previous.as_ref().and_then(|value| value.last_run_at),
@@ -851,7 +908,7 @@ pub fn automations_claim_due(
     let mut conn = store.lock_conn()?;
     let tx = conn.transaction().map_err(|error| error.to_string())?;
     let current = get(&tx, &automation_id)?.ok_or_else(|| "Automation not found.".to_string())?;
-    if !has_time_trigger(&current) {
+    if !has_time_trigger(&current) || !has_live_time_trigger(&current, expected_next_run_at) {
         tx.rollback().map_err(|error| error.to_string())?;
         return Ok(None);
     }
@@ -887,6 +944,15 @@ pub fn automations_claim_due(
     automation.last_run_at = Some(now);
     automation.last_run_status = Some(run.status.clone());
     automation.last_run_error = run.error.clone();
+    // A one-time run disables itself once it fires (or is skipped), instead
+    // of waiting a year for the placeholder next run.
+    if automation
+        .triggers
+        .as_deref()
+        .is_some_and(|triggers| spent_after(triggers, expected_next_run_at))
+    {
+        automation.enabled = false;
+    }
     write_run(&tx, &run)?;
     write_automation(&tx, &automation)?;
     trim_history(&tx, &automation_id)?;
@@ -1017,13 +1083,301 @@ pub fn automation_run_update(
     trim_history(&tx, &run.automation_id)?;
     tx.commit().map_err(|error| error.to_string())?;
     drop(conn);
+    if run.status == "running" && automation.keep_awake {
+        awake::hold(&run.id);
+    } else if run.status != "running" {
+        awake::release(&run.id);
+    }
     let _ = app.emit(CHANGED, ());
     Ok(run)
+}
+
+/// Keep the Mac awake while an automation run is active (#39). One
+/// `caffeinate -i -w <MonoCode pid>` holds while any run that asked for it
+/// is running, so it also ends if MonoCode quits. Started from an argument
+/// list, never a shell. A no-op off macOS.
+mod awake {
+    use std::collections::HashSet;
+    use std::process::Child;
+    use std::sync::Mutex;
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub(super) enum Change {
+        Start,
+        Stop,
+        Keep,
+    }
+
+    #[derive(Default)]
+    pub(super) struct Holds {
+        runs: HashSet<String>,
+    }
+
+    impl Holds {
+        pub(super) fn hold(&mut self, run_id: &str) -> Change {
+            let was_empty = self.runs.is_empty();
+            self.runs.insert(run_id.to_string());
+            if was_empty {
+                Change::Start
+            } else {
+                Change::Keep
+            }
+        }
+
+        pub(super) fn release(&mut self, run_id: &str) -> Change {
+            if self.runs.remove(run_id) && self.runs.is_empty() {
+                Change::Stop
+            } else {
+                Change::Keep
+            }
+        }
+    }
+
+    struct State {
+        holds: Holds,
+        child: Option<Child>,
+    }
+
+    static STATE: Mutex<Option<State>> = Mutex::new(None);
+
+    fn with_state(apply: impl FnOnce(&mut State)) {
+        let Ok(mut guard) = STATE.lock() else {
+            return;
+        };
+        let state = guard.get_or_insert_with(|| State {
+            holds: Holds::default(),
+            child: None,
+        });
+        apply(state);
+    }
+
+    pub(super) fn hold(run_id: &str) {
+        with_state(|state| {
+            if state.holds.hold(run_id) == Change::Start && state.child.is_none() {
+                state.child = spawn();
+            }
+        });
+    }
+
+    pub(super) fn release(run_id: &str) {
+        with_state(|state| {
+            if state.holds.release(run_id) == Change::Stop {
+                if let Some(mut child) = state.child.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    fn spawn() -> Option<Child> {
+        std::process::Command::new("/usr/bin/caffeinate")
+            .arg("-i")
+            .arg("-w")
+            .arg(std::process::id().to_string())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn spawn() -> Option<Child> {
+        None
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn time_trigger(schedule_kind: &str, at: i64, interval_minutes: i64) -> AutomationTrigger {
+        AutomationTrigger {
+            id: "t".into(),
+            kind: "time".into(),
+            event: schedule_kind.into(),
+            schedule_kind: schedule_kind.into(),
+            minute: 0,
+            time: "09:00".into(),
+            day_of_week: 1,
+            repos: Vec::new(),
+            repo: String::new(),
+            branch: String::new(),
+            actor: default_actor(),
+            at,
+            interval_minutes,
+        }
+    }
+
+    fn upsert(
+        triggers: Vec<AutomationTrigger>,
+        enabled: bool,
+        next_run_at: i64,
+    ) -> AutomationUpsert {
+        serde_json::from_value(serde_json::json!({
+            "id": "automation-id",
+            "name": "Once",
+            "prompt": "Run the tests",
+            "harness": "codex",
+            "model": "model",
+            "cwd": "/tmp",
+            "workspaceMode": "current",
+            "runtimeMode": "auto",
+            "scheduleKind": triggers.first().map(|t| t.schedule_kind.clone()).unwrap_or_else(|| "weekdays".into()),
+            "minute": 0,
+            "time": "09:00",
+            "dayOfWeek": 1,
+            "triggers": triggers,
+            "missedRunGraceMinutes": 720,
+            "enabled": enabled,
+            "nextRunAt": next_run_at
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn accepts_one_time_and_interval_schedules() {
+        let now = 1_000_000;
+        assert!(validate_upsert(
+            &upsert(
+                vec![time_trigger("once", now + 60_000, 0)],
+                true,
+                now + 60_000
+            ),
+            now
+        )
+        .is_ok());
+        assert!(validate_upsert(
+            &upsert(vec![time_trigger("interval", 0, 30)], true, now + 1_800_000),
+            now
+        )
+        .is_ok());
+        // An interval outside 5 minutes to 30 days, and a one-time run with no moment.
+        assert!(validate_upsert(
+            &upsert(vec![time_trigger("interval", 0, 4)], true, now + 1),
+            now
+        )
+        .is_err());
+        assert!(validate_upsert(
+            &upsert(vec![time_trigger("interval", 0, 43_201)], true, now + 1),
+            now
+        )
+        .is_err());
+        assert!(validate_upsert(
+            &upsert(vec![time_trigger("once", 0, 0)], true, now + 1),
+            now
+        )
+        .is_err());
+        assert!(validate_upsert(
+            &upsert(vec![time_trigger("monthly", 0, 0)], true, now + 1),
+            now
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn a_spent_one_time_run_cannot_be_turned_back_on() {
+        let now = 1_000_000;
+        let past = vec![time_trigger("once", now - 1, 0)];
+        assert!(validate_upsert(&upsert(past.clone(), true, now + 1), now).is_err());
+        // Saved switched off, it is kept for its history.
+        assert!(validate_upsert(&upsert(past.clone(), false, now + 1), now).is_ok());
+        // Beside a recurring trigger it is just a spent line.
+        let mut mixed = past;
+        mixed.push(time_trigger("daily", 0, 0));
+        assert!(validate_upsert(&upsert(mixed, true, now + 1), now).is_ok());
+    }
+
+    #[test]
+    fn spent_and_live_one_time_triggers() {
+        let once = time_trigger("once", 500, 0);
+        assert!(trigger_live_from(&once, 500));
+        assert!(!trigger_live_from(&once, 501));
+        assert!(spent_after(std::slice::from_ref(&once), 500));
+        assert!(!spent_after(std::slice::from_ref(&once), 499));
+        assert!(!spent_after(
+            &[once.clone(), time_trigger("hourly", 0, 0)],
+            500
+        ));
+        let mut event = time_trigger("weekdays", 0, 0);
+        event.kind = "github".into();
+        assert!(!spent_after(&[once, event], 500));
+        assert!(!spent_after(&[], 500));
+    }
+
+    fn claim_store(triggers: Vec<AutomationTrigger>, next_run_at: i64) -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_tables(&conn).unwrap();
+        let mut automation: Automation = serde_json::from_value(serde_json::json!({
+            "id": "automation-id",
+            "name": "Once",
+            "prompt": "Run the tests",
+            "harness": "codex",
+            "model": "model",
+            "cwd": "/tmp",
+            "workspaceMode": "current",
+            "reuseSession": false,
+            "runtimeMode": "auto",
+            "scheduleKind": "once",
+            "minute": 0,
+            "time": "09:00",
+            "dayOfWeek": 1,
+            "missedRunGraceMinutes": 720,
+            "enabled": true,
+            "nextRunAt": next_run_at,
+            "createdAt": 1,
+            "updatedAt": 1
+        }))
+        .unwrap();
+        automation.triggers = Some(triggers);
+        write_automation(&conn, &automation).unwrap();
+        conn
+    }
+
+    #[test]
+    fn live_check_refuses_a_spent_one_time_trigger_a_year_later() {
+        let at = 1_000;
+        let conn = claim_store(vec![time_trigger("once", at, 0)], at);
+        let automation = get(&conn, "automation-id").unwrap().unwrap();
+        assert!(has_live_time_trigger(&automation, at));
+        // The placeholder next run, a year on.
+        assert!(!has_live_time_trigger(
+            &automation,
+            at + 365 * 24 * 3_600_000
+        ));
+        let interval = claim_store(vec![time_trigger("interval", 0, 30)], at);
+        let automation = get(&interval, "automation-id").unwrap().unwrap();
+        assert!(has_live_time_trigger(&automation, i64::MAX / 2));
+    }
+
+    #[test]
+    fn keep_awake_holds_while_any_run_is_active() {
+        let mut holds = awake::Holds::default();
+        assert_eq!(holds.hold("a"), awake::Change::Start);
+        assert_eq!(holds.hold("b"), awake::Change::Keep);
+        assert_eq!(holds.hold("a"), awake::Change::Keep);
+        assert_eq!(holds.release("a"), awake::Change::Keep);
+        // Releasing a run that never held changes nothing.
+        assert_eq!(holds.release("zzz"), awake::Change::Keep);
+        assert_eq!(holds.release("b"), awake::Change::Stop);
+        assert_eq!(holds.release("b"), awake::Change::Keep);
+    }
+
+    #[test]
+    fn old_rows_read_without_the_new_fields() {
+        let trigger: AutomationTrigger = serde_json::from_value(serde_json::json!({
+            "kind": "time",
+            "scheduleKind": "daily"
+        }))
+        .unwrap();
+        assert_eq!(trigger.at, 0);
+        assert_eq!(trigger.interval_minutes, 0);
+        let automation = claim_store(vec![trigger], 1);
+        let read = get(&automation, "automation-id").unwrap().unwrap();
+        assert!(!read.keep_awake);
+    }
 
     #[test]
     fn validates_time_fields() {
@@ -1056,6 +1410,7 @@ mod tests {
             day_of_week: 1,
             triggers: None,
             missed_run_grace_minutes: 720,
+            keep_awake: false,
             enabled: true,
             next_run_at: 1,
             last_run_at: None,
@@ -1105,6 +1460,7 @@ mod tests {
             day_of_week: 1,
             triggers: None,
             missed_run_grace_minutes: 720,
+            keep_awake: false,
             enabled: true,
             next_run_at: 1,
             last_run_at: None,

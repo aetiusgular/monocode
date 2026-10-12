@@ -64,6 +64,8 @@ mod worktrees;
 // [lane-1] mods
 mod claude_sessions;
 // [lane-2] mods
+mod env_store;
+mod project_context;
 // [lane-3] mods
 mod sandbox_frame;
 // [lane-4] mods
@@ -645,6 +647,13 @@ pub fn run() {
             checkpoint::session_checkpoint_restore_turn,
             claude_sessions::claude_sessions_list,
             // [lane-2] commands
+            project_context::project_context_read,
+            project_context::project_context_save,
+            project_context::session_preamble_write,
+            project_context::session_preamble_forget,
+            env_store::env_store_load,
+            env_store::env_store_set,
+            env_store::env_store_remove,
             // [lane-3] commands
             sandbox_frame::sandbox_frame_put,
             sandbox_frame::sandbox_frame_release,

@@ -826,6 +826,20 @@ import {
 } from "../features/session-import/model/sessionImport";
 import type { HarnessSessionRow as HarnessSessionRow_l1 } from "../features/session-import/model/types";
 // [lane-2] imports
+import { startManualAutomationRun as startManualAutomationRun_l2 } from "../features/automations/model/automations";
+import { appBlock as appBlock_l2 } from "../features/session-preamble/model/appBlock";
+import {
+  forgetSessionContext as forgetSessionContext_l2,
+  prepareSessionPreamble as prepareSessionPreamble_l2,
+  type PreparedPreamble as PreparedPreamble_l2,
+} from "../features/session-preamble/model/sessionPreamble";
+import { withPreambleBlock as withPreambleBlock_l2 } from "../features/session-preamble/model/preamble";
+import { chatContextPrefs as chatContextPrefs_l2 } from "../features/session-preamble/model/chatContext";
+import {
+  agentsMdBesideClaudeMd as agentsMdBesideClaudeMd_l2,
+  agentsMdPluginId as agentsMdPluginId_l2,
+} from "../features/project-context/model/instructions";
+import { claudeCliVersion as claudeCliVersion_l2 } from "../features/project-context/model/claudeVersion";
 // [lane-3] imports
 // [lane-4] imports
 // [lane-5] imports
@@ -5728,7 +5742,11 @@ function Workspace({
   );
 
   const onDeleteHistorySession = useCallback(
-    (sessionId: string) => onRemoveHistorySession(sessionId, "delete"),
+    (sessionId: string) =>
+      onRemoveHistorySession(sessionId, "delete").then((removed) => {
+        if (removed) forgetSessionContext_l2(sessionId);
+        return removed;
+      }),
     [onRemoveHistorySession],
   );
 
@@ -5776,6 +5794,7 @@ function Workspace({
         return;
       for (const sessionId of sessionIds) {
         if (!(await onRemoveHistorySession(sessionId, "delete", true))) break;
+        forgetSessionContext_l2(sessionId);
       }
     },
     [onRemoveHistorySession],
@@ -8024,6 +8043,13 @@ function Workspace({
               return;
             }
           }
+          // F2 and #27: native instruction channels, applied by the adapter
+          // only when a new conversation starts. Set below, before the send.
+          let preambleNative_l2: {
+            preambleFile?: string;
+            developerInstructions?: string;
+            agentsMdPlugin?: string;
+          } = {};
           const sendTurn = (text: string, turnAttachments = prepared) =>
             sendHarnessTurn({
               harness: current.harness,
@@ -8043,6 +8069,7 @@ function Workspace({
                 orchestrator.run(sessionId)?.status === "active",
               appAccess: operatorAccess,
               ...sessionToolsInput(current, workCwd),
+              ...preambleNative_l2,
               text,
               attachments: turnAttachments,
               ...(editedResend ? { onAccepted: acceptEditedResend } : {}),
@@ -8128,18 +8155,61 @@ function Workspace({
           ) {
             appContext.push(monoContext(agentLook, agentFiles, agentPlan));
           }
-          if (operatorCommand.matched || handAgent) {
+          if (mono && (operatorCommand.matched || handAgent)) {
             const cli = `${shellPath(await invoke<string>("app_cli_path"))} app`;
             appContext.push(
-              `<monocode_app>\n${handAgent ? "App access is always enabled in this thread." : "The user's Operator command enables app access in this thread, including later turns without the command."} You can start session tabs or split session panes right or down, list and create project worktrees, choose a new session's checkout, read, continue, stop, archive or delete other project sessions, save unsent drafts, organize session folders, and read or write saved notes through its local CLI. Run \`${cli} --help\` when you need the exact commands and JSON fields. When reading another session, start with its latest two or three user/assistant exchanges. Request older exchanges with nextBefore or a larger excerpt only if needed. The CLI uses a session credential already in your environment; never print it. New sessions inherit this session's permission mode unless runtimeMode is set explicitly. For a new session with a draft, call sessions.start with its prompt and draft:true; do not submit a seed prompt. The returned ID can be used as besideSessionId to split its pane again or moved into a folder immediately. A normal sessions.start submits its prompt but returns after acceptance, so do not wait for that agent to finish before organizing it.\n</monocode_app>`,
+              appBlock_l2({ cli, alwaysEnabled: Boolean(handAgent) }),
             );
+          }
+          // F2: a regular session's instructions, project memory and app
+          // access, fitted to the model's budget. Receipts send it once per
+          // provider session, so /operator's block survives a compaction or
+          // a provider switch (defect 5).
+          let preamble_l2: PreparedPreamble_l2 | undefined;
+          if (!mono) {
+            const memoryOn_l2 = !chatContextPrefs_l2(sessionId).memoryOff;
+            const operatorBlock_l2 = operatorAccess
+              ? appBlock_l2({
+                  cli: `${shellPath(await invoke<string>("app_cli_path"))} app`,
+                  alwaysEnabled: false,
+                  memory: memoryOn_l2,
+                })
+              : undefined;
+            preamble_l2 = await prepareSessionPreamble_l2({
+              session: current,
+              project: current.cwd,
+              operatorBlock: operatorBlock_l2,
+              commandFirst: !!rawCommand,
+            }).catch(() => undefined);
+            const agentsMdPlugin_l2 = agentsMdBesideClaudeMd_l2()
+              ? agentsMdPluginId_l2(await claudeCliVersion_l2())
+              : undefined;
+            preambleNative_l2 = {
+              ...(preamble_l2?.preambleFile
+                ? { preambleFile: preamble_l2.preambleFile }
+                : {}),
+              ...(preamble_l2?.developerInstructions
+                ? { developerInstructions: preamble_l2.developerInstructions }
+                : {}),
+              ...(agentsMdPlugin_l2 ? { agentsMdPlugin: agentsMdPlugin_l2 } : {}),
+            };
           }
           // A Mono reads who it is ahead of the message, so it never takes it
           // for something the user pasted. A command must stay first.
           if (mono && !rawCommand) sendText = monoTurn(sendText, appContext);
           else if (appContext.length)
             sendText += `\n\n${appContext.join("\n\n")}`;
+          if (preamble_l2?.messageBlock)
+            sendText = withPreambleBlock_l2(
+              sendText,
+              preamble_l2.messageBlock,
+              !!rawCommand,
+            );
           await sendTurn(sendText);
+          preamble_l2?.commit(
+            sessionsRef.current.find((session) => session.id === sessionId)
+              ?.providerSessionId ?? current.providerSessionId,
+          );
           if (agentFiles) {
             recordAgentContext(
               sessionId,
@@ -11185,6 +11255,11 @@ function Workspace({
               writeAgentFile(monoId, path, text, hash),
             // [lane-1] agent-host
             // [lane-2] agent-host
+            runAutomation: (automationId) =>
+              startManualAutomationRun_l2(automationId, (automation, run) =>
+                // The listener mounts once; the ref holds today's launcher.
+                launchAutomationRef_l2.current(automation, run, false),
+              ),
             // [lane-3] agent-host
             // [lane-4] agent-host
             // [lane-5] agent-host
@@ -12773,6 +12848,8 @@ function Workspace({
     [history, onSelectHistorySession, replaceBlankPaneWithSession, appendTab],
   );
   // [lane-2] app-late
+  const launchAutomationRef_l2 = useRef(launchAutomation);
+  launchAutomationRef_l2.current = launchAutomation;
   // [lane-3] app-late
   // [lane-4] app-late
   // [lane-5] app-late
@@ -13583,6 +13660,10 @@ function Workspace({
                   onOpenWhatsNew={onOpenWhatsNew}
                   collapsedProjectRailMode={collapsedProjectRailMode}
                   onCollapsedProjectRailModeChange={setCollapsedProjectRailMode}
+                  onOpenContextFile={(path) => {
+                    onCloseSettings();
+                    onOpenFile(path);
+                  }}
                 />
               ) : null}
               {searchViewOpen ||

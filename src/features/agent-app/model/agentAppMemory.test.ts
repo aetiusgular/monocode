@@ -99,7 +99,9 @@ it("redacts secrets and refuses sessions that are not the Mono", async () => {
   const { files, run } = fixture();
   await run("memory.add", { fact: "deploy token=abc123secretvalue" });
   expect(files.get("MEMORY.md")).not.toContain("abc123secretvalue");
-  await expect(fixture(false).run("memory.read")).rejects.toThrow(
+  // #36: a regular session reads its project's memory, never the Mono's. The
+  // project store is the app's, which this test does not run.
+  await expect(fixture(false).run("memory.read")).rejects.not.toThrow(
     "Mono",
   );
 });

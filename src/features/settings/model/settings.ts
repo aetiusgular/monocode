@@ -36,6 +36,9 @@ export type SettingsSectionId =
   | "archive"
   // [lane-1] section-ids
   // [lane-2] section-ids
+  | "instructions"
+  | "memory"
+  | "environment"
   // [lane-3] section-ids
   // [lane-4] section-ids
   // [lane-5] section-ids
@@ -198,6 +201,31 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   // [lane-1] sections
   // [lane-2] sections
+  {
+    id: "instructions",
+    group: "agents",
+    label: "Instructions",
+    description:
+      "What every agent is told: your instructions, private notes per project, and the repository's AGENTS.md.",
+    keywords:
+      "system prompt instructions agents.md claude.md rules notes preamble context budget",
+  },
+  {
+    id: "memory",
+    group: "agents",
+    label: "Memory",
+    description:
+      "What each project remembers across chats and harnesses. Agents propose; you decide.",
+    keywords: "memory remember facts project proposals local only forget",
+  },
+  {
+    id: "environment",
+    group: "workspace",
+    label: "Environment",
+    description:
+      "Variables every harness starts with, for all projects or one. Secrets stay in the keychain.",
+    keywords: "env environment variables secrets keychain dotenv token",
+  },
   // [lane-3] sections
   // [lane-4] sections
   // [lane-5] sections
@@ -558,6 +586,60 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
   },
   // [lane-1] index
   // [lane-2] index
+  {
+    id: "instructions-global",
+    section: "instructions",
+    label: "Your instructions",
+    keywords: "global system prompt every project",
+  },
+  {
+    id: "instructions-project",
+    section: "instructions",
+    label: "Private project notes",
+    keywords: "project notes private",
+  },
+  {
+    id: "instructions-agents-md",
+    section: "instructions",
+    label: "AGENTS.md",
+    keywords: "agents.md claude.md shared repository",
+  },
+  {
+    id: "instructions-harness-files",
+    section: "instructions",
+    label: "What harnesses read by themselves",
+    keywords: "claude.md codex agents.md global home",
+  },
+  {
+    id: "memory-entries",
+    section: "memory",
+    label: "Project memory",
+    keywords: "remembered facts entries local only remove",
+  },
+  {
+    id: "memory-add",
+    section: "memory",
+    label: "Add a memory",
+    keywords: "remember fact",
+  },
+  {
+    id: "environment-global",
+    section: "environment",
+    label: "Variables for every project",
+    keywords: "env global",
+  },
+  {
+    id: "environment-project",
+    section: "environment",
+    label: "Variables for one project",
+    keywords: "env project worktree",
+  },
+  {
+    id: "environment-harnesses",
+    section: "environment",
+    label: "What reaches each harness",
+    keywords: "codex hermes opencode shell mcp",
+  },
   // [lane-3] index
   {
     id: "chat-font",

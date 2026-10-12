@@ -140,6 +140,7 @@ import {
 } from "../../session-import/model/pickUp";
 import type { HarnessSessionRow as HarnessSessionRow_l1 } from "../../session-import/model/types";
 // [lane-2] imports
+import { useSuggestedPrompts as useSuggestedPrompts_l2 } from "../../suggested-prompts/hooks/useSuggestedPrompts";
 // [lane-3] imports
 // [lane-4] imports
 // [lane-5] imports
@@ -811,6 +812,13 @@ const LocalSessionPane = memo(function LocalSessionPane({
     ],
   );
   // [lane-2] body
+  const suggestions_l2 = useSuggestedPrompts_l2({
+    sessionId: session.id,
+    workCwd,
+    blocks: session.blocks,
+    busy: !!session.busy,
+    remote,
+  });
   // [lane-3] body
   // [lane-4] body
   // [lane-5] body
@@ -988,6 +996,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
       // [lane-1] composer-props
       pickUp_l1={pickUp_l1}
       // [lane-2] composer-props
+      suggestedPrompts={suggestions_l2.prompts}
+      onDismissSuggestedPrompts={suggestions_l2.dismiss}
       // [lane-3] composer-props
       // [lane-4] composer-props
       // [lane-5] composer-props

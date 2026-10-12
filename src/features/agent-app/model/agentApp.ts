@@ -167,6 +167,8 @@ export type AgentAppHost = {
   now?(): Date;
   // [lane-1] host-type
   // [lane-2] host-type
+  /** #39: start a manual run of a saved automation now. */
+  runAutomation?(automationId: string): Promise<void>;
   // [lane-3] host-type
   // [lane-4] host-type
   // [lane-5] host-type
@@ -226,6 +228,26 @@ const FIELDS = new Map<string, readonly string[]>([
   ["chat.card", [...CARD_FIELDS]],
   // [lane-1] fields
   // [lane-2] fields
+  ["automations.list", []],
+  [
+    "automations.create",
+    ["name", "prompt", "schedule", "runtimeMode", "workspaceMode", "keepAwake"],
+  ],
+  [
+    "automations.update",
+    [
+      "id",
+      "name",
+      "prompt",
+      "schedule",
+      "runtimeMode",
+      "workspaceMode",
+      "keepAwake",
+      "enabled",
+    ],
+  ],
+  ["automations.run", ["id"]],
+  ["automations.remove", ["id"]],
   // [lane-3] fields
   // [lane-4] fields
   // [lane-5] fields
@@ -604,7 +626,13 @@ async function handleMemory(
   host: AgentAppHost,
 ): Promise<unknown> {
   const monoId = host.monoOf?.(source.id)?.id;
-  if (!monoId) throw new Error("Memory belongs to the Mono's conversation");
+  // #36: a regular session reads and proposes to its project's memory.
+  // Loaded here, not imported at the top, to keep the import block free of
+  // lane edits.
+  if (!monoId)
+    return (
+      await import("../../project-memory/model/agentMemory")
+    ).handleProjectMemory(source, action, input, host.now?.());
   const path = memoryPath(input.topic);
   const date = memoryDate(host.now?.() ?? new Date());
   const until = optionalString(input.until, "until", 10);
@@ -962,6 +990,11 @@ export async function handleAgentApp(
     return handleHabits(source, action, input, host);
   // [lane-1] routes
   // [lane-2] routes
+  // #39. A dynamic import keeps the file's import block untouched.
+  if (action.startsWith("automations."))
+    return (
+      await import("../../automations/model/agentAutomations")
+    ).handleAutomationAction(source, action, input, host);
   // [lane-3] routes
   // [lane-4] routes
   // [lane-5] routes

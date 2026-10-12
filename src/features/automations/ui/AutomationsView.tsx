@@ -58,6 +58,8 @@ import {
   formatAutomationRunAt,
   formatAutomationRunDuration,
   gmtOffsetLabel,
+  intervalLabel,
+  joinLocalMoment,
   listAutomationRuns,
   listAutomations,
   newAutomationDraft,
@@ -66,6 +68,7 @@ import {
   peekAutomations,
   saveAutomation,
   setAutomationEnabled,
+  splitLocalMoment,
   subscribeAutomations,
   type Automation,
   type AutomationDraft,
@@ -85,20 +88,36 @@ import {
   azureDevOpsConnected,
 } from "../../inbox/model/azureDevOps";
 import { gitBranches } from "../../../platform/tauri/fs";
-import { formatRelativeTime, githubStatus } from "../../inbox/model/githubTasks";
+import {
+  formatRelativeTime,
+  githubStatus,
+} from "../../inbox/model/githubTasks";
 import { GITLAB_CHANGE_EVENT, gitlabConnected } from "../../inbox/model/gitlab";
 import { LAYER } from "../../../shared/lib/layers";
 import { LINEAR_CHANGE_EVENT, linearConnected } from "../../inbox/model/linear";
 import { JIRA_CHANGE_EVENT, jiraConnected } from "../../inbox/model/jira";
-import { defaultSessionChoice, firstEnabledHarness, modelsFor, preferredModelId, resolveModel } from "../../sessions/model/models";
+import {
+  defaultSessionChoice,
+  firstEnabledHarness,
+  modelsFor,
+  preferredModelId,
+  resolveModel,
+} from "../../sessions/model/models";
 import { projectKey, projectName } from "../../../shared/lib/paths";
 import { IS_MAC } from "../../../platform/tauri/platform";
-import { looksLikeProject, type RecentProject } from "../../projects/model/recents";
+import { AutomationProposals } from "./AutomationProposals";
+import {
+  looksLikeProject,
+  type RecentProject,
+} from "../../projects/model/recents";
 import {
   loadSessionFolders,
   subscribeSessionFolders,
 } from "../../sessions/model/sessionFolders";
-import { loadModelControls, subscribeModelControls } from "../../settings/model/settings";
+import {
+  loadModelControls,
+  subscribeModelControls,
+} from "../../settings/model/settings";
 import {
   loadTabGroupColors,
   loadTabGroupCustomColors,
@@ -348,6 +367,19 @@ function AutomationsContent({
     ? null
     : (draft ?? (selected ? draftFromAutomation(selected) : null));
   const listLock = useLockOverscroll<HTMLDivElement>();
+  // Agents propose into the project they work in: this one, recent ones,
+  // and every project that already has an automation.
+  const proposalProjects = useMemo(
+    () =>
+      [
+        ...new Set([
+          ...(cwd ? [cwd] : []),
+          ...recents.slice(0, 8).map((recent) => recent.path),
+          ...automations.map((automation) => automation.cwd),
+        ]),
+      ].filter(looksLikeProject),
+    [automations, cwd, recents],
+  );
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 text-content">
@@ -418,6 +450,19 @@ function AutomationsContent({
       </aside>
 
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <AutomationProposals
+          projects={proposalProjects}
+          automations={automations}
+          onAccepted={(saved) => {
+            if (saved) setSelectedId(saved.id);
+            void refresh();
+          }}
+          onEdit={(next) => {
+            setPickerOpen(false);
+            setDraft(next);
+          }}
+          onError={setError}
+        />
         {error ? (
           <div className="m-4 flex shrink-0 items-start gap-2 rounded-lg border border-red-400/20 bg-red-400/8 px-3 py-2 text-[12px] text-red-300">
             <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
@@ -772,9 +817,7 @@ function runTriggerMeta(
     const event = run.event ?? draft.triggerEvent;
     return {
       kind,
-      label:
-        findTriggerEvent(kind, event)?.label ??
-        triggerName(kind),
+      label: findTriggerEvent(kind, event)?.label ?? triggerName(kind),
     };
   }
   const times = draft.triggers.filter((trigger) => trigger.kind === "time");
@@ -1429,11 +1472,24 @@ function AutomationEditor({
                   </span>
                   <span className="mt-0.5 block text-[11px] text-content/40">
                     Catch-up window for missed runs
+                    {IS_MAC ? ", keep awake" : ""}
                   </span>
                 </span>
                 <ChevronDown className="size-3.5 text-content/40" />
               </summary>
               <div className="divide-y divide-content/7 border-t border-content/8">
+                {IS_MAC ? (
+                  <SettingsRow
+                    label="Keep the Mac awake"
+                    hint="While a run of this automation is active"
+                  >
+                    <ToggleSwitch
+                      label="Keep the Mac awake"
+                      on={draft.keepAwake}
+                      onChange={(on) => update("keepAwake", on)}
+                    />
+                  </SettingsRow>
+                ) : null}
                 <SettingsRow
                   label="Missed-run grace"
                   hint="Catch up if a scheduled run was missed"
@@ -1682,6 +1738,8 @@ const TRIGGER_EVENTS: Record<AutomationTriggerKind, readonly TriggerEvent[]> = {
     { value: "daily", label: "Daily" },
     { value: "weekdays", label: "Weekdays" },
     { value: "weekly", label: "Weekly" },
+    { value: "interval", label: "Every few minutes or hours" },
+    { value: "once", label: "Once" },
   ],
   github: [
     { value: "draft_opened", label: "Draft opened" },
@@ -1830,6 +1888,31 @@ function TimeTriggerSentence({
     value: String(value),
     label: `:${String(value).padStart(2, "0")}`,
   }));
+  if (trigger.scheduleKind === "once") {
+    return (
+      <OnceTriggerSentence
+        trigger={trigger}
+        nextAt={nextAt}
+        onChange={onChange}
+      />
+    );
+  }
+  if (trigger.scheduleKind === "interval") {
+    return (
+      <>
+        <span>Every</span>
+        <TriggerPill
+          label="Interval"
+          value={String(trigger.intervalMinutes ?? 60)}
+          options={intervalOptions(trigger.intervalMinutes ?? 60)}
+          onChange={(value) =>
+            onChange({ ...trigger, intervalMinutes: Number(value) })
+          }
+        />
+        <span className="ml-1 text-content/35">{nextRunPreview(nextAt)}</span>
+      </>
+    );
+  }
   const prefix =
     trigger.scheduleKind === "hourly"
       ? "Every hour at"
@@ -1871,6 +1954,50 @@ function TimeTriggerSentence({
       )}
       <span className="text-content/45">{gmtOffsetLabel()}</span>
       <span className="ml-1 text-content/35">{nextRunPreview(nextAt)}</span>
+    </>
+  );
+}
+
+function OnceTriggerSentence({
+  trigger,
+  nextAt,
+  onChange,
+}: {
+  trigger: AutomationTrigger;
+  nextAt: number;
+  onChange: (trigger: AutomationTrigger) => void;
+}) {
+  const at = trigger.at ?? 0;
+  const { date, time } = splitLocalMoment(at);
+  const set = (nextDate: string, nextTime: string) => {
+    const moment = joinLocalMoment(nextDate, nextTime);
+    if (moment) onChange({ ...trigger, at: moment, time: nextTime });
+  };
+  return (
+    <>
+      <span>Once on</span>
+      <input
+        type="date"
+        aria-label="Date"
+        value={date}
+        onChange={(event) => set(event.currentTarget.value, time)}
+        className="h-7 rounded-full border border-content/12 bg-transparent px-2.5 text-[12px] text-content/80 outline-none focus-visible:border-accent"
+      />
+      <span>at</span>
+      <TriggerPill
+        label="Time"
+        value={time}
+        options={timeOptions(time)}
+        onChange={(value) => set(date, value)}
+      />
+      <span className="text-content/45">
+        {gmtOffsetLabel(new Date(at || Date.now()))}
+      </span>
+      <span className="ml-1 text-content/35">
+        {Number.isFinite(nextAt)
+          ? nextRunPreview(nextAt)
+          : "That time has passed. Pick a later one."}
+      </span>
     </>
   );
 }
@@ -1951,6 +2078,20 @@ function TriggerPill({
       searchable={options.length > 8}
     />
   );
+}
+
+const INTERVAL_CHOICES = [
+  5, 10, 15, 30, 60, 120, 180, 240, 360, 480, 720, 1440,
+];
+
+function intervalOptions(current: number) {
+  const values = INTERVAL_CHOICES.includes(current)
+    ? INTERVAL_CHOICES
+    : [current, ...INTERVAL_CHOICES];
+  return values.map((value) => ({
+    value: String(value),
+    label: intervalLabel(value),
+  }));
 }
 
 function timeOptions(current: string) {

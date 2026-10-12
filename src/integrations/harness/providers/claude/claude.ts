@@ -106,6 +106,7 @@ import type {
 import { claudeBackgroundItems as claudeBackgroundItems_l1 } from "./claudeBackground";
 import { backgroundItemsKey as backgroundItemsKey_l1 } from "../../core/background";
 // [lane-2] imports
+import { agentsMdPluginConfig as agentsMdPluginConfig_l2 } from "../../../../features/project-context/model/instructions";
 // [lane-3] imports
 // [lane-4] imports
 // [lane-5] imports
@@ -2236,6 +2237,7 @@ function launchOptions(
   // [lane-1] launch-type
   forkSession?: boolean;
   // [lane-2] launch-type
+  appendSystemPromptFile?: string;
   // [lane-3] launch-type
   // [lane-4] launch-type
   // [lane-5] launch-type
@@ -2270,6 +2272,8 @@ function launchOptions(
   if (fork_l1 && fork_l1 !== resume) forkByThread_l1.delete(input.sessionId);
   const forkSession_l1 = fork_l1 !== undefined && fork_l1 === resume;
   // [lane-2] launch-body
+  const agentsMd_l2 = agentsMdPluginConfig_l2(input.agentsMdPlugin);
+  if (agentsMd_l2) settings.pluginConfigs = agentsMd_l2;
   // [lane-3] launch-body
   // [lane-4] launch-body
   // [lane-5] launch-body
@@ -2299,6 +2303,9 @@ function launchOptions(
     // [lane-1] launch-return
     ...(forkSession_l1 ? { forkSession: true } : {}),
     // [lane-2] launch-return
+    ...(input.preambleFile && !resume
+      ? { appendSystemPromptFile: input.preambleFile }
+      : {}),
     // [lane-3] launch-return
     // [lane-4] launch-return
     // [lane-5] launch-return

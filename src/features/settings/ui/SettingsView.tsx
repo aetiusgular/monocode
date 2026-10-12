@@ -417,6 +417,9 @@ import {
 import type { Session } from "../../sessions/model/session";
 // [lane-1] imports
 // [lane-2] imports
+import { InstructionsPage as InstructionsPage_l2 } from "../../project-context/ui/InstructionsPage";
+import { MemoryPage as MemoryPage_l2 } from "../../project-memory/ui/MemoryPage";
+import { EnvironmentPage as EnvironmentPage_l2 } from "../../environment/ui/EnvironmentPage";
 // [lane-3] imports
 import {
   applyChatFont as applyChatFont_l3,
@@ -476,6 +479,8 @@ type Props = {
   onOpenWhatsNew: (version: string) => void;
   collapsedProjectRailMode?: CollapsedProjectRailMode;
   onCollapsedProjectRailModeChange?: (mode: CollapsedProjectRailMode) => void;
+  /** Opens a file such as a project's AGENTS.md in the editor (#27). */
+  onOpenContextFile?: (path: string) => void;
 };
 
 export function SettingsView({
@@ -501,6 +506,7 @@ export function SettingsView({
   onOpenWhatsNew,
   collapsedProjectRailMode,
   onCollapsedProjectRailModeChange,
+  onOpenContextFile,
 }: Props) {
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const [revealed, setRevealed] = useState<string | null>(anchor);
@@ -628,6 +634,19 @@ export function SettingsView({
               {section === "models" ? <ModelsPage /> : null}
               {/* [lane-1] section-switch */}
               {/* [lane-2] section-switch */}
+              {section === "instructions" ? (
+                <InstructionsPage_l2
+                  cwd={cwd}
+                  recents={recents}
+                  onOpenFile={onOpenContextFile}
+                />
+              ) : null}
+              {section === "memory" ? (
+                <MemoryPage_l2 cwd={cwd} recents={recents} />
+              ) : null}
+              {section === "environment" ? (
+                <EnvironmentPage_l2 cwd={cwd} recents={recents} />
+              ) : null}
               {/* [lane-3] section-switch */}
               {/* [lane-4] section-switch */}
               {/* [lane-5] section-switch */}
