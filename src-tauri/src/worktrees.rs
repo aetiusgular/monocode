@@ -243,6 +243,8 @@ fn worktree_include_candidates(source: &Path) -> Result<Vec<String>, String> {
     let mut command = Command::new("git");
     crate::hide_window_console(&mut command);
     let mut child = command
+        .arg("-c")
+        .arg("core.fsmonitor=false")
         .arg("-C")
         .arg(source)
         .args(["check-ignore", "-z", "--stdin"])

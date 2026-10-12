@@ -48,27 +48,28 @@ export const UNOWNED_REFUSED =
  * F6 covers a checkout an open chat owns. With none, the helper falls back to
  * a harness by id, whose model is hosted or not known to be local, so the
  * diff would leave the computer with no chat to say so (security review,
- * finding F3; corner case 7). Ask once per project, sharing code review's
- * consent, since both send the same diff.
+ * finding F3; corner case 7). Ask once per project and harness. The answer is
+ * kept beside code review's, under its own key, so neither covers the other.
  */
 export function confirmUnownedHelper(
   harness: HarnessId,
   cwd: string,
   what: string,
 ): boolean {
-  if (reviewConsented(cwd)) return true;
+  const key = `helper:${harness}:${cwd}`;
+  if (reviewConsented(key)) return true;
   let ok = false;
   try {
     ok =
       typeof window !== "undefined" &&
       typeof window.confirm === "function" &&
       window.confirm(
-        `No open chat works in this folder, so ${what} would be written by ${harness}, which is hosted or not known to be local. Your changes would leave this computer. Send them? Your answer is kept for this project, for code review too.`,
+        `No open chat works in this folder, so ${what} would be written by ${harness}, which is hosted or not known to be local. Your changes would leave this computer. Send them? A yes is kept for this project and ${harness}.`,
       );
   } catch {
     ok = false;
   }
-  if (ok) recordReviewConsent(cwd);
+  if (ok) recordReviewConsent(key);
   return ok;
 }
 

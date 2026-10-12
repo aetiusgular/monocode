@@ -301,14 +301,17 @@ fn main_checkout(dir: &Path) -> Option<PathBuf> {
         .lines()
         .find_map(|line| line.strip_prefix("gitdir:"))?
         .trim();
-    let gitdir = PathBuf::from(gitdir);
+    // Git 2.48 can write relative links: the `.git` file's path is relative
+    // to the worktree folder, and the back-link is relative to the gitdir.
+    let gitdir = dir.join(gitdir);
     // The check uses resolved paths; the project key keeps the path as written.
     let resolved = std::fs::canonicalize(&gitdir).ok()?;
     let back = std::fs::read_to_string(resolved.join("gitdir")).ok()?;
-    let back = std::fs::canonicalize(PathBuf::from(back.trim())).ok()?;
+    let back = std::fs::canonicalize(resolved.join(back.trim())).ok()?;
     if back != std::fs::canonicalize(&dot_git_file).ok()? {
         return None;
     }
+    let gitdir = lexical_normal(&gitdir);
     let worktrees = gitdir.parent()?;
     if worktrees.file_name()? != "worktrees" {
         return None;
@@ -318,6 +321,22 @@ fn main_checkout(dir: &Path) -> Option<PathBuf> {
         return None;
     }
     Some(dot_git.parent()?.to_path_buf())
+}
+
+/// `a/b/../c` as `a/c`, without touching the disk, so a relative worktree link
+/// still names its main checkout the way the project was stored.
+fn lexical_normal(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// The stored project a working folder belongs to: the folder itself or the
@@ -557,6 +576,31 @@ mod tests {
                 ("REGION".to_string(), "eu".to_string()),
                 ("SHARED".to_string(), "global".to_string())
             ]
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn follows_a_worktree_written_with_relative_links() {
+        let dir = temp();
+        let path = dir.join(FILE);
+        let secrets = Memory::default();
+        let main = dir.join("app");
+        let worktree = dir.join("app-wt");
+        std::fs::create_dir_all(main.join(".git/worktrees/wt")).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(worktree.join(".git"), "gitdir: ../app/.git/worktrees/wt\n").unwrap();
+        std::fs::write(
+            main.join(".git/worktrees/wt/gitdir"),
+            "../../../../app-wt/.git\n",
+        )
+        .unwrap();
+        let project = main.to_string_lossy().into_owned();
+        set_var(&path, &secrets, Some(&project), "REGION", "eu", false).unwrap();
+        let file = load_file(&path);
+        assert_eq!(
+            resolve(&file, &secrets, &worktree),
+            vec![("REGION".to_string(), "eu".to_string())]
         );
         std::fs::remove_dir_all(dir).unwrap();
     }

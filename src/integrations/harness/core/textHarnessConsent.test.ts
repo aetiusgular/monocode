@@ -34,7 +34,7 @@ it("asks before a checkout no chat owns sends its diff to a harness (F3, case 7)
   expect(commit).not.toHaveBeenCalled();
   expect(confirm).toHaveBeenCalledTimes(1);
   expect(confirm.mock.calls[0][0]).toMatch(/leave this computer/);
-  expect(reviewConsented("/repo")).toBe(false);
+  expect(reviewConsented("helper:claude:/repo")).toBe(false);
 });
 
 it("falls back to no PR text when the user says no", async () => {
@@ -43,17 +43,19 @@ it("falls back to no PR text when the user says no", async () => {
   expect(pr).not.toHaveBeenCalled();
 });
 
-it("asks once per project, and the answer is shared with code review", async () => {
+it("asks once per project and harness, apart from code review", async () => {
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
   await expect(generateCommitMessage("/repo", "claude")).resolves.toBe(
     "Commit from the helper",
   );
   await generatePrContent("/repo", "claude");
   expect(confirm).toHaveBeenCalledTimes(1);
-  expect(reviewConsented("/repo")).toBe(true);
-  // Another project asks again.
-  await generateCommitMessage("/other", "codex");
-  expect(confirm).toHaveBeenCalledTimes(2);
+  // Code review's own consent for the project is not given by this yes.
+  expect(reviewConsented("/repo")).toBe(false);
+  // Another harness, or another project, asks again.
+  await generateCommitMessage("/repo", "codex");
+  await generateCommitMessage("/other", "claude");
+  expect(confirm).toHaveBeenCalledTimes(3);
 });
 
 it("does not ask when a chat owns the checkout (its own route)", async () => {

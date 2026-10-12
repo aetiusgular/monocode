@@ -4577,14 +4577,55 @@ fn git_output(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
     None
 }
 
-/// `git_output` with the repository's `core.fsmonitor` turned off. A file
-/// monitor is a command named in `.git/config`, which an agent can write, so
-/// a call that only reads must not start it (security review, finding F7).
+/// Git's empty tree. As the attribute source, no `.gitattributes` applies, so
+/// no filter driver named in `.git/config` can run.
+const GIT_EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// Whether this git takes `--attr-source` (2.40 and later). Read once.
+fn git_takes_attr_source() -> bool {
+    static TAKES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TAKES.get_or_init(|| {
+        git_cmd()
+            .arg("--version")
+            .output()
+            .ok()
+            .and_then(|out| git_version_at_least(&String::from_utf8_lossy(&out.stdout), 2, 40))
+            .unwrap_or(false)
+    })
+}
+
+/// `git version 2.39.5 (Apple Git-154)` style text against a minimum.
+fn git_version_at_least(text: &str, major: u32, minor: u32) -> Option<bool> {
+    let version = text.split_whitespace().nth(2)?;
+    let mut parts = version.split('.');
+    let found_major: u32 = parts.next()?.parse().ok()?;
+    let found_minor: u32 = parts.next()?.parse().ok()?;
+    Some((found_major, found_minor) >= (major, minor))
+}
+
+/// Why a review must not run its diff, if it must not. On git without
+/// `--attr-source`, a filter driver in the repository's own config would run
+/// on `git diff`, so the review is refused there (second security review, R1).
+fn review_refusal(takes_attr_source: bool, local_filter: bool) -> Option<&'static str> {
+    (!takes_attr_source && local_filter).then_some(
+        "This repository's own git config names a filter command, which reading its diff would run. Review needs git 2.40 or later here.",
+    )
+}
+
+/// `git_output` for content a stranger or an agent may have shaped: the
+/// repository's `core.fsmonitor` is off and, where git allows, no attribute
+/// applies, so no command named in `.git/config` starts (security review,
+/// findings F7 and R1).
 fn git_output_no_fsmonitor(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
-    let output = git_cmd_for_args(args)
+    let mut command = git_cmd_for_args(args);
+    command
         .arg("--no-pager")
         .arg("-c")
-        .arg("core.fsmonitor=false")
+        .arg("core.fsmonitor=false");
+    if git_takes_attr_source() {
+        command.arg(format!("--attr-source={GIT_EMPTY_TREE}"));
+    }
+    let output = command
         .arg("-C")
         .arg(root)
         .args(args)
@@ -6266,6 +6307,19 @@ fn untracked_file_patch(root: &Path, relative: &str) -> Option<String> {
 }
 
 pub(crate) fn git_review_patch_for(root: &Path) -> Result<GitReviewPatch, String> {
+    let local_filter = git_run_no_fsmonitor(
+        root,
+        &[
+            "config",
+            "--local",
+            "--get-regexp",
+            r"^filter\..*\.(clean|smudge|process)$",
+        ],
+    )
+    .is_some_and(|text| !text.trim().is_empty());
+    if let Some(reason) = review_refusal(git_takes_attr_source(), local_filter) {
+        return Err(reason.to_string());
+    }
     if git_run_no_fsmonitor(root, &["rev-parse", "--is-inside-work-tree"]).is_none() {
         return Err("This folder is not a git repository".into());
     }
@@ -6382,6 +6436,63 @@ mod tests {
         assert!(!review.patch.contains("TOKEN"));
         assert_eq!(review.skipped, vec!["blob.bin"]);
         assert!(!review.truncated);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn review_refuses_only_old_git_with_a_local_filter() {
+        assert_eq!(
+            git_version_at_least("git version 2.43.0", 2, 40),
+            Some(true)
+        );
+        assert_eq!(
+            git_version_at_least("git version 2.39.5 (Apple Git-154)", 2, 40),
+            Some(false)
+        );
+        assert_eq!(git_version_at_least("git version 3.0.0", 2, 40), Some(true));
+        assert_eq!(git_version_at_least("nonsense", 2, 40), None);
+        assert!(review_refusal(false, true).is_some());
+        assert!(review_refusal(false, false).is_none());
+        assert!(review_refusal(true, true).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn review_patch_never_runs_a_filter_named_in_git_config() {
+        use std::os::unix::fs::PermissionsExt;
+        if !git_takes_attr_source() {
+            return; // Covered by the refusal test on older git.
+        }
+        let root = review_repo("filter");
+        std::fs::write(root.join("a.txt"), "one\n").unwrap();
+        review_commit(&root);
+        let marker = root.with_extension("filter-ran");
+        let _ = std::fs::remove_file(&marker);
+        let script = root.with_extension("filter.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\ncat\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git_checked(
+            &root,
+            &["config", "filter.x.clean", &script.to_string_lossy()],
+        )
+        .unwrap();
+        std::fs::write(root.join(".gitattributes"), "* filter=x\n").unwrap();
+        std::fs::write(root.join("a.txt"), "two\n").unwrap();
+        let _ = git_run(&root, &["diff", "HEAD"]);
+        let ran_plain = marker.exists();
+        let _ = std::fs::remove_file(&marker);
+        let review = git_review_patch_for(&root).unwrap();
+        assert!(review.patch.contains("+two"));
+        assert!(!marker.exists(), "the review ran a filter from .git/config");
+        assert!(
+            ran_plain,
+            "the filter never ran under plain git, so this test checks nothing"
+        );
+        let _ = std::fs::remove_file(&script);
         std::fs::remove_dir_all(root).unwrap();
     }
 
