@@ -2754,11 +2754,13 @@ fn git_selected_context_for(root: &Path, paths: &[String]) -> Result<GitStagedCo
     directory.create(&index_dir).map_err(|e| e.to_string())?;
     let index = GitSelectionIndex(index_dir);
     let run = |args: &[&str]| -> Result<String, String> {
+        let (globals, args_guarded) = crate::git_guard::guard(root, args)?;
         let output = git_cmd()
             .arg("--literal-pathspecs")
+            .args(&globals)
             .arg("-C")
             .arg(root)
-            .args(args)
+            .args(&args_guarded)
             .env("GIT_INDEX_FILE", index.0.join("index"))
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("PATH", crate::harness::gui_search_path())
@@ -4527,12 +4529,14 @@ fn git_cmd_for_args(args: &[&str]) -> Command {
 }
 
 pub(crate) fn git_checked(root: &Path, args: &[&str]) -> Result<(), String> {
+    let (globals, args_guarded) = crate::git_guard::guard(root, args)?;
     let mut cmd = git_cmd_for_args(args);
     let output = cmd
         .arg("--no-pager")
+        .args(&globals)
         .arg("-C")
         .arg(root)
-        .args(args)
+        .args(&args_guarded)
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
@@ -4562,11 +4566,13 @@ fn git_run(root: &Path, args: &[&str]) -> Option<String> {
 }
 
 fn git_output(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
+    let (globals, args_guarded) = crate::git_guard::guard(root, args).ok()?;
     let output = git_cmd_for_args(args)
         .arg("--no-pager")
+        .args(&globals)
         .arg("-C")
         .arg(root)
-        .args(args)
+        .args(&args_guarded)
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
@@ -4617,11 +4623,11 @@ fn review_refusal(takes_attr_source: bool, local_filter: bool) -> Option<&'stati
 /// applies, so no command named in `.git/config` starts (security review,
 /// findings F7 and R1).
 fn git_output_no_fsmonitor(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
+    let (globals, args_guarded) = crate::git_guard::guard(root, args).ok()?;
+    let args: Vec<&str> = args_guarded.iter().map(String::as_str).collect();
+    let args = args.as_slice();
     let mut command = git_cmd_for_args(args);
-    command
-        .arg("--no-pager")
-        .arg("-c")
-        .arg("core.fsmonitor=false");
+    command.arg("--no-pager").args(&globals);
     if git_takes_attr_source() {
         command.arg(format!("--attr-source={GIT_EMPTY_TREE}"));
     }
@@ -4663,11 +4669,13 @@ pub(crate) fn git_output_capped(
     max_bytes: usize,
     cancel: Option<&AtomicBool>,
 ) -> Option<(Vec<u8>, bool)> {
+    let (globals, args_guarded) = crate::git_guard::guard(root, args).ok()?;
     let mut child = git_cmd()
         .arg("--no-pager")
+        .args(&globals)
         .arg("-C")
         .arg(root)
-        .args(args)
+        .args(&args_guarded)
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
@@ -5092,7 +5100,14 @@ fn git_ahead_behind(root: &Path, base: &str) -> (i64, i64) {
 }
 
 fn git_stdout(root: &Path, args: &[&str]) -> Option<String> {
-    let output = git_cmd().arg("-C").arg(root).args(args).output().ok()?;
+    let (globals, args_guarded) = crate::git_guard::guard(root, args).ok()?;
+    let output = git_cmd()
+        .args(&globals)
+        .arg("-C")
+        .arg(root)
+        .args(&args_guarded)
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -6482,7 +6497,13 @@ mod tests {
         .unwrap();
         std::fs::write(root.join(".gitattributes"), "* filter=x\n").unwrap();
         std::fs::write(root.join("a.txt"), "two\n").unwrap();
-        let _ = git_run(&root, &["diff", "HEAD"]);
+        // Plain git, not git_run, which now switches these off for every read
+        // (Mac finding 10.1), so the control would never see them run.
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["diff", "HEAD"])
+            .output();
         let ran_plain = marker.exists();
         let _ = std::fs::remove_file(&marker);
         let review = git_review_patch_for(&root).unwrap();
@@ -6493,6 +6514,48 @@ mod tests {
             "the filter never ran under plain git, so this test checks nothing"
         );
         let _ = std::fs::remove_file(&script);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Mac finding 10.1: the Changes panel polls these every few seconds, and
+    /// each poll ran a clean filter named in `.git/config`. The filter is named
+    /// from `.git/info/attributes`, which `--attr-source` does not cover.
+    #[cfg(unix)]
+    #[test]
+    fn changes_panel_polling_never_runs_a_filter_named_in_git_config() {
+        let root = review_repo("poll-filter");
+        std::fs::write(root.join("a.txt"), "one\n").unwrap();
+        review_commit(&root);
+        let marker = root.with_extension("poll-filter-ran");
+        let _ = std::fs::remove_file(&marker);
+        git_checked(
+            &root,
+            &[
+                "config",
+                "filter.x.clean",
+                &format!("touch '{}'; cat", marker.display()),
+            ],
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join(".git/info")).unwrap();
+        std::fs::write(root.join(".git/info/attributes"), "* filter=x\n").unwrap();
+        std::fs::write(root.join("a.txt"), "two\n").unwrap();
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["diff", "HEAD"])
+            .output();
+        let ran_plain = marker.exists();
+        let _ = std::fs::remove_file(&marker);
+        let stats = git_diff_stats_for(&root);
+        let index = git_diff_index_for(&root);
+        let files = git_diff_files_for(&root);
+        let _ = (stats, index, files);
+        assert!(
+            !marker.exists(),
+            "the Changes panel ran a filter from .git/config"
+        );
+        assert!(ran_plain, "the filter never ran under plain git");
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -6519,7 +6582,13 @@ mod tests {
         .unwrap();
         std::fs::write(root.join("a.txt"), "two\n").unwrap();
         // Plain git runs it, so the test can see a monitor start.
-        let _ = git_run(&root, &["diff", "HEAD"]);
+        // Plain git, not git_run, which now switches these off for every read
+        // (Mac finding 10.1), so the control would never see them run.
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["diff", "HEAD"])
+            .output();
         let ran_plain = marker.exists();
         let _ = std::fs::remove_file(&marker);
         let review = git_review_patch_for(&root).unwrap();

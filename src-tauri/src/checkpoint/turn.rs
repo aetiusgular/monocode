@@ -601,11 +601,22 @@ fn resolve_edit_path(workspace: &Path, root: &Path, path: &str) -> Result<String
 fn git_command(root: &Path, args: &[&str]) -> Command {
     let mut command = Command::new("git");
     crate::hide_window_console(&mut command);
+    // A turn's diff runs after every turn with no click, so the repository's
+    // own filter and diff drivers are off for its reads (Mac finding 10.1).
+    // When their names cannot be read or passed back safely, the call is
+    // replaced by an option git refuses, so it fails rather than runs them.
+    let (globals, args_guarded) = crate::git_guard::guard(root, args).unwrap_or_else(|_| {
+        (
+            vec!["-c".into(), "core.fsmonitor=false".into()],
+            vec!["--monocode-refused-this-repository-config".into()],
+        )
+    });
     command
-        .args(["--no-pager", "-C"])
+        .arg("--no-pager")
+        .args(&globals)
+        .arg("-C")
         .arg(root)
-        .args(["-c", "core.fsmonitor=false"])
-        .args(args)
+        .args(&args_guarded)
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_LITERAL_PATHSPECS", "1")

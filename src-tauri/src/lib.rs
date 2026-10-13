@@ -16,6 +16,7 @@ mod devin_usage;
 mod docker_mcp;
 mod external_editor;
 mod fs;
+mod git_guard;
 mod gitlab;
 mod harness;
 mod harness_updates;
