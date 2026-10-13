@@ -1,7 +1,12 @@
 import type { ApprovalDecision } from "../../../integrations/harness/core/types";
 import type { Block } from "../../sessions/model/session";
 import type { ApprovalOptions } from "../model/networkApproval";
-import { COMMAND_RULE_TOOL, commandRuleFromKey } from "../model/commandRules";
+import {
+  COMMAND_RULE_TOOL,
+  PROJECT_CODE_NOTE,
+  commandRuleFromKey,
+  commandRuleRunsProjectCode,
+} from "../model/commandRules";
 import { CODEX_COMMAND_TOOL } from "../model/toolAccess";
 import { useApprovalRules } from "./approvalRules";
 
@@ -40,6 +45,8 @@ export function allowForChatPlan(approval: NonNullable<Block["approval"]>): {
   prefix?: string;
   /** True when the rule is this exact command only. */
   exact?: boolean;
+  /** The rule was kept before and the script it runs changed since. */
+  changed?: boolean;
 } | null {
   const tool = approval.tool;
   if (!tool || approval.network) return null;
@@ -50,10 +57,21 @@ export function allowForChatPlan(approval: NonNullable<Block["approval"]>): {
       rule.kind === "prefix"
         ? `commands that start with "${rule.prefix}"`
         : `the command "${rule.command}"`;
+    const changed = approval.chatRule.changed === true;
+    const notes = [
+      ...(changed
+        ? [
+            "This rule was allowed before. The script it runs, or the project's .npmrc, changed since.",
+          ]
+        : []),
+      `Allow ${what} in this chat, also after a restart. Any other command still asks.`,
+      ...(commandRuleRunsProjectCode(rule) ? [PROJECT_CODE_NOTE] : []),
+    ];
     return {
       keep: approval.chatRule,
-      title: `Allow ${what} in this chat, also after a restart. Any other command still asks.`,
+      title: notes.join(" "),
       ...(rule.kind === "prefix" ? { prefix: rule.prefix } : { exact: true }),
+      ...(changed ? { changed: true } : {}),
     };
   }
   if (tool.key === CODEX_COMMAND_TOOL) {
@@ -99,7 +117,8 @@ export function AllowForChatButton({
     >
       {plan.prefix ? (
         <>
-          Allow <code className="font-mono">{plan.prefix}</code> in this chat
+          Allow <code className="font-mono">{plan.prefix}</code>{" "}
+          {plan.changed ? "again (its script changed)" : "in this chat"}
         </>
       ) : plan.exact ? (
         "Allow this exact command in this chat"

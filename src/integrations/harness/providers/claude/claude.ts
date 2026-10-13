@@ -95,11 +95,17 @@ import {
   type UserQuestionReply,
 } from "../../../../features/sessions/model/userQuestion";
 import { approvalTool } from "../../../../features/tool-access/model/toolAccess";
-import { commandRuleGate } from "../../../../features/tool-access/model/commandRuleGate";
+import {
+  commandRuleGate,
+  packageScriptFingerprint,
+} from "../../../../features/tool-access/model/commandRuleGate";
+import { recordScriptRuleFingerprint } from "../../../../features/tool-access/model/scriptRuleStore";
 import {
   COMMAND_RULE_TOOL,
   commandRuleForRequest,
+  commandRuleFromKey,
   commandRuleKey,
+  packageScriptOf,
   isCompoundCommand,
   deriveCommandRule,
   matchingCommandRule,
@@ -148,6 +154,11 @@ type PendingApproval = {
   toolName: string;
   input: Record<string, unknown>;
   resolve: (decision: ApprovalOutcome) => void;
+  /**
+   * The package script fingerprint "Allow for this chat" keeps with the
+   * card's rule, read when the card was shown (security fix R3).
+   */
+  scriptPrint?: Promise<{ ruleKey: string; fingerprint: string } | undefined>;
 };
 
 type PendingQuestion = {
@@ -418,10 +429,27 @@ export function respondClaudeApproval(
   sessionId: string,
   requestId: number,
   decision: ApprovalDecision,
+  options?: { forChat?: boolean },
 ): void {
   const live = liveByThread.get(sessionId);
   const pending = live?.approvals.get(requestId);
   if (!pending) return;
+  const print = pending.scriptPrint;
+  if (decision === "allow" && options?.forChat && print) {
+    // The fingerprint is kept before Claude Code hears the answer, so its
+    // next request already meets it.
+    void print
+      .then((found) => {
+        if (found)
+          recordScriptRuleFingerprint(
+            sessionId,
+            found.ruleKey,
+            found.fingerprint,
+          );
+      })
+      .finally(() => pending.resolve(decision));
+    return;
+  }
   pending.resolve(decision);
 }
 
@@ -1515,7 +1543,7 @@ async function handleControlRequest(
       ? matchingCommandRule(live.toolRules.always, input.command)
       : null;
   const commandGate_s6 = commandRuleKey_s6
-    ? await commandRuleGate(commandRuleKey_s6, live.cwd)
+    ? await commandRuleGate(commandRuleKey_s6, live.cwd, undefined, sessionId)
     : null;
   if (
     !site &&
@@ -1547,11 +1575,22 @@ async function handleControlRequest(
   const pending = waitApproval(live, uiId, control.requestId, toolName, input);
   // Only a request that names its tool can be remembered by a rule.
   const tool = approvalTool(control.toolName);
-  const chatRule = claudeCommandChatRule(
-    toolName,
-    input,
-    control.permissionSuggestions,
-  );
+  // A rule whose script changed since it was allowed is named on the card,
+  // so allowing it again keeps the script as it is now.
+  const chatRule: ApprovalTool | undefined =
+    commandGate_s6?.allow === false &&
+    commandGate_s6.reason === "script-changed" &&
+    commandRuleKey_s6
+      ? { ...approvalTool(commandRuleKey_s6)!, changed: true }
+      : claudeCommandChatRule(toolName, input, control.permissionSuggestions);
+  // Read without holding the card back; an answer waits for it (R3).
+  const scriptPrint = chatRule
+    ? chatRuleScriptPrint_s6(chatRule.key, live.cwd)
+    : undefined;
+  if (scriptPrint) {
+    const entry = live.approvals.get(uiId);
+    if (entry) entry.scriptPrint = scriptPrint;
+  }
   live.onEvent({
     type: "approval.requested",
     requestId: uiId,
@@ -2574,5 +2613,19 @@ async function claudeRuleHeldToFolders_l5(
   return pathsInsideChatFolders_l5(
     path === null ? null : [path],
     live.chatFolders_l5,
+  );
+}
+
+/** The fingerprint a package script rule is kept with, read now (R3). */
+function chatRuleScriptPrint_s6(
+  ruleKey: string,
+  cwd: string,
+): Promise<{ ruleKey: string; fingerprint: string } | undefined> | undefined {
+  const rule = commandRuleFromKey(ruleKey);
+  const script = rule ? packageScriptOf(rule) : null;
+  if (script === null) return undefined;
+  return packageScriptFingerprint(cwd, script).then(
+    (fingerprint) => (fingerprint ? { ruleKey, fingerprint } : undefined),
+    () => undefined,
   );
 }

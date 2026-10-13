@@ -12,7 +12,12 @@ import type { HarnessEvent, HarnessToolAccess } from "../../core/types";
 const sent: string[] = [];
 let onLine: ((line: string) => void) | undefined;
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: async () => true }));
+/** The project's package.json, as Rust reads it for the script rule check (R3). */
+const PACKAGE_JSON = '{"scripts":{"test":"vitest run"}}';
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: async (command: string) =>
+    command === "preview_read_config" ? { packageJson: PACKAGE_JSON } : true,
+}));
 vi.mock("../../core/existingDirs", () => ({
   existingDirs: async (dirs?: readonly string[]) => [...(dirs ?? [])],
 }));
@@ -28,6 +33,21 @@ vi.mock("../../core/child", () => ({
     sent.push(line);
   },
 }));
+
+const { recordScriptRuleFingerprint } =
+  await import("../../../../features/tool-access/model/scriptRuleStore");
+const { scriptFingerprint } =
+  await import("../../../../features/tool-access/model/commandRuleGate");
+/** "Allow for this chat" kept `npm test *` while `test` was `vitest run`. */
+const keepNpmTestPrint = () =>
+  recordScriptRuleFingerprint(
+    "s1",
+    "Bash(npm test *)",
+    scriptFingerprint(
+      { scripts: { test: "vitest run" }, npmrcSha256: null },
+      "test",
+    ),
+  );
 
 const {
   respondClaudeApproval,
@@ -131,6 +151,7 @@ async function finish(turn: Promise<void>) {
 }
 
 beforeEach(() => {
+  localStorage.clear();
   sent.length = 0;
   onLine = undefined;
   __claudeTestReset();
@@ -173,6 +194,7 @@ describe("Claude Code command rules for one chat", () => {
   });
 
   it("answers a matching command by rule; anything else still asks", async () => {
+    keepNpmTestPrint();
     const { events, turn } = await startTurn({ always: ["Bash(npm test *)"] });
     // Security fix F1: words after `--` pass only when none is a flag.
     askBash("r1", "npm test -- src/a.test.ts");
@@ -203,7 +225,10 @@ describe("Claude Code command rules for one chat", () => {
     askBash("r1", "npm test");
     await waitFor(() => cards(events).length === 1, "first card");
     setClaudeToolAccess("s1", { always: ["Bash(npm test *)"] });
-    respondClaudeApproval("s1", cards(events)[0].requestId, "allow");
+    // "Allow for this chat" keeps the script's fingerprint with the rule.
+    respondClaudeApproval("s1", cards(events)[0].requestId, "allow", {
+      forChat: true,
+    });
     await answer("r1");
     askBash("r2", "npm test src");
     expect(await answer("r2")).toMatchObject({ behavior: "allow" });

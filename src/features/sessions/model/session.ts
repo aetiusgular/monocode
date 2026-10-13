@@ -501,7 +501,15 @@ export type ToolAccessRule = "always" | "never";
 export type ToolAccess = Record<string, ToolAccessRule>;
 
 /** The tool an approval request is about: its rule key and a name to show. */
-export type ApprovalTool = { key: string; label: string };
+export type ApprovalTool = {
+  key: string;
+  label: string;
+  /**
+   * On a card's command rule: the rule was kept before, and the package
+   * script it runs changed since, so the card asks again. Live only.
+   */
+  changed?: boolean;
+};
 
 export type RuntimeMode =
   "supervised" | "auto-accept-edits" | "auto" | "full-access";

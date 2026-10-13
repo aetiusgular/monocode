@@ -73,7 +73,8 @@ describe("Allow for this chat on a command card (11.T2.2)", () => {
     expect(button()?.textContent).toBe("Allow npm test in this chat");
     expect(button()?.querySelector("code")?.textContent).toBe("npm test");
     expect(button()?.title).toBe(
-      'Allow commands that start with "npm test" in this chat, also after a restart. Any other command still asks.',
+      'Allow commands that start with "npm test" in this chat, also after a restart. Any other command still asks.' +
+        " Runs this project's code. Changes the agent makes to it run without asking.",
     );
     act(() => button()!.click());
     expect(rules.remember).toHaveBeenCalledTimes(1);

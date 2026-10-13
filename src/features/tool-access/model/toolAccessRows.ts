@@ -16,6 +16,19 @@ import {
   toolLabel,
   type ToolChoice,
 } from "./toolAccess";
+import {
+  PROJECT_CODE_NOTE,
+  commandRuleFromKey,
+  commandRuleRunsProjectCode,
+} from "./commandRules";
+
+/** What a command rule's row says it does. */
+function commandRuleDetail(key: string): string {
+  const rule = commandRuleFromKey(key);
+  return rule && commandRuleRunsProjectCode(rule)
+    ? PROJECT_CODE_NOTE
+    : "Commands it covers run without asking";
+}
 
 /** Tools every session of a harness is offered a rule for. */
 const BUILT_IN: Partial<
@@ -115,7 +128,7 @@ export function toolAccessRows(
       key,
       label: toolLabel(key),
       detail: isCommandRuleToolKey(key)
-        ? "Commands it covers run without asking"
+        ? commandRuleDetail(key)
         : mcpTool(key)
           ? "MCP tool"
           : "Tool",

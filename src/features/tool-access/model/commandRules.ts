@@ -241,6 +241,11 @@ type PrefixPolicy = {
    * the listed flags came first (`git branch --list x`).
    */
   positional: "any" | "none" | { after: ReadonlySet<string> };
+  /**
+   * Words that are not flags must name something inside the project: no
+   * absolute path, no `..` step, no `@file` argument list (pytest).
+   */
+  insideProject?: boolean;
 };
 
 const set = (...items: string[]) => new Set(items);
@@ -468,6 +473,7 @@ const PYTEST: PrefixPolicy = {
     "--no-header",
   ),
   positional: "any",
+  insideProject: true,
 };
 
 /** A script name: no flag, no path, nothing the shell would read. */
@@ -507,6 +513,17 @@ function prefixPolicy(words: readonly string[]): PrefixPolicy | null {
   return null;
 }
 
+/**
+ * Whether a word names something inside the project: pytest reads `@file`
+ * as a list of more arguments, and an absolute or `..` path can load a test
+ * file, and its `conftest.py`, from anywhere.
+ */
+function insideProject(word: string): boolean {
+  if (word.startsWith("@") || word.startsWith("/") || word.startsWith("\\"))
+    return false;
+  return !word.split(/[/\\]/).some((part) => part === "..");
+}
+
 /** Whether the words after a prefix stay inside what its policy allows. */
 function restAllowed(
   tool: string,
@@ -519,6 +536,8 @@ function restAllowed(
   let afterSeparator = false;
   const seen = new Set<string>();
   for (const word of rest) {
+    if (policy.insideProject && !word.startsWith("-") && !insideProject(word))
+      return false;
     if (afterSeparator) {
       // Words after `--` go to the program the tool runs: no flags there.
       if (word.startsWith("-")) return false;
@@ -628,6 +647,47 @@ export function commandRuleForRequest(
   const suggested = suggestedCommandRule(suggestions);
   if (suggested && commandMatchesRule(command, suggested)) return suggested;
   return deriveCommandRule(command);
+}
+
+/** The words a rule covers, read as the shell would. Null when it cannot be read. */
+function ruleHead(rule: CommandRule): string[] | null {
+  return rule.kind === "prefix"
+    ? rule.prefix.split(" ")
+    : shellWords(rule.command);
+}
+
+/**
+ * Whether the commands a rule covers run code from the project, which the
+ * agent can change: a package script, a cargo build (`build.rs`, tests,
+ * `.cargo/config.toml`) or pytest (tests, `conftest.py`).
+ */
+export function commandRuleRunsProjectCode(rule: CommandRule): boolean {
+  const words = ruleHead(rule);
+  if (!words) return false;
+  for (const length of [3, 2, 1]) {
+    if (words.length < length) continue;
+    const head = words.slice(0, length);
+    if (!prefixPolicy(head)) continue;
+    return head[0] !== "git" && !(head[0] === "cargo" && head[1] === "fmt");
+  }
+  return false;
+}
+
+/** What a tooltip and the Tool access row say about such a rule. */
+export const PROJECT_CODE_NOTE =
+  "Runs this project's code. Changes the agent makes to it run without asking.";
+
+/**
+ * The package script a rule's commands run, as `npm`, `pnpm` or `yarn`
+ * would look it up in `package.json`: `npm test` runs `test`, `yarn run
+ * build` runs `build`. Null for any other rule.
+ */
+export function packageScriptOf(rule: CommandRule): string | null {
+  const words = ruleHead(rule);
+  if (!words || !PACKAGE_MANAGERS.has(words[0])) return null;
+  if (words[1] === "run")
+    return words[2] && SCRIPT_NAME.test(words[2]) ? words[2] : null;
+  return PACKAGE_SUBCOMMANDS.has(words[1]) ? words[1] : null;
 }
 
 /** The words a card or a row uses for a rule. */
