@@ -726,6 +726,13 @@ describe("codex live turn sequence", () => {
     const first = await startTurn("codex-live", {
       runtimeMode: "auto",
       gatewayConnectors: [notion],
+      // Codex reports the connector's startup on the thread (Mac test 8.3).
+      beforeThreadReply: async () =>
+        notify("mcpServer/startupStatus/updated", {
+          threadId: "thr_1",
+          name: "notion-remote",
+          status: "ready",
+        }),
     });
     expect(spawnChild.mock.calls[0][2]).toEqual([
       "app-server",

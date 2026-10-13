@@ -3,9 +3,11 @@
 //   fetch_url {url}   read-only in name, returns a fixed text
 //   write_note {text} a write tool
 // It logs every call to the file named by STUB_MCP_LOG, when set.
+// STUB_MCP_INIT_DELAY_MS delays the `initialize` reply, for startup checks.
 import { appendFileSync } from "node:fs";
 
 const log = process.env.STUB_MCP_LOG || process.argv[2] || "";
+const initDelay = Number(process.env.STUB_MCP_INIT_DELAY_MS) || 0;
 const tools = [
   {
     name: "fetch_url",
@@ -49,7 +51,7 @@ process.stdin.on("data", (chunk) => {
     if (msg.id === undefined) continue;
     switch (msg.method) {
       case "initialize":
-        send({
+        setTimeout(send, initDelay, {
           jsonrpc: "2.0",
           id: msg.id,
           result: {

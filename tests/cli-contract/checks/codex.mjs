@@ -772,6 +772,47 @@ async function checkWebSearchOff({ codexPath }) {
   };
 }
 
+async function checkMcpStartup({ codexPath }) {
+  // Mac test 8.3: Codex does not wait for a thread's MCP servers before the
+  // first model request, and reports their startup on the thread.
+  const seen = { statuses: [] };
+  const s = await open({
+    codexPath,
+    configExtra: [
+      "[mcp_servers.slow]",
+      'command = "node"',
+      `args = [${JSON.stringify(STUB_MCP)}]`,
+      "[mcp_servers.slow.env]",
+      'STUB_MCP_INIT_DELAY_MS = "4000"',
+    ].join("\n"),
+    script: () => [text("ok")],
+  });
+  try {
+    const started = await s.client.request("thread/start", { cwd: s.dirs.work, ...SUPERVISED });
+    await s.client.runTurn({ threadId: started.thread.id, input: userInput("first"), ...SUPERVISED_TURN });
+    seen.firstHasTool = (s.fake.turnRequests()[0]?.body?.tools ?? []).some((t) => t.name === "mcp__slow");
+    await s.client.waitFor(
+      () => s.client.notifications.some((n) => n.method === "mcpServer/startupStatus/updated" && n.params?.status === "ready"),
+      15000,
+      "slow ready",
+    );
+    seen.statuses = s.client.notifications
+      .filter((n) => n.method === "mcpServer/startupStatus/updated")
+      .map((n) => ({ threadId: n.params?.threadId === started.thread.id, name: n.params?.name, status: n.params?.status }));
+  } finally {
+    await shut(s);
+  }
+  const reports = seen.statuses.map((x) => x.status).join(",");
+  const ok = !seen.firstHasTool && reports === "starting,ready" && seen.statuses.every((x) => x.threadId);
+  return {
+    status: ok ? "pass" : "fail",
+    finding: ok
+      ? "A turn sent at once goes out without the slow server's tools; mcpServer/startupStatus/updated reports starting then ready on the thread."
+      : `first request had the tools: ${seen.firstHasTool}; reports: ${reports}.`,
+    seen,
+  };
+}
+
 export const codexChecks = [
   { id: "check-3", title: "Codex developerInstructions on thread/start, resume and turn/start", flag: "capabilities: codex instructions \"session\"", run: check3 },
   { id: "check-4", title: "Codex thread/revert three turns back", flag: "capabilities: codex rewind \"anyTurn\"", run: check4 },
@@ -786,6 +827,7 @@ export const codexChecks = [
   { id: "codex-mock", title: "codex-mock home and server behind the real Codex", flag: "session 7 setup", run: checkCodexMock },
   { id: "outside-patch", title: "Codex supervised patch outside the working folder", flag: "lane 5 folder path check", run: checkOutsidePatch },
   { id: "web-search-off", title: "Codex web search off through thread config", flag: "Mac test 11.15 codexWebSearchConfig", run: checkWebSearchOff },
+  { id: "mcp-startup", title: "Codex MCP startup reports and the first turn", flag: "Mac test 8.3 codexMcpStartup", run: checkMcpStartup },
   { id: "commands-always", title: "Codex Commands = Always: on-request with the read-only sandbox", flag: "Mac test 11.T2.3 commandsAlwaysPolicy", run: checkCommandsAlways },
 ];
 

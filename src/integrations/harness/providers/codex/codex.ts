@@ -103,6 +103,15 @@ import {
   requestHarnessReport,
 } from "../../../../features/server-locality/model/sessionServers";
 import type { Locality } from "../../../../features/server-locality/model/locality";
+import {
+  MCP_STARTUP_STATUS_KEY,
+  MCP_STARTUP_TIMED_OUT,
+  MCP_STARTUP_WAITING,
+  newMcpStartup,
+  noteMcpStartup,
+  waitForMcpStartup,
+  type McpStartup,
+} from "./codexMcpStartup";
 
 type ApprovalOutcome = ApprovalDecision | "cancelled";
 
@@ -217,6 +226,8 @@ type Live = {
   identityKey_l5: string;
   /** Session 10: the edit adapter route the thread was opened with, or "". */
   editAdapterKey_l5: string;
+  /** Mac test 8.3: the thread's MCP servers starting, for its first turn. */
+  mcpStartup: McpStartup;
 };
 
 function trackNotificationQueue(live: Live, queued: Promise<void>): void {
@@ -751,11 +762,19 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       : undefined;
   const storeConfig = store?.config;
   const liveRef: { current: Live | null } = { current: null };
+  // Startup reports can arrive in the same read as the thread's id, before
+  // the live session is bound, so they are kept outside it.
+  const mcpStartup = newMcpStartup(
+    (input.gatewayConnectors ?? [])
+      .map((connector) => connector.name)
+      .filter((name) => !disabledMcp.includes(name)),
+  );
 
   const rpc = new JsonRpcClient(
     input.sessionId,
     {
       onNotification: (method, params) => {
+        if (noteMcpStartup(mcpStartup, method, params)) return;
         const live = liveRef.current;
         if (live) noteCodexNotification_l5(live, input.sessionId, method, params);
         if (!live || live.muteUpdates) return;
@@ -1032,7 +1051,9 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       chatFolders_l5: chatFolders_l5(input.cwd, input.extraDirs),
       identityKey_l5,
       editAdapterKey_l5: editAdapter_l5.key,
+      mcpStartup,
     };
+    mcpStartup.threadId = threadId;
     liveRef.current = live;
     liveByThread.set(input.sessionId, live);
     resumeByThread.set(input.sessionId, {
@@ -1158,6 +1179,31 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
 
   if (Array.isArray(params.input) && params.input.length === 0) {
     return;
+  }
+
+  if (!live.mcpStartup.settled) {
+    // Mac test 8.3: Codex does not wait for the thread's MCP servers, so the
+    // first turn waits for them, up to a cap.
+    let waited = false;
+    const outcome = await waitForMcpStartup(live.mcpStartup, {
+      stop: () => live.cancelled,
+      onWaiting: () => {
+        waited = true;
+        live.onEvent({
+          type: "status",
+          key: MCP_STARTUP_STATUS_KEY,
+          text: MCP_STARTUP_WAITING,
+        });
+      },
+    });
+    live.mcpStartup.settled = true;
+    if (waited)
+      live.onEvent({
+        type: "status",
+        key: MCP_STARTUP_STATUS_KEY,
+        text: outcome === "timeout" ? MCP_STARTUP_TIMED_OUT : "",
+      });
+    if (outcome === "stopped") return;
   }
 
   live.emittedAssistantByItem.clear();
