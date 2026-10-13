@@ -331,7 +331,7 @@ describe("Tool access popover", () => {
     expect(surface.textContent).toContain(
       "Never declines when Codex asks. Codex runs safe commands without asking.",
     );
-    expect(surface.textContent).not.toContain("Always skips plain requests");
+    expect(surface.textContent).not.toContain("Always on Commands");
 
     await renderComposer({
       harness: "codex",
@@ -339,8 +339,9 @@ describe("Tool access popover", () => {
       onToolAccessChange: vi.fn(),
     });
     expect(popover()!.textContent).toContain(
-      "Always skips plain requests. Plan turns and requests for more access are not skipped.",
+      "Always on Commands lets Codex run commands in its sandbox without asking, from the next turn. A command that asks to leave the sandbox still asks.",
     );
+    expect(popover()!.textContent).toContain("Plan turns stay read only.");
   });
 
   it("says on Claude Code what a rule in effect does not do", async () => {

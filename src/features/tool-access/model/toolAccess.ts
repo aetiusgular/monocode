@@ -167,12 +167,19 @@ export function toolAccessCaveats(
       // Codex decides when to ask: not in every mode, and not for commands it
       // considers safe. A rule only answers the requests it does send.
       "Never declines when Codex asks. Codex runs safe commands without asking.",
-      // See `isPlainCodexApproval`, and the plan branch of the handler.
-      ...(access?.always?.length
+      // See `commandsAlwaysPolicy` and `isPlainCodexApproval`, and the plan
+      // branch of the handler.
+      ...(access?.always?.includes(CODEX_COMMAND_TOOL)
         ? [
-            "Always skips plain requests. Plan turns and requests for more access are not skipped.",
+            "Always on Commands lets Codex run commands in its sandbox without asking, from the next turn. A command that asks to leave the sandbox still asks.",
           ]
         : []),
+      ...(access?.always?.includes(CODEX_FILE_CHANGE_TOOL)
+        ? [
+            "Always on File edits skips patches inside this chat's folders. Others still ask.",
+          ]
+        : []),
+      ...(access?.always?.length ? ["Plan turns stay read only."] : []),
     ];
   }
   if (harness === "claude") {

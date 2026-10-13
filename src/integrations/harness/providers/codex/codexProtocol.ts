@@ -242,6 +242,11 @@ export function buildTurnStartParams(input: {
   permissionsProfile?: string;
   /** The chat runs off OpenAI: Auto falls back to review by you. */
   autoReviewOff?: boolean;
+  /**
+   * The chat always allows commands. See `commandsAlwaysPolicy`: Supervised
+   * turns then let Codex run commands in its sandbox without asking.
+   */
+  commandsAlways?: boolean;
 }): Record<string, unknown> {
   const runtimeConfig = runtimeModeToCodexConfig(
     input.runtimeMode,
@@ -278,7 +283,10 @@ export function buildTurnStartParams(input: {
   return {
     threadId: input.threadId,
     input: codexInput(input.prompt, input.attachments),
-    approvalPolicy: config.approvalPolicy,
+    approvalPolicy:
+      input.intent === "plan"
+        ? config.approvalPolicy
+        : commandsAlwaysPolicy(config.approvalPolicy, input.commandsAlways),
     approvalsReviewer: config.approvalsReviewer,
     sandboxPolicy: config.sandboxPolicy,
     ...(collaborationMode ? { collaborationMode } : {}),
@@ -305,6 +313,26 @@ export function buildTurnStartParams(input: {
       ? { permissions: input.permissionsProfile, sandboxPolicy: undefined }
       : {}),
   };
+}
+
+/**
+ * The approval policy for a turn of a chat whose commands are always allowed.
+ *
+ * Supervised runs Codex with `untrusted`, which asks about every command. An
+ * accepted command that the sandbox then stops is run again without the
+ * sandbox and without asking again (Codex 0.161.0, `orchestrator.rs`, and seen
+ * against the real CLI). So MonoCode never accepts a command by rule. Instead,
+ * Supervised turns of such a chat use `on-request` with the same read-only
+ * sandbox: Codex runs a command in the sandbox without asking, never retries
+ * it outside, and still asks for one that wants to leave the sandbox or that
+ * it flags as dangerous. Those requests go to the card. Other modes are
+ * unchanged: they already use `on-request` or never ask.
+ */
+export function commandsAlwaysPolicy(
+  policy: CodexThreadConfig["approvalPolicy"],
+  commandsAlways: boolean | undefined,
+): CodexThreadConfig["approvalPolicy"] {
+  return commandsAlways && policy === "untrusted" ? "on-request" : policy;
 }
 
 /** App-server accepts image inputs, but documents need a path in text. */
@@ -1600,17 +1628,25 @@ function mapItemStatus(status: string | undefined, completed: boolean): string {
 /**
  * True when an approval request asks for nothing beyond running one command
  * or applying one patch. Codex uses the same two requests to ask for more: a
- * retry outside the sandbox or an escalation the model wants (both come with
- * a `reason`), network access to a host, input for a running terminal, or
- * write access under a new root. An "always allow" rule skips only the plain
- * kind, so it never grants access the permission mode withholds.
+ * retry outside the sandbox or an escalation the model wants, network access
+ * to a host, input for a running terminal, or write access under a new root.
+ *
+ * For a command this is a hint only. An escalation whose model gave no
+ * justification carries no `reason` and looks plain (Codex 0.161.0). An
+ * "always allow" rule therefore never accepts a command; see
+ * `commandsAlwaysPolicy`. It skips only a plain patch inside the chat's
+ * folders.
  */
 export function isPlainCodexApproval(method: string, params: unknown): boolean {
   const rec = asRecord(params);
   if (!rec || stringField(rec, "reason")) return false;
   if (method === "item/commandExecution/requestApproval") {
     const kind = stringField(rec, "kind");
-    return (!kind || kind === "command") && rec.networkApprovalContext == null;
+    return (
+      (!kind || kind === "command") &&
+      rec.networkApprovalContext == null &&
+      rec.additionalPermissions == null
+    );
   }
   if (method === "item/fileChange/requestApproval") {
     return rec.grantRoot == null;

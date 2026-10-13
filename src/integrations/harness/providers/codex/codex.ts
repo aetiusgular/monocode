@@ -54,6 +54,7 @@ import {
 import { codexMcpConfirmation } from "./codexElicitation";
 import { snapshotRemainder } from "../../core/streamText";
 import { ruleDecision, toolRules, type ToolRules } from "../../core/toolRules";
+import { CODEX_COMMAND_TOOL } from "../../../../features/tool-access/model/toolAccess";
 import { prepareCodexMonoContext } from "./codexStore";
 import type {
   ApprovalDecision,
@@ -1099,6 +1100,7 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
     ...noteCodexChatFolders_l5(live, input.extraDirs),
     permissionsProfile: codexThreadIdentity_l5(input).permissionsProfile,
     autoReviewOff: codexThreadIdentity_l5(input).autoReviewOff,
+    commandsAlways: ruleDecision(live.toolRules, CODEX_COMMAND_TOOL) === "allow",
   });
 
   if (Array.isArray(params.input) && params.input.length === 0) {
@@ -1832,13 +1834,19 @@ async function handleServerRequest(
 
   // Per-chat rules for commands and patches. They sit below the plan branch
   // and the sandbox escalation above, which they never answer. "Never"
-  // declines every such request. "Always" accepts only a plain one: a request
-  // that also asks for more access goes on to the mode and the user below.
+  // declines every such request. "Always" accepts only a plain patch: a
+  // request that also asks for more access goes on to the mode and the user
+  // below. It never accepts a command. Codex cannot be told to keep an
+  // accepted command in its sandbox, and an escalation can look plain, so
+  // "Always" on commands works through the turn's approval policy instead
+  // (`commandsAlwaysPolicy`): Codex runs sandboxed commands without asking,
+  // and what it still asks about is shown here.
   const toolKey = mapped.event.tool?.key;
   const rule = ruleDecision(live.toolRules, toolKey);
   // An automatic yes is held to the chat's folders: a file change outside
   // them, or one whose files are not known, goes to the card.
   const plain = isPlainCodexApproval(method, params);
+  const ruleMayAccept = mapped.kind === "file-change" && plain;
   const insideFolders = () =>
     codexRequestInsideChatFolders_l5(
       live.fileChanges_l5,
@@ -1848,7 +1856,7 @@ async function handleServerRequest(
     );
   if (
     rule === "deny" ||
-    (rule === "allow" && plain && (await insideFolders()))
+    (rule === "allow" && ruleMayAccept && (await insideFolders()))
   ) {
     await live.rpc.respond(id, {
       decision: toCodexApprovalDecision(rule, mapped.kind),

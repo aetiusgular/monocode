@@ -685,6 +685,58 @@ async function checkCodexMock({ codexPath }) {
   };
 }
 
+async function checkCommandsAlways({ codexPath }) {
+  // Mac test 11.T2.3. MonoCode's Supervised mode is `untrusted`, which asks
+  // about every command; an accepted command the sandbox stops is retried
+  // outside it without asking. With Commands = Always the chat's turns use
+  // `on-request` and the same read-only sandbox instead. This records what
+  // Codex then asks about and what it runs.
+  const seen = { asked: [], outputs: {} };
+  const steps = [
+    ["a1", { cmd: "ls && echo LISTED", workdir: "src", sandbox_permissions: "use_default" }],
+    ["a2", { cmd: "touch made.txt && echo WROTE" }],
+    ["a3", { cmd: "rm -rf src && echo REMOVED", sandbox_permissions: "require_escalated" }],
+  ];
+  const s = await open({
+    codexPath,
+    script: (body, n) => {
+      Object.assign(seen.outputs, callOutputs(body));
+      if (n < steps.length) return [call("exec_command", steps[n][1], steps[n][0])];
+      return [text("done")];
+    },
+    decide: {
+      "item/commandExecution/requestApproval": (msg) => {
+        seen.asked.push({ itemId: msg.params.itemId, reason: msg.params.reason ?? null });
+        return { decision: "decline" };
+      },
+    },
+  });
+  try {
+    mkdirSync(path.join(s.dirs.work, "src"));
+    writeFileSync(path.join(s.dirs.work, "src", "a.txt"), "x");
+    const turn = { ...SUPERVISED_TURN, approvalPolicy: "on-request" };
+    const started = await s.client.request("thread/start", { cwd: s.dirs.work, ...SUPERVISED, approvalPolicy: "on-request" });
+    for (const [id] of steps) {
+      await s.client.runTurn({ threadId: started.thread.id, input: userInput(id), ...turn });
+    }
+    seen.srcLeft = existsSync(path.join(s.dirs.work, "src", "a.txt"));
+    seen.made = existsSync(path.join(s.dirs.work, "made.txt"));
+  } finally {
+    await shut(s);
+  }
+  const askedIds = seen.asked.map((a) => a.itemId);
+  const listed = String(seen.outputs.a1 ?? "").includes("LISTED");
+  const ok = listed && !askedIds.includes("a1") && !askedIds.includes("a2") && askedIds.includes("a3") && !seen.made && seen.srcLeft;
+  return {
+    status: ok ? "pass" : "fail",
+    finding:
+      `Supervised sandbox with on-request: a plain command in a subfolder ${askedIds.includes("a1") ? "ASKED" : "ran without asking"} (${listed ? "listed" : "no listing"}); ` +
+      `a write the sandbox stops ${askedIds.includes("a2") ? "ASKED" : "was not asked about"} and ${seen.made ? "WAS WRITTEN" : "was refused by the sandbox"}; ` +
+      `an escalation ${askedIds.includes("a3") ? "asked" : "DID NOT ASK"} and, declined, ${seen.srcLeft ? "changed nothing" : "RAN"}.`,
+    seen,
+  };
+}
+
 export const codexChecks = [
   { id: "check-3", title: "Codex developerInstructions on thread/start, resume and turn/start", flag: "capabilities: codex instructions \"session\"", run: check3 },
   { id: "check-4", title: "Codex thread/revert three turns back", flag: "capabilities: codex rewind \"anyTurn\"", run: check4 },
@@ -698,5 +750,6 @@ export const codexChecks = [
   { id: "accept-for-session", title: "Codex acceptForSession on a file change", flag: "lane 5 Allow for this chat", run: checkAcceptForSession },
   { id: "codex-mock", title: "codex-mock home and server behind the real Codex", flag: "session 7 setup", run: checkCodexMock },
   { id: "outside-patch", title: "Codex supervised patch outside the working folder", flag: "lane 5 folder path check", run: checkOutsidePatch },
+  { id: "commands-always", title: "Codex Commands = Always: on-request with the read-only sandbox", flag: "Mac test 11.T2.3 commandsAlwaysPolicy", run: checkCommandsAlways },
 ];
 

@@ -177,21 +177,31 @@ describe("Codex approval requests and the tool they are about", () => {
 });
 
 describe("Codex per-chat tool rules", () => {
-  it("accepts an always-allowed command without a card", async () => {
+  it("lets Codex run sandboxed commands without asking when commands are always allowed", async () => {
     const { events, turn } = await startTurn({
       toolAccess: { always: ["codex:command"] },
     });
+    // Supervised turns of the chat use on-request with the same read-only
+    // sandbox: Codex runs a command in the sandbox without a request.
+    const turnStart = parse().find((m) => m.method === "turn/start")!;
+    expect(turnStart.params).toMatchObject({
+      approvalPolicy: "on-request",
+      sandboxPolicy: { type: "readOnly" },
+    });
+    // A command Codex still asks about wants more than the sandbox: the card.
     request(91, COMMAND, { itemId: "cmd_1", command: "npm test" });
-    expect(await answer(91)).toEqual({ decision: "accept" });
-    expect(cards(events)).toHaveLength(0);
+    await waitFor(() => cards(events).length === 1, "card for the command");
+    expect(answered(91)).toBe(false);
+    respondCodexApproval("codex-rules", cards(events)[0].requestId, "deny");
+    expect(await answer(91)).toEqual({ decision: "decline" });
     // A patch has no rule and is still put to the user.
     request(92, FILE_CHANGE, { itemId: "edit_1" });
-    await waitFor(() => cards(events).length === 1, "card for the patch");
+    await waitFor(() => cards(events).length === 2, "card for the patch");
     expect(answered(92)).toBe(false);
-    expect(cards(events)[0]).toMatchObject({
+    expect(cards(events)[1]).toMatchObject({
       tool: { key: "codex:file-change", label: "File edits" },
     });
-    respondCodexApproval("codex-rules", cards(events)[0].requestId, "allow");
+    respondCodexApproval("codex-rules", cards(events)[1].requestId, "allow");
     expect(await answer(92)).toEqual({ decision: "accept" });
     await finish(turn);
   });
@@ -323,8 +333,13 @@ describe("Codex per-chat tool rules", () => {
     respondCodexApproval("codex-rules", cards(events)[0].requestId, "allow");
     await answer(91);
 
+    // Always on commands never accepts a request by rule (it takes hold
+    // through the next turn's policy), so this one still asks.
     setCodexToolAccess("codex-rules", { always: ["codex:command"] });
     request(92, COMMAND, { itemId: "cmd_2", command: "pwd" });
+    await waitFor(() => cards(events).length === 2, "card under always");
+    expect(answered(92)).toBe(false);
+    respondCodexApproval("codex-rules", cards(events)[1].requestId, "allow");
     expect(await answer(92)).toEqual({ decision: "accept" });
 
     setCodexToolAccess("codex-rules", { never: ["codex:command"] });
@@ -333,9 +348,9 @@ describe("Codex per-chat tool rules", () => {
 
     setCodexToolAccess("codex-rules", undefined);
     request(94, COMMAND, { itemId: "cmd_4", command: "date" });
-    await waitFor(() => cards(events).length === 2, "card after the reset");
+    await waitFor(() => cards(events).length === 3, "card after the reset");
     expect(answered(94)).toBe(false);
-    respondCodexApproval("codex-rules", cards(events)[1].requestId, "allow");
+    respondCodexApproval("codex-rules", cards(events)[2].requestId, "allow");
     await answer(94);
     await finish(turn);
   });
