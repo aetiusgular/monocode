@@ -65,7 +65,8 @@ export function AccessPicker({
   );
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(() => Math.max(0, modes.indexOf(value)));
-  const [profileDraft, setProfileDraft] = useState(profile ?? "");
+  // Only what is typed. A set profile shows on its own row with Clear.
+  const [profileDraft, setProfileDraft] = useState("");
   const root = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
@@ -79,7 +80,7 @@ export function AccessPicker({
   useEffect(() => {
     if (!open) return;
     setActive(Math.max(0, modes.indexOf(value)));
-    setProfileDraft(profile ?? "");
+    setProfileDraft("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, value, profile]);
 
@@ -220,18 +221,53 @@ export function AccessPicker({
               every mode. Only Codex sessions are sandboxed.
             </p>
           ) : null}
+          {onProfileChange && profile ? (
+            <div
+              className="flex items-center gap-1.5 px-2 py-1.5"
+              data-access-profile={profile}
+            >
+              <span className="min-w-0 flex-1 truncate text-[11px] text-content/70">
+                Profile{" "}
+                <span className="font-mono text-content">{profile}</span>
+              </span>
+              <button
+                type="button"
+                data-access-profile-clear
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  onProfileChange("");
+                  dismiss(true);
+                }}
+                className="h-6.5 shrink-0 rounded-md px-1.5 text-[11px] text-content/70 hover:bg-content/8"
+              >
+                Clear
+              </button>
+            </div>
+          ) : null}
+          {onProfileChange && profile && value === "full-access" ? (
+            <p
+              className="px-2 py-1.5 text-[11px] leading-4 text-amber-500"
+              data-access-profile-ignored
+            >
+              Full access ignores the profile {profile}.
+            </p>
+          ) : null}
           {onProfileChange ? (
             <form
               className="flex items-center gap-1.5 px-2 py-1.5"
               onSubmit={(event) => {
                 event.preventDefault();
-                onProfileChange(profileDraft.trim());
+                const next = profileDraft.trim();
+                if (!next) return;
+                onProfileChange(next);
                 dismiss(true);
               }}
             >
               <input
                 aria-label="Codex permissions profile"
-                placeholder="Permissions profile"
+                placeholder={
+                  profile ? "Another profile" : "Permissions profile"
+                }
                 value={profileDraft}
                 onChange={(event) => setProfileDraft(event.target.value)}
                 onKeyDown={(event) => event.stopPropagation()}
@@ -239,9 +275,11 @@ export function AccessPicker({
               />
               <button
                 type="submit"
-                className="h-6.5 shrink-0 rounded-md px-1.5 text-[11px] text-content/70 hover:bg-content/8"
+                data-access-profile-use
+                disabled={!profileDraft.trim()}
+                className="h-6.5 shrink-0 rounded-md px-1.5 text-[11px] text-content/70 hover:bg-content/8 disabled:opacity-40"
               >
-                {profileDraft.trim() ? "Use" : "Clear"}
+                Use
               </button>
             </form>
           ) : null}
