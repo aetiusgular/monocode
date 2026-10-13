@@ -708,6 +708,117 @@ fn apply_run_summary(automation: &mut Automation, run: &AutomationRun) {
     }
 }
 
+/// The error a pending run carries when its automation was switched off
+/// before the run started (Mac test 2.13).
+const SWITCHED_OFF: &str = "Switched off before it started.";
+
+/// Whether a pending run may still start. A manual run is the user's own
+/// click and always may. A scheduled or event run needs its automation
+/// switched on, except the one run of a one-time schedule: claiming that run
+/// turns the automation off by itself, so that run stays live.
+fn run_still_live(automation: &Automation, run: &AutomationRun) -> bool {
+    if run.trigger == "manual" || automation.enabled {
+        return true;
+    }
+    run.trigger == "scheduled"
+        && automation.triggers.as_deref().is_some_and(|triggers| {
+            spent_after(triggers, run.scheduled_for)
+                && triggers.iter().any(|trigger| {
+                    trigger.kind == "time"
+                        && trigger.schedule_kind == "once"
+                        && trigger.at == run.scheduled_for
+                })
+        })
+}
+
+fn pending_runs(conn: &Connection, created_before: i64) -> Result<Vec<AutomationRun>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT run_json FROM automation_runs WHERE created_at <= ?1
+             ORDER BY created_at, id",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([created_before], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?;
+    let mut runs = Vec::new();
+    for row in rows {
+        let raw = row.map_err(|error| error.to_string())?;
+        let run: AutomationRun = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+        if run.status == "pending" {
+            runs.push(run);
+        }
+    }
+    Ok(runs)
+}
+
+/// Mark every pending run of an automation Skipped because it was switched
+/// off. Runs already started are left to finish.
+fn skip_pending_runs(
+    conn: &Connection,
+    automation: &mut Automation,
+    now: i64,
+) -> Result<bool, String> {
+    let mut changed = false;
+    for mut run in list_runs(conn, &automation.id)? {
+        if run.status != "pending" {
+            continue;
+        }
+        run.status = "skipped".into();
+        run.completed_at = Some(now);
+        run.error = Some(SWITCHED_OFF.into());
+        apply_run_summary(automation, &run);
+        write_run(conn, &run)?;
+        changed = true;
+    }
+    Ok(changed)
+}
+
+/// Move one pending run to running, once. Re-reads its automation at this
+/// moment: a run whose automation is gone returns nothing, and one whose
+/// automation was switched off is marked Skipped and returns nothing. A run
+/// that already started returns nothing, so no run starts twice.
+fn begin_run(
+    conn: &Connection,
+    run_id: &str,
+    now: i64,
+) -> Result<Option<DueAutomationRun>, String> {
+    let raw = conn
+        .query_row(
+            "SELECT run_json FROM automation_runs WHERE id = ?1",
+            [run_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let mut run: AutomationRun = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+    if run.status != "pending" {
+        return Ok(None);
+    }
+    let Some(mut automation) = get(conn, &run.automation_id)? else {
+        return Ok(None);
+    };
+    if !run_still_live(&automation, &run) {
+        run.status = "skipped".into();
+        run.completed_at = Some(now);
+        run.error = Some(SWITCHED_OFF.into());
+        apply_run_summary(&mut automation, &run);
+        write_run(conn, &run)?;
+        write_automation(conn, &automation)?;
+        trim_history(conn, &run.automation_id)?;
+        return Ok(None);
+    }
+    run.status = "running".into();
+    run.started_at = Some(now);
+    apply_run_summary(&mut automation, &run);
+    write_run(conn, &run)?;
+    write_automation(conn, &automation)?;
+    Ok(Some(DueAutomationRun { automation, run }))
+}
+
 #[tauri::command(async)]
 pub fn automations_list(store: State<'_, SessionStore>) -> Result<Vec<Automation>, String> {
     let conn = store.lock_conn()?;
@@ -726,6 +837,7 @@ pub fn automations_upsert(
     let triggers = Some(normalize_triggers(&automation));
     let conn = store.lock_conn()?;
     let previous = get(&conn, &automation.id)?;
+    let was_enabled = previous.as_ref().is_some_and(|value| value.enabled);
     let created_at = previous
         .as_ref()
         .map(|value| value.created_at)
@@ -770,6 +882,10 @@ pub fn automations_upsert(
         created_at,
         updated_at: now,
     };
+    let mut saved = saved;
+    if !saved.enabled && was_enabled {
+        skip_pending_runs(&conn, &mut saved, now)?;
+    }
     write_automation(&conn, &saved)?;
     drop(conn);
     let _ = app.emit(CHANGED, ());
@@ -907,6 +1023,41 @@ pub fn automation_run_now(
     drop(conn);
     let _ = app.emit(CHANGED, ());
     Ok(run)
+}
+
+/// Start a pending run: the one place a run moves from Pending to Running.
+#[tauri::command(async)]
+pub fn automation_run_begin(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    run_id: String,
+    now: i64,
+) -> Result<Option<DueAutomationRun>, String> {
+    validate_id(&run_id, "automation run")?;
+    let mut conn = store.lock_conn()?;
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    let begun = begin_run(&tx, &run_id, now)?;
+    tx.commit().map_err(|error| error.to_string())?;
+    drop(conn);
+    let _ = app.emit(CHANGED, ());
+    Ok(begun)
+}
+
+/// Pending runs created at or before `created_before`, for the scheduler to
+/// pick up a run whose launch was dropped (Mac test 2.13).
+#[tauri::command(async)]
+pub fn automation_runs_pending(
+    store: State<'_, SessionStore>,
+    created_before: i64,
+) -> Result<Vec<DueAutomationRun>, String> {
+    let conn = store.lock_conn()?;
+    let mut due = Vec::new();
+    for run in pending_runs(&conn, created_before)? {
+        if let Some(automation) = get(&conn, &run.automation_id)? {
+            due.push(DueAutomationRun { automation, run });
+        }
+    }
+    Ok(due)
 }
 
 #[tauri::command(async)]
@@ -1720,5 +1871,130 @@ mod tests {
 
         assert_eq!(claim(), 1);
         assert_eq!(claim(), 0);
+    }
+
+    fn pending_run(id: &str, trigger: &str, scheduled_for: i64) -> AutomationRun {
+        let mut run = new_run(
+            "automation-id",
+            trigger,
+            scheduled_for,
+            scheduled_for,
+            "Run it",
+        );
+        run.id = id.into();
+        run
+    }
+
+    fn run_status(conn: &Connection, id: &str) -> (String, Option<String>) {
+        let raw: String = conn
+            .query_row(
+                "SELECT run_json FROM automation_runs WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let run: AutomationRun = serde_json::from_str(&raw).unwrap();
+        (run.status, run.error)
+    }
+
+    fn set_enabled(conn: &Connection, enabled: bool) {
+        let mut automation = get(conn, "automation-id").unwrap().unwrap();
+        automation.enabled = enabled;
+        write_automation(conn, &automation).unwrap();
+    }
+
+    // Mac test 2.13: after a relaunch a claimed one-time run sat Pending, and
+    // an interval catch-up ran at reload although switched off.
+    #[test]
+    fn a_pending_run_starts_once() {
+        let at = 1_000;
+        let conn = claim_store(vec![time_trigger("interval", 0, 30)], at);
+        write_run(&conn, &pending_run("run-1", "scheduled", at)).unwrap();
+        let first = begin_run(&conn, "run-1", at + 5).unwrap();
+        assert!(first.is_some());
+        assert_eq!(run_status(&conn, "run-1").0, "running");
+        // The startup recovery and the pending sweep both pick it up.
+        assert!(begin_run(&conn, "run-1", at + 6).unwrap().is_none());
+        assert!(begin_run(&conn, "no-such-run", at + 6).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_switched_off_automation_skips_its_pending_catch_up() {
+        let at = 1_000;
+        let conn = claim_store(vec![time_trigger("interval", 0, 30)], at);
+        write_run(&conn, &pending_run("run-1", "scheduled", at)).unwrap();
+        set_enabled(&conn, false);
+        assert!(begin_run(&conn, "run-1", at + 60_000).unwrap().is_none());
+        let (status, error) = run_status(&conn, "run-1");
+        assert_eq!(status, "skipped");
+        assert_eq!(error.as_deref(), Some(SWITCHED_OFF));
+        let automation = get(&conn, "automation-id").unwrap().unwrap();
+        assert_eq!(automation.last_run_status.as_deref(), Some("skipped"));
+    }
+
+    #[test]
+    fn switching_off_skips_every_pending_run_and_leaves_running_ones() {
+        let at = 1_000;
+        let conn = claim_store(vec![time_trigger("interval", 0, 30)], at);
+        write_run(&conn, &pending_run("run-1", "scheduled", at)).unwrap();
+        write_run(&conn, &pending_run("run-2", "event", at)).unwrap();
+        let mut running = pending_run("run-3", "scheduled", at);
+        running.status = "running".into();
+        write_run(&conn, &running).unwrap();
+        let mut automation = get(&conn, "automation-id").unwrap().unwrap();
+        automation.enabled = false;
+        assert!(skip_pending_runs(&conn, &mut automation, at + 1).unwrap());
+        assert_eq!(run_status(&conn, "run-1").0, "skipped");
+        assert_eq!(run_status(&conn, "run-2").0, "skipped");
+        assert_eq!(run_status(&conn, "run-3").0, "running");
+        assert!(pending_runs(&conn, i64::MAX).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_one_time_run_inside_its_grace_runs_once_after_turning_itself_off() {
+        let at = 1_000;
+        let conn = claim_store(vec![time_trigger("once", at, 0)], at);
+        // Claiming the one-time run turns the automation off by itself.
+        set_enabled(&conn, false);
+        write_run(&conn, &pending_run("run-1", "scheduled", at)).unwrap();
+        assert!(begin_run(&conn, "run-1", at + 6 * 60_000)
+            .unwrap()
+            .is_some());
+        assert_eq!(run_status(&conn, "run-1").0, "running");
+        assert!(begin_run(&conn, "run-1", at + 7 * 60_000)
+            .unwrap()
+            .is_none());
+        // A one-time run for another moment is not the self-disabled run.
+        write_run(&conn, &pending_run("run-2", "scheduled", at + 5)).unwrap();
+        assert!(begin_run(&conn, "run-2", at + 7 * 60_000)
+            .unwrap()
+            .is_none());
+        assert_eq!(run_status(&conn, "run-2").0, "skipped");
+    }
+
+    #[test]
+    fn a_manual_run_starts_while_switched_off() {
+        let at = 1_000;
+        let conn = claim_store(vec![time_trigger("interval", 0, 30)], at);
+        set_enabled(&conn, false);
+        write_run(&conn, &pending_run("run-1", "manual", at)).unwrap();
+        assert!(begin_run(&conn, "run-1", at + 1).unwrap().is_some());
+    }
+
+    #[test]
+    fn pending_runs_lists_only_pending_runs_up_to_the_cutoff() {
+        let at = 1_000;
+        let conn = claim_store(vec![time_trigger("interval", 0, 30)], at);
+        write_run(&conn, &pending_run("old", "scheduled", at)).unwrap();
+        write_run(&conn, &pending_run("new", "scheduled", at + 100)).unwrap();
+        let mut done = pending_run("done", "scheduled", at);
+        done.status = "succeeded".into();
+        write_run(&conn, &done).unwrap();
+        let ids: Vec<String> = pending_runs(&conn, at + 50)
+            .unwrap()
+            .into_iter()
+            .map(|run| run.id)
+            .collect();
+        assert_eq!(ids, vec!["old".to_string()]);
     }
 }

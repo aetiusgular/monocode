@@ -558,6 +558,61 @@ export function recoverAutomationRuns(
   return invoke("automation_runs_recover", { startedBefore, now });
 }
 
+/**
+ * Move a pending run to Running, once. The store re-reads the automation:
+ * null when the run already started, its automation is gone, or it was
+ * switched off (then the run reads Skipped). Mac test 2.13.
+ */
+export async function beginAutomationRun(
+  runId: string,
+  now = Date.now(),
+): Promise<DueAutomationRun | null> {
+  const begun = await invoke<DueAutomationRun | null>("automation_run_begin", {
+    runId,
+    now,
+  });
+  emitLocalChange();
+  return begun;
+}
+
+/** Pending runs created at or before `createdBefore`. */
+export function pendingAutomationRuns(
+  createdBefore: number,
+): Promise<DueAutomationRun[]> {
+  return invoke("automation_runs_pending", { createdBefore });
+}
+
+/**
+ * How long a run may sit Pending before the scheduler treats its launch as
+ * dropped and starts it. A manual run starts within this window, so the
+ * sweep never takes it from the Run now button.
+ */
+export const PENDING_PICKUP_MS = 15_000;
+
+/**
+ * One scheduler pass: claim due occurrences, then pick up runs left Pending
+ * by a launch that never happened (a relaunch, a webview reload, a pass cut
+ * off mid-way). Every run goes to `launch`, which starts it only through
+ * `beginAutomationRun`, so a run picked up twice still starts once.
+ */
+export async function evaluateAutomationSchedule(
+  launch: (item: DueAutomationRun) => void,
+  now = Date.now(),
+): Promise<void> {
+  const claimed = await claimDueAutomations(now);
+  const seen = new Set<string>();
+  for (const item of claimed) {
+    seen.add(item.run.id);
+    launch(item);
+  }
+  const pending = await pendingAutomationRuns(now - PENDING_PICKUP_MS);
+  for (const item of pending) {
+    if (seen.has(item.run.id)) continue;
+    seen.add(item.run.id);
+    launch(item);
+  }
+}
+
 export async function createManualAutomationRun(
   automationId: string,
 ): Promise<AutomationRun> {

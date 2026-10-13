@@ -640,7 +640,8 @@ import {
 } from "../features/monos/ui/MonoChangesPanel";
 import { ArtifactPanel } from "../features/artifacts/ui/ArtifactPanel";
 import {
-  claimDueAutomations,
+  beginAutomationRun,
+  evaluateAutomationSchedule,
   listAutomations,
   recoverAutomationRuns,
   updateAutomationRun,
@@ -8640,6 +8641,11 @@ function Workspace({
         reservationId = undefined;
       };
       try {
+        // Re-read the automation at start: a run picked up twice starts
+        // once, and one switched off since it was queued is Skipped.
+        const begun = await beginAutomationRun(run.id);
+        if (!begun) return;
+        automation = begun.automation;
         const eventRun = run.trigger === "event";
         const linkedWorkItem =
           sourceWorkItem ?? linkedWorkItemFromAutomationEvent(run);
@@ -8914,8 +8920,10 @@ function Workspace({
         const pending = await recoverAutomationRuns(
           automationRecoveryCutoffRef.current,
         );
+        // Not awaited: a launch that waits on a session must not hold the
+        // scheduler, which waits for recovery (Mac test 2.13).
         for (const item of pending) {
-          await launchAutomation(
+          void launchAutomation(
             item.automation,
             item.run,
             false,
@@ -8939,13 +8947,16 @@ function Workspace({
       evaluating = true;
       try {
         await ensureAutomationRecovery();
-        const due = await claimDueAutomations();
-        for (const item of due) {
-          if (disposed) break;
-          void launchAutomation(item.automation, item.run).catch(
-            () => undefined,
-          );
-        }
+        // A claimed run is launched even if this effect was replaced
+        // meanwhile; dropping it left the run Pending (Mac test 2.13).
+        await evaluateAutomationSchedule((item) => {
+          void launchAutomation(
+            item.automation,
+            item.run,
+            false,
+            item.run.prompt ?? item.automation.prompt,
+          ).catch(() => undefined);
+        });
       } catch {
         // Scheduling retries on the next tick; individual claimed runs record
         // launch failures in launchAutomation.
