@@ -374,13 +374,19 @@ export function parseAvailablePlugins(stdout: string): AvailablePlugin[] {
   let value: unknown;
   try {
     value = JSON.parse(text);
-  } catch {
+  } catch (first) {
+    // A reply that does not parse is an error, never an empty list: a cut
+    // reply once read as "nothing to install" (Mac finding 4.12).
     const start = text.search(/^\{/m);
-    if (start < 0) return [];
+    const unreadable = (err: unknown) =>
+      new Error(
+        `Could not read the plugin list: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    if (start < 0) throw unreadable(first);
     try {
       value = JSON.parse(text.slice(start));
-    } catch {
-      return [];
+    } catch (second) {
+      throw unreadable(second);
     }
   }
   const list = recordOf(value)?.available;

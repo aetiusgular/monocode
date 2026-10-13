@@ -293,6 +293,8 @@ describe("results", () => {
         description: "Frontend design skill",
       },
     ]);
-    expect(parseAvailablePlugins("not json")).toEqual([]);
+    expect(() => parseAvailablePlugins("not json")).toThrow(
+      /Could not read the plugin list/,
+    );
   });
 });

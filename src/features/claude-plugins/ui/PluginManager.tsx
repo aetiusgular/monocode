@@ -227,6 +227,7 @@ export function InstallPluginForm({
   accountId: string | undefined;
 }) {
   const [available, setAvailable] = useState<AvailablePlugin[] | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [pick, setPick] = useState("");
   const [scope, setScope] = useState<InstallScope>("user");
@@ -236,7 +237,15 @@ export function InstallPluginForm({
 
   const load = useCallback(async () => {
     setLoading(true);
-    const list = await listAvailablePlugins(accountId);
+    const read = await listAvailablePlugins(accountId);
+    if ("error" in read) {
+      setAvailable(null);
+      setListError(read.error);
+      setLoading(false);
+      return;
+    }
+    const list = read.plugins;
+    setListError(null);
     setAvailable(list);
     setPick((current) =>
       list.some((entry) => entry.id === current)
@@ -276,6 +285,11 @@ export function InstallPluginForm({
           {available ? "Read again" : "Browse marketplaces"}
         </button>
       </div>
+      {listError ? (
+        <p role="alert" className="text-[11px] leading-4 text-red-400">
+          {listError}
+        </p>
+      ) : null}
       {available && available.length === 0 ? (
         <p className={NOTE}>
           The marketplaces below offer nothing that is not installed yet.
@@ -492,6 +506,9 @@ export function MarketplacesSection({
       <div className="flex flex-wrap items-center gap-2">
         <input
           aria-label="Marketplace source"
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
           placeholder="owner/repo, https:// URL or /absolute/path"
           className={`${FIELD} flex-1`}
           value={source}

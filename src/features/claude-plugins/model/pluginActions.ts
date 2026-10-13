@@ -85,18 +85,21 @@ export async function listMarketplaces(
   return parseMarketplaceList(output.stdout);
 }
 
-/** What the account's marketplaces offer. Empty when it cannot be read. */
+/**
+ * What the account's marketplaces offer, or why it could not be read. A
+ * failed or unreadable reply is never shown as an empty list.
+ */
 export async function listAvailablePlugins(
   accountId: string | undefined,
-): Promise<AvailablePlugin[]> {
+): Promise<{ plugins: AvailablePlugin[] } | { error: string }> {
   try {
     const output = await runClaudePlugin(
       ["plugin", "list", "--json", "--available"],
       { accountId },
     );
-    return parseAvailablePlugins(output.stdout);
-  } catch {
-    return [];
+    return { plugins: parseAvailablePlugins(output.stdout) };
+  } catch (err) {
+    return { error: message(err) };
   }
 }
 

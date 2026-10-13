@@ -31,6 +31,12 @@ const TOGGLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Installs, updates and marketplace changes can clone a git repository.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(180);
 const MAX_STDOUT_CHARS: usize = 1024 * 1024;
+/// `plugin list --json --available` lists every plugin of every marketplace:
+/// 3,576 plugins came to 2.1 MB on the Mac test (finding 4.12). Read only.
+const MAX_AVAILABLE_STDOUT_CHARS: usize = 16 * 1024 * 1024;
+/// Shown when a reply is longer than its cap, instead of a cut reply that
+/// would read as an empty list.
+const TOO_LARGE: &str = "The plugin list was too large to read.";
 const MAX_STDERR_CHARS: usize = 16 * 1024;
 const MAX_ERROR_CHARS: usize = 2000;
 const MAX_ID_CHARS: usize = 200;
@@ -55,6 +61,8 @@ struct Shape {
     needs_project: bool,
     /// The call prints a JSON result even when it fails.
     reports_failure: bool,
+    /// The longest stdout read. A longer one is an error, never cut.
+    stdout_limit: usize,
 }
 
 /// Run one allowlisted `claude plugin` command as a Claude Code provider
@@ -93,7 +101,7 @@ pub async fn claude_plugin(
         let success = output.status.success();
         if success || shape.reports_failure {
             return Ok(ClaudePluginOutput {
-                stdout: bounded_to(&stdout, MAX_STDOUT_CHARS),
+                stdout: whole_stdout(&stdout, shape.stdout_limit)?,
                 stderr: bounded_to(&stderr, MAX_STDERR_CHARS),
                 success,
             });
@@ -116,19 +124,26 @@ fn allowed(args: &[String]) -> Option<Shape> {
         timeout: LIST_TIMEOUT,
         needs_project: false,
         reports_failure: false,
+        stdout_limit: MAX_STDOUT_CHARS,
     };
     let toggle = |scope: Option<&str>| Shape {
         timeout: TOGGLE_TIMEOUT,
         needs_project: matches!(scope, Some("project" | "local")),
         reports_failure: true,
+        stdout_limit: MAX_STDOUT_CHARS,
     };
     let fetch = |scope: Option<&str>| Shape {
         timeout: FETCH_TIMEOUT,
         needs_project: matches!(scope, Some("project" | "local")),
         reports_failure: true,
+        stdout_limit: MAX_STDOUT_CHARS,
     };
     match args.as_slice() {
-        ["plugin", "list", "--json"] | ["plugin", "list", "--json", "--available"] => Some(list),
+        ["plugin", "list", "--json"] => Some(list),
+        ["plugin", "list", "--json", "--available"] => Some(Shape {
+            stdout_limit: MAX_AVAILABLE_STDOUT_CHARS,
+            ..list
+        }),
         ["plugin", verb, "--scope", scope, "--json", id]
             if is_toggle(verb) && is_scope(scope) && is_plugin_id(id) && !is_synced(id) =>
         {
@@ -324,6 +339,15 @@ fn bounded_to(text: &str, limit: usize) -> String {
     text.chars().take(limit).collect()
 }
 
+/// All of stdout, or an error when it is longer than `limit` characters. A
+/// cut JSON reply does not parse and read as an empty list.
+fn whole_stdout(text: &str, limit: usize) -> Result<String, String> {
+    if text.len() > limit && text.chars().nth(limit).is_some() {
+        return Err(TOO_LARGE.into());
+    }
+    Ok(text.to_string())
+}
+
 fn bounded(message: &str) -> String {
     if message.is_empty() {
         return "claude plugin failed".into();
@@ -485,6 +509,43 @@ mod tests {
             MAX_ERROR_CHARS
         );
         assert_eq!(bounded_to("abcdef", 3), "abc");
+    }
+
+    fn available_reply(bytes: usize) -> String {
+        let entry = r#"{"pluginId":"p@m","name":"p","marketplaceName":"m","description":"x"},"#;
+        let mut out = String::from(r#"{"installed":[],"available":["#);
+        while out.len() + entry.len() < bytes {
+            out.push_str(entry);
+        }
+        out.push_str(r#"{"pluginId":"last@m"}]}"#);
+        out
+    }
+
+    #[test]
+    fn the_available_list_reads_a_two_megabyte_reply_whole() {
+        let shape = shape(&["plugin", "list", "--json", "--available"]).unwrap();
+        let reply = available_reply(2_200_000);
+        assert!(reply.len() > MAX_STDOUT_CHARS);
+        let read = whole_stdout(&reply, shape.stdout_limit).unwrap();
+        assert_eq!(read.len(), reply.len());
+        let value: serde_json::Value = serde_json::from_str(&read).unwrap();
+        assert!(value["available"].as_array().unwrap().len() > 20_000);
+    }
+
+    #[test]
+    fn a_reply_over_its_cap_is_an_error_not_a_cut_list() {
+        let available = shape(&["plugin", "list", "--json", "--available"]).unwrap();
+        assert_eq!(available.stdout_limit, MAX_AVAILABLE_STDOUT_CHARS);
+        let installed = shape(&["plugin", "list", "--json"]).unwrap();
+        assert_eq!(installed.stdout_limit, MAX_STDOUT_CHARS);
+        assert_eq!(
+            whole_stdout(&available_reply(2_200_000), installed.stdout_limit),
+            Err(TOO_LARGE.to_string())
+        );
+        assert_eq!(whole_stdout("abc", 3), Ok("abc".into()));
+        assert_eq!(whole_stdout("abcd", 3), Err(TOO_LARGE.to_string()));
+        // Characters, not bytes: three two-byte characters fit a cap of 3.
+        assert_eq!(whole_stdout("ééé", 3), Ok("ééé".into()));
     }
 
     const HASH: &str = "4dfac0a00339d273c4d73168fd2ac0bddbcb6b706484954fdbfdc21457660b6f";
