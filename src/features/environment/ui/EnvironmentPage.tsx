@@ -110,6 +110,12 @@ function AddVar({
           data-env-name
           value={name}
           placeholder="NAME"
+          // No WebKit text help on a name: a replaced first letter is the
+          // suspected cause of SECRET_Y saved as ECRET_Y (Mac 6.18).
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
           onChange={(event) => setName(event.currentTarget.value.trim())}
           className={`${INPUT} w-44`}
         />
@@ -119,6 +125,9 @@ function AddVar({
           type={secret ? "password" : "text"}
           placeholder="value"
           autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
           onChange={(event) => setValue(event.currentTarget.value)}
           className={`${INPUT} flex-1`}
         />
