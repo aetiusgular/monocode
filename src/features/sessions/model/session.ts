@@ -394,6 +394,11 @@ export type Block = {
       host: string;
       chatKey?: string;
       projectKey?: string;
+      ruleable?: boolean;
+      code?: boolean;
+      hosts?: string[];
+      /** A web fetch's address and prompt. Live only, never saved. */
+      fetch?: { url: string; prompt: string };
     };
   };
   /** Inner activity of a delegated run. Present on Agent/Task tool blocks. */

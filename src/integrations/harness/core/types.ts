@@ -155,6 +155,14 @@ export type HarnessEvent =
         host: string;
         chatKey: string;
         projectKey: string;
+        /** False when no site rule may answer the call; see `SiteApproval`. */
+        ruleable?: boolean;
+        /** The call runs code in the browser. */
+        code?: boolean;
+        /** Every host the call names. */
+        hosts?: string[];
+        /** A web fetch: the address and the prompt, shown in full. */
+        fetch?: { url: string; prompt: string };
       };
     }
   | {

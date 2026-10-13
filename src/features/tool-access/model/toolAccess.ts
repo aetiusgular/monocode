@@ -210,6 +210,12 @@ export function toolAccessCaveats(
       ...(access?.always?.length
         ? ["Always is not used in plan turns. They stay read-only."]
         : []),
+      // WebFetch asks per website (`siteApprovalRequest`).
+      ...(access?.always?.includes("WebFetch")
+        ? [
+            "Always on WebFetch does not cover new websites. Each website asks once.",
+          ]
+        : []),
       // The tool leaves the model's tool list when the process next starts.
       // Until then only a call Claude Code asks about can be declined.
       ...(access?.never?.length

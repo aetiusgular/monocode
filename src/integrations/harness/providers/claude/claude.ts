@@ -126,8 +126,9 @@ import {
   pathsInsideChatFolders as pathsInsideChatFolders_l5,
 } from "../../../../features/tool-access/model/chatFolders";
 import {
+  blockedFetchMessage as blockedFetchMessage_l5,
   blockedSiteMessage as blockedSiteMessage_l5,
-  browserSiteRequest as browserSiteRequest_l5,
+  siteApprovalRequest as siteApprovalRequest_l5,
 } from "../../../../features/browser-tools/model/browserTools";
 import { siteRule as siteRule_l5 } from "../../../../features/browser-tools/model/siteRules";
 
@@ -1432,24 +1433,33 @@ async function handleControlRequest(
     return;
   }
 
-  // A browser tool that opens a site: the site's rule decides, for this chat
-  // or this project. With no rule, the card names the host, even when the
-  // tool itself is always allowed: that rule does not cover new sites. Full
-  // access never asks, as for any tool.
-  const site = browserSiteRequest_l5(toolName, input);
+  // A web fetch, or a browser tool that opens a site or runs code: the
+  // site's rule decides, for this chat or this project. A Never rule for any
+  // host the call names refuses it. With no rule, the card names the host,
+  // even when the tool itself is always allowed: that rule does not cover new
+  // sites. A call no rule may answer (no website named, several, or code)
+  // always shows the card. Full access never asks, as for any tool.
+  const site = siteApprovalRequest_l5(toolName, input);
   if (site) {
-    const rule = siteRule_l5(sessionId, live.cwd, site.host);
-    if (rule === "never") {
+    const blocked = site.hosts.find(
+      (host) => siteRule_l5(sessionId, live.cwd, host) === "never",
+    );
+    if (blocked) {
       await writeJson(
         sessionId,
         buildControlResponse(control.requestId, {
           behavior: "deny",
-          message: blockedSiteMessage_l5(site.host),
+          message: site.fetch
+            ? blockedFetchMessage_l5(blocked)
+            : blockedSiteMessage_l5(blocked),
         }),
       );
       return;
     }
-    if (rule === "always") {
+    if (
+      site.ruleable &&
+      siteRule_l5(sessionId, live.cwd, site.host) === "always"
+    ) {
       await writeJson(
         sessionId,
         buildControlResponse(

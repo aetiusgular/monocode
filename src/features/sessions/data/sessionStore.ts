@@ -1111,6 +1111,8 @@ function sanitizeBlock(
         typeof rec.server === "string"
           ? rec.server.replace(/[^\p{L}\p{N} ._\-]/gu, "").slice(0, 80)
           : "";
+      // A web fetch's address and prompt are never stored, like a sign-in
+      // page: they can carry tokens. The card keeps the server and host.
       return host && server ? { server, host } : undefined;
     })();
     next.approval = {
