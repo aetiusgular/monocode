@@ -26,6 +26,7 @@ import {
   Check,
 } from "../../../shared/ui/icons";
 import { MCP_PROVIDER_LABELS, type McpConnection } from "../model/mcp";
+import { providerBinaryPathChangePending } from "../../providers/model/providerBinaryPaths";
 import {
   getCachedMcpSettings,
   loadMcpSettings,
@@ -324,6 +325,13 @@ export function McpSettings({
   );
 }
 
+/**
+ * Mac test 4.5: the Codex rows come from the Codex in use, which a changed
+ * path only replaces after a restart (View > Reload keeps it).
+ */
+export const CODEX_PATH_CHANGED =
+  "The Codex path changed. Restart MonoCode to list that home's servers.";
+
 function McpConnections({
   cwd,
   projectPicker,
@@ -340,6 +348,7 @@ function McpConnections({
   const [error, setError] = useState(cached?.error ?? "");
   const [claudeError, setClaudeError] = useState(cached?.claudeError ?? "");
   const [addOpen, setAddOpen] = useState(false);
+  const codexPathChanged = providerBinaryPathChangePending("codex");
   const [removeScopes, setRemoveScopes] = useState<Record<string, Scope>>({});
   const refreshGeneration = useRef(0);
 
@@ -456,6 +465,15 @@ function McpConnections({
             Configured servers for the selected project and your provider
             accounts.
           </p>
+          {codexPathChanged ? (
+            <p
+              role="note"
+              data-codex-path-changed
+              className="mt-1 text-xs text-amber-400"
+            >
+              {CODEX_PATH_CHANGED}
+            </p>
+          ) : null}
         </div>
         <div className="flex items-center gap-2">
           <button
