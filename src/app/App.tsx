@@ -639,6 +639,7 @@ import {
   type MonoChangesRequest,
 } from "../features/monos/ui/MonoChangesPanel";
 import { ArtifactPanel } from "../features/artifacts/ui/ArtifactPanel";
+import { confirmDeleteChats } from "../features/sessions/model/deleteConfirm";
 import {
   beginAutomationRun,
   evaluateAutomationSchedule,
@@ -5402,7 +5403,14 @@ function Workspace({
           }
         }
         if (!unusedWorktree) {
+          // The worktree dialog below is its own confirmation; without it
+          // Delete asks here (Mac test 11.T2.6).
+          const confirmed = await confirmDeleteChats(1);
           deleteConfirmationPending.current = false;
+          if (!confirmed) {
+            removingSessionIds.current.delete(sessionId);
+            return false;
+          }
         } else {
           const choice = await new Promise<SessionDeleteChoice>((resolve) => {
             setSessionDeleteDialog({ title: label, unusedWorktree, resolve });
@@ -5819,12 +5827,7 @@ function Workspace({
   const onDeleteHistorySessions = useCallback(
     async (sessionIds: readonly string[]) => {
       if (sessionIds.length === 0) return;
-      if (
-        !window.confirm(
-          `Delete ${sessionIds.length} selected conversations? This can’t be undone.`,
-        )
-      )
-        return;
+      if (!(await confirmDeleteChats(sessionIds.length))) return;
       for (const sessionId of sessionIds) {
         if (!(await onRemoveHistorySession(sessionId, "delete", true))) break;
         forgetSessionContext_l2(sessionId);

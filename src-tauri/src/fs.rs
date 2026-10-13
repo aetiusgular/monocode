@@ -5772,16 +5772,88 @@ pub async fn save_generated_image(
     app: AppHandle,
     data: String,
     name: String,
+    session_id: Option<String>,
 ) -> Result<GeneratedImageAsset, String> {
-    tauri::async_runtime::spawn_blocking(move || save_generated_image_sync(&app, &data, &name))
-        .await
+    // An id that is not a plain session id only loses the prefix; the image
+    // is still saved.
+    let session_id =
+        session_id.filter(|id| crate::session_store::validate_id(id, "session").is_ok());
+    tauri::async_runtime::spawn_blocking(move || {
+        save_generated_image_sync(&app, &data, &name, session_id.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// A saved image's file name. With a session id it starts `<id>.`: a session
+/// id has no dot, so the prefix names that session's images and no other's.
+/// Deleting the chat removes them all, also those of turns a Retry replaced
+/// (Mac test 11.T2.6).
+fn generated_image_file_name(session_id: Option<&str>, name: &str) -> String {
+    let safe_name = safe_attachment_name(name);
+    match session_id {
+        Some(session_id) => format!("{session_id}.{}-{safe_name}.png", Uuid::new_v4()),
+        None => format!("{}-{safe_name}.png", Uuid::new_v4()),
+    }
+}
+
+/// Delete every image a session saved, by its file-name prefix, inside the
+/// generated-image folder only. Symbolic links and anything that is not a
+/// plain file are left alone, as is a folder that is itself a link.
+pub(crate) fn delete_session_generated_images(
+    app: &AppHandle,
+    session_id: &str,
+) -> Result<usize, String> {
+    crate::session_store::validate_id(session_id, "session")?;
+    let dir = app
+        .path()
+        .app_data_dir()
         .map_err(|e| e.to_string())?
+        .join(GENERATED_IMAGE_DIR);
+    delete_session_images_in(&dir, session_id)
+}
+
+fn delete_session_images_in(dir: &Path, session_id: &str) -> Result<usize, String> {
+    crate::session_store::validate_id(session_id, "session")?;
+    match std::fs::symlink_metadata(dir) {
+        Ok(meta) if meta.file_type().is_dir() => {}
+        Ok(_) => return Err("Generated image directory is not a folder.".into()),
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error.to_string()),
+    }
+    let prefix = format!("{session_id}.");
+    let mut removed = 0;
+    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        if !file_name.starts_with(&prefix) || !file_name.ends_with(".png") {
+            continue;
+        }
+        // DirEntry::file_type does not follow links.
+        let is_file = entry
+            .file_type()
+            .map(|kind| kind.is_file())
+            .unwrap_or(false);
+        if !is_file {
+            continue;
+        }
+        match std::fs::remove_file(entry.path()) {
+            Ok(()) => removed += 1,
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok(removed)
 }
 
 fn save_generated_image_sync(
     app: &AppHandle,
     data: &str,
     name: &str,
+    session_id: Option<&str>,
 ) -> Result<GeneratedImageAsset, String> {
     if data.len() as u64 > MAX_GENERATED_IMAGE_DATA_BYTES {
         return Err(format!(
@@ -5810,8 +5882,7 @@ fn save_generated_image_sync(
         .map_err(|e| e.to_string())?
         .join(GENERATED_IMAGE_DIR);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let safe_name = safe_attachment_name(name);
-    let destination = dir.join(format!("{}-{}.png", Uuid::new_v4(), safe_name));
+    let destination = dir.join(generated_image_file_name(session_id, name));
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -6838,6 +6909,57 @@ mod tests {
             text: text.into(),
             concat: concat.into(),
         }
+    }
+
+    // Mac test 11.T2.6: deleting a chat left the image of a turn that Retry
+    // had replaced.
+    #[test]
+    fn generated_image_names_carry_the_session_prefix() {
+        let named = generated_image_file_name(Some("chat-1"), "tool image");
+        assert!(named.starts_with("chat-1."));
+        assert!(named.ends_with("-tool-image.png"));
+        let bare = generated_image_file_name(None, "tool-image");
+        assert!(!bare.contains("chat-1"));
+    }
+
+    #[test]
+    fn deleting_a_session_removes_every_image_it_saved_and_nothing_else() {
+        let root = std::env::temp_dir().join(format!("monocode-images-{}", Uuid::new_v4()));
+        let dir = root.join(GENERATED_IMAGE_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = dir.join(generated_image_file_name(Some("chat-1"), "tool-image"));
+        let retried = dir.join(generated_image_file_name(Some("chat-1"), "tool-image"));
+        let other = dir.join(generated_image_file_name(Some("chat-10"), "tool-image"));
+        let legacy = dir.join(generated_image_file_name(None, "tool-image"));
+        for path in [&first, &retried, &other, &legacy] {
+            std::fs::write(path, b"png").unwrap();
+        }
+        // A file outside the folder, reached through a link inside it.
+        let outside = root.join("outside.png");
+        std::fs::write(&outside, b"keep").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, dir.join("chat-1.link.png")).unwrap();
+
+        assert_eq!(delete_session_images_in(&dir, "chat-1").unwrap(), 2);
+        assert!(!first.exists());
+        assert!(!retried.exists());
+        assert!(other.exists());
+        assert!(legacy.exists());
+        assert!(outside.exists());
+        assert!(delete_session_images_in(&dir, "../x").is_err());
+        assert!(delete_session_images_in(&dir, "").is_err());
+        assert_eq!(
+            delete_session_images_in(&root.join("missing"), "chat-1").unwrap(),
+            0
+        );
+        #[cfg(unix)]
+        {
+            let linked = root.join("linked-dir");
+            std::os::unix::fs::symlink(&dir, &linked).unwrap();
+            assert!(delete_session_images_in(&linked, "chat-10").is_err());
+            assert!(other.exists());
+        }
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

@@ -142,6 +142,8 @@ const QUESTION_AUTO_RESOLVE_MS = 120_000;
 type Live = {
   rpc: JsonRpcClient;
   threadId: string;
+  /** MonoCode's chat id; names the images this chat saves. */
+  sessionId?: string;
   cwd: string;
   providerAccountId?: string;
   /** Thread-level network policy used when this app-server opened the thread. */
@@ -664,14 +666,14 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     existing.controlsAgents === controlsAgents &&
     existing.ephemeral === ephemeral &&
     existing.codexStore === codexStore &&
-    existing.gatewayKey === gatewayKey
+    existing.gatewayKey === gatewayKey &&
     // [lane-1] reuse
     // [lane-2] reuse
     // [lane-3] reuse
     // [lane-4] reuse
     // [lane-5] reuse
-    && existing.identityKey_l5 === identityKey_l5
-    && existing.editAdapterKey_l5 === editAdapter_l5.key
+    existing.identityKey_l5 === identityKey_l5 &&
+    existing.editAdapterKey_l5 === editAdapter_l5.key
   ) {
     if (existing.mcpRequested === mcpRequested) {
       existing.onEvent = input.onEvent;
@@ -748,7 +750,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     {
       onNotification: (method, params) => {
         const live = liveRef.current;
-        if (live) noteCodexNotification_l5(live, input.sessionId, method, params);
+        if (live)
+          noteCodexNotification_l5(live, input.sessionId, method, params);
         if (!live || live.muteUpdates) return;
         if (live.notificationQueue) {
           const turnGeneration = live.turnGeneration;
@@ -974,6 +977,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       threadId,
       cwd: input.cwd,
       providerAccountId: input.providerAccountId,
+      sessionId: input.sessionId,
       controlsAgents,
       ephemeral,
       codexStore,
@@ -1368,6 +1372,7 @@ async function materializeGeneratedImage(
     const asset = await saveGeneratedImage({
       data: event.data,
       name: event.name,
+      ...(live.sessionId ? { sessionId: live.sessionId } : {}),
     });
     if (
       live.cancelled ||

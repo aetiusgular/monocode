@@ -248,6 +248,7 @@ describe("claude tool-result images", () => {
     expect(images.saveGeneratedImage).toHaveBeenCalledWith({
       data: PNG,
       name: "tool-image",
+      sessionId: "s1",
     });
     expect(imageEvents(events)).toEqual([
       {

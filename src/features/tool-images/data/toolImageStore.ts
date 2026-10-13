@@ -87,7 +87,11 @@ async function keep(
     try {
       const data = await pngBase64(image.data, image.mimeType);
       if (!data) continue;
-      const asset = await saveGeneratedImage({ data, name: "tool-image" });
+      const asset = await saveGeneratedImage({
+        data,
+        name: "tool-image",
+        sessionId: input.sessionId,
+      });
       saved.push({
         id: `${input.sourceId ?? input.callId}:${index}`,
         path: asset.path,

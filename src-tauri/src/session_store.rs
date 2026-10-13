@@ -531,6 +531,11 @@ pub fn session_delete(
             eprintln!("Generated image cleanup will need a retry: {error}");
         }
     }
+    // Also the images of turns the transcript no longer holds, such as one
+    // a Retry replaced (Mac test 11.T2.6).
+    if let Err(error) = crate::fs::delete_session_generated_images(&app, &session_id) {
+        eprintln!("Generated image cleanup will need a retry: {error}");
+    }
     let _ = app.emit(crate::reminders::CHANGED, ());
     Ok(())
 }

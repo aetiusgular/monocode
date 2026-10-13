@@ -60,6 +60,7 @@ describe("keepToolResultImages", () => {
     expect(fs.saveGeneratedImage).toHaveBeenCalledWith({
       data: PNG,
       name: "tool-image",
+      sessionId: "s1",
     });
     expect(events).toEqual([
       {

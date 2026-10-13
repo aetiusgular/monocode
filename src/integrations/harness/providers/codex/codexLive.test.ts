@@ -845,6 +845,7 @@ describe("codex live turn sequence", () => {
     expect(saveGeneratedImage).toHaveBeenCalledWith({
       data: "aW1hZ2U=",
       name: "generated-image",
+      sessionId: "codex-live",
     });
     expect(events).toContainEqual({
       type: "image.generated",
