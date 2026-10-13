@@ -101,10 +101,13 @@ import {
   isNativeCommandPrompt,
   replaceSlashToken,
   skillTextParts,
-  slashTokenAt,
   type Skill,
-  type SlashToken,
 } from "../../skills/model/skills";
+import {
+  composerSlashToken,
+  returnTakesSlashPick,
+  type ComposerSlashToken,
+} from "../model/composerSlash";
 import { AccessPicker } from "./AccessPicker";
 import { ComposerRunner } from "./ComposerRunner";
 import { ContextMeter } from "./ContextMeter";
@@ -583,7 +586,7 @@ export function Composer({
   const pasteFlightRef = useRef<Promise<void> | null>(null);
   const submitLockRef = useRef(false);
   const positionedInitialDraft = useRef(false);
-  const slashRef = useRef<SlashToken | null>(null);
+  const slashRef = useRef<ComposerSlashToken | null>(null);
   const mentionRef = useRef<MentionToken | null>(null);
   const [draft, setDraft] = useState(initialDraft ?? "");
   // React rewrites a textarea's text node whenever defaultValue changes, and
@@ -658,7 +661,7 @@ export function Composer({
     remote: remoteSession,
     plusOpen,
   });
-  const [slash, setSlash] = useState<SlashToken | null>(null);
+  const [slash, setSlash] = useState<ComposerSlashToken | null>(null);
   const [skillActive, setSkillActive] = useState(0);
   const [creatingSkill, setCreatingSkill] = useState(false);
   const [sessionFolderOpen, setSessionFolderOpen] = useState(false);
@@ -1197,7 +1200,13 @@ export function Composer({
   const syncTokensFromTextarea = (el: HTMLTextAreaElement) => {
     if (creatingSkill) return;
     const cursor = el.selectionStart ?? 0;
-    const token = slashTokenAt(el.value, cursor, hasNativeCommands(harness));
+    // Mid-text `/` opens the menu only for a listed name (Mac finding 2.x).
+    const token = composerSlashToken(
+      el.value,
+      cursor,
+      hasNativeCommands(harness),
+      slashItems,
+    );
     setSlash(token);
     setMention(token ? null : mentionTokenAt(el.value, cursor));
   };
@@ -1815,7 +1824,10 @@ export function Composer({
         if (skill) pickSkill(skill);
         return;
       }
-      if (e.key === "Enter" && !e.shiftKey) {
+      if (e.key === "Enter" && !e.shiftKey && !returnTakesSlashPick(slash)) {
+        // A `/` later in the text: Return sends, as with no menu.
+        setSlash(null);
+      } else if (e.key === "Enter" && !e.shiftKey) {
         const skill = rankedSkills[skillActive];
         if (skill) {
           e.preventDefault();
