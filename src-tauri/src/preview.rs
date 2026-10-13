@@ -415,26 +415,81 @@ pub fn fetch_script(raw: &str) -> PreviewScript {
     }
 }
 
-/// Whether every listener on this loopback port belongs to the process
-/// session MonoCode started for a preview. The preview runs under `setsid`,
-/// so its server (`npm` -> `node` -> `vite`) shares the leader's session id.
-/// A port nobody listens on, or one another program also listens on, or one
-/// whose owner this user cannot see, is refused.
+/// Where a listener on the preview's port is bound.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ListenAddr {
+    /// Every address (`*`, `0.0.0.0`, `::`).
+    Any,
+    /// One loopback address.
+    Ip(IpAddr),
+}
+
+/// One process listening on the port, and where.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PortListener {
+    pid: u32,
+    addr: ListenAddr,
+}
+
+/// The loopback addresses a URL's host stands for, in the order tried.
+fn url_addrs(url: &Url) -> Vec<IpAddr> {
+    match url.host() {
+        Some(Host::Domain(_)) => vec![
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ],
+        Some(Host::Ipv4(ip)) => vec![IpAddr::V4(ip)],
+        Some(Host::Ipv6(ip)) => vec![IpAddr::V6(ip)],
+        None => Vec::new(),
+    }
+}
+
+/// The one address to connect to for a preview's port, or None to refuse
+/// (security fix R5). Every listener seen on the port must belong to the
+/// preview. Then the address must be one the preview itself is bound to.
+/// `complete` says whether the listing shows every user's listeners: Linux's
+/// `/proc/net` does, so a preview bound to every address also holds
+/// 127.0.0.1 there. `lsof` without root does not list another user's
+/// sockets, so on macOS a stranger's `127.0.0.1:P` beside the preview's
+/// `*:P` would not show: only an exact address counts.
+fn preview_connect_addr(
+    listeners: &[PortListener],
+    owned: &dyn Fn(u32) -> bool,
+    complete: bool,
+    wanted: &[IpAddr],
+) -> Option<IpAddr> {
+    if listeners.is_empty() || !listeners.iter().all(|l| owned(l.pid)) {
+        return None;
+    }
+    wanted.iter().copied().find(|ip| {
+        listeners
+            .iter()
+            .any(|l| l.addr == ListenAddr::Ip(*ip) || (complete && l.addr == ListenAddr::Any))
+    })
+}
+
+/// Whether this platform's listing shows every user's listeners.
+const LISTENERS_COMPLETE: bool = cfg!(target_os = "linux");
+
+/// The address on this loopback port to read from, when every listener on
+/// it belongs to the process session MonoCode started for a preview. The
+/// preview runs under `setsid`, so its server (`npm` -> `node` -> `vite`)
+/// shares the leader's session id. A port nobody listens on, one another
+/// program also listens on, one whose owner this user cannot see, or (on
+/// macOS) one the preview holds only through a wildcard, is refused.
 #[cfg(unix)]
-fn port_held_by_session(leader: u32, port: u16) -> bool {
-    let Some(pids) = loopback_listeners(port) else {
-        return false;
+fn port_held_by_session(leader: u32, port: u16, wanted: &[IpAddr]) -> Option<IpAddr> {
+    let listeners = loopback_listeners(port)?;
+    let owned = |pid: u32| {
+        // SAFETY: getsid only reads the session id of a process.
+        pid == leader || unsafe { libc::getsid(pid as libc::pid_t) } == leader as libc::pid_t
     };
-    !pids.is_empty()
-        && pids.iter().all(|&pid| {
-            // SAFETY: getsid only reads the session id of a process.
-            pid == leader || unsafe { libc::getsid(pid as libc::pid_t) } == leader as libc::pid_t
-        })
+    preview_connect_addr(&listeners, &owned, LISTENERS_COMPLETE, wanted)
 }
 
 #[cfg(not(unix))]
-fn port_held_by_session(_leader: u32, _port: u16) -> bool {
-    false
+fn port_held_by_session(_leader: u32, _port: u16, _wanted: &[IpAddr]) -> Option<IpAddr> {
+    None
 }
 
 /// True for a listening address a loopback connection reaches: loopback or
@@ -454,12 +509,40 @@ fn proc_loopback_or_any(hex: &str) -> bool {
     }
 }
 
-/// The processes listening on this port on a loopback or wildcard address,
-/// or None when a listener's owner cannot be found.
+/// A `/proc/net/tcp` address read as where it listens. IPv4 is one
+/// little-endian word; IPv6 is four. A v4-mapped address counts as IPv4.
 #[cfg(target_os = "linux")]
-fn loopback_listeners(port: u16) -> Option<Vec<u32>> {
-    use std::collections::HashSet;
-    let mut inodes: HashSet<u64> = HashSet::new();
+fn proc_listen_addr(hex: &str) -> Option<ListenAddr> {
+    let word = |chunk: &str| u32::from_str_radix(chunk, 16).ok().map(u32::swap_bytes);
+    let addr = match hex.len() {
+        8 => IpAddr::V4(Ipv4Addr::from(word(hex)?)),
+        32 => {
+            let mut octets = [0u8; 16];
+            for i in 0..4 {
+                let value = word(hex.get(i * 8..i * 8 + 8)?)?;
+                octets[i * 4..i * 4 + 4].copy_from_slice(&value.to_be_bytes());
+            }
+            let v6 = Ipv6Addr::from(octets);
+            match v6.to_ipv4_mapped() {
+                Some(v4) => IpAddr::V4(v4),
+                None => IpAddr::V6(v6),
+            }
+        }
+        _ => return None,
+    };
+    Some(if addr.is_unspecified() {
+        ListenAddr::Any
+    } else {
+        ListenAddr::Ip(addr)
+    })
+}
+
+/// The processes listening on this port on a loopback or wildcard address,
+/// with where each listens, or None when a listener's owner cannot be found.
+#[cfg(target_os = "linux")]
+fn loopback_listeners(port: u16) -> Option<Vec<PortListener>> {
+    use std::collections::{HashMap, HashSet};
+    let mut inodes: HashMap<u64, ListenAddr> = HashMap::new();
     for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
         let Ok(text) = fs::read_to_string(table) else {
             continue;
@@ -476,20 +559,22 @@ fn loopback_listeners(port: u16) -> Option<Vec<u32>> {
             if u16::from_str_radix(hex_port, 16).ok() != Some(port) || !proc_loopback_or_any(addr) {
                 continue;
             }
-            if let Ok(inode) = fields[9].parse::<u64>() {
-                inodes.insert(inode);
-            }
+            let (Ok(inode), Some(listen)) = (fields[9].parse::<u64>(), proc_listen_addr(addr))
+            else {
+                // A listener that cannot be read refuses the port.
+                return None;
+            };
+            inodes.insert(inode, listen);
         }
     }
-    if inodes.is_empty() || inodes.contains(&0) {
-        return if inodes.is_empty() {
-            Some(Vec::new())
-        } else {
-            None
-        };
+    if inodes.is_empty() {
+        return Some(Vec::new());
+    }
+    if inodes.contains_key(&0) {
+        return None;
     }
     let mut found: HashSet<u64> = HashSet::new();
-    let mut pids = Vec::new();
+    let mut listeners = Vec::new();
     for entry in fs::read_dir("/proc").ok()?.flatten() {
         let Some(pid) = entry
             .file_name()
@@ -501,7 +586,6 @@ fn loopback_listeners(port: u16) -> Option<Vec<u32>> {
         let Ok(fds) = fs::read_dir(entry.path().join("fd")) else {
             continue;
         };
-        let mut owns = false;
         for fd in fds.flatten() {
             let Ok(target) = fs::read_link(fd.path()) else {
                 continue;
@@ -514,52 +598,80 @@ fn loopback_listeners(port: u16) -> Option<Vec<u32>> {
             else {
                 continue;
             };
-            if inodes.contains(&inode) {
+            if let Some(&addr) = inodes.get(&inode) {
                 found.insert(inode);
-                owns = true;
+                let listener = PortListener { pid, addr };
+                if !listeners.contains(&listener) {
+                    listeners.push(listener);
+                }
             }
-        }
-        if owns {
-            pids.push(pid);
         }
     }
     // A socket whose owner is hidden (another user's process) is refused.
-    (found.len() == inodes.len()).then_some(pids)
+    (found.len() == inodes.len()).then_some(listeners)
 }
 
-/// The processes listening on this port on a loopback or wildcard address,
-/// from `lsof` (an absolute path and an argument list, no shell). None when
-/// it cannot be run.
-#[cfg(target_os = "macos")]
-fn loopback_listeners(port: u16) -> Option<Vec<u32>> {
-    let output = std::process::Command::new("/usr/sbin/lsof")
-        .args(["-nP", "-w", "-Fpn", "-sTCP:LISTEN"])
-        .arg(format!("-iTCP:{port}"))
-        .stdin(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    let mut pids = Vec::new();
+/// `lsof -F pn` output read as listeners on loopback or every address.
+/// Addresses another machine would use are left out: the fetch never
+/// connects to them.
+#[cfg(any(target_os = "macos", test))]
+fn parse_lsof_listeners(text: &str) -> Vec<PortListener> {
+    let mut listeners = Vec::new();
     let mut current: Option<u32> = None;
     for line in text.lines() {
         if let Some(pid) = line.strip_prefix('p') {
             current = pid.parse().ok();
         } else if let Some(name) = line.strip_prefix('n') {
             let host = name.rsplit_once(':').map(|(h, _)| h).unwrap_or(name);
-            let reachable =
-                host == "*" || host == "[::1]" || host == "[::]" || host.starts_with("127.");
-            if let (true, Some(pid)) = (reachable, current) {
-                if !pids.contains(&pid) {
-                    pids.push(pid);
+            let addr = if host == "*" || host == "[::]" {
+                Some(ListenAddr::Any)
+            } else {
+                host.trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .parse::<IpAddr>()
+                    .ok()
+                    .map(|ip| match ip {
+                        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(ip),
+                        ip => ip,
+                    })
+                    .filter(|ip| ip.is_loopback() || ip.is_unspecified())
+                    .map(|ip| {
+                        if ip.is_unspecified() {
+                            ListenAddr::Any
+                        } else {
+                            ListenAddr::Ip(ip)
+                        }
+                    })
+            };
+            if let (Some(addr), Some(pid)) = (addr, current) {
+                let listener = PortListener { pid, addr };
+                if !listeners.contains(&listener) {
+                    listeners.push(listener);
                 }
             }
         }
     }
-    Some(pids)
+    listeners
+}
+
+/// The processes listening on this port on a loopback or wildcard address,
+/// from `lsof` (an absolute path and an argument list, no shell). None when
+/// it cannot be run.
+#[cfg(target_os = "macos")]
+fn loopback_listeners(port: u16) -> Option<Vec<PortListener>> {
+    let output = std::process::Command::new("/usr/sbin/lsof")
+        .args(["-nP", "-w", "-Fpn", "-sTCP:LISTEN"])
+        .arg(format!("-iTCP:{port}"))
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    Some(parse_lsof_listeners(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
 }
 
 #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
-fn loopback_listeners(_port: u16) -> Option<Vec<u32>> {
+fn loopback_listeners(_port: u16) -> Option<Vec<PortListener>> {
     None
 }
 
@@ -582,7 +694,13 @@ pub fn fetch_preview_script(leader: Option<u32>, raw: &str) -> PreviewScript {
     let Some(port) = url.port_or_known_default() else {
         return refuse("A preview URL needs a port");
     };
-    if !port_held_by_session(leader, port) {
+    let Some(ip) = port_held_by_session(leader, port, &url_addrs(&url)) else {
+        return refuse("Only the running preview's own port can be read");
+    };
+    // Connect to the address the preview itself listens on, nothing else
+    // `localhost` could reach.
+    let mut url = url;
+    if url.set_ip_host(ip).is_err() {
         return refuse("Only the running preview's own port can be read");
     }
     fetch_script(url.as_str())
@@ -950,5 +1068,135 @@ mod tests {
         assert!(proc_loopback_or_any("00000000000000000000000000000000"));
         assert!(proc_loopback_or_any("0000000000000000FFFF00000100007F"));
         assert!(!proc_loopback_or_any("000080FE00000000FF005450B6AD1DFE"));
+    }
+
+    // Security fix R5: lsof without root lists only this user's sockets.
+    #[test]
+    fn lsof_output_reads_as_listeners() {
+        let text = "p501\nf20\nn*:5173\np502\nn127.0.0.1:5173\nn[::1]:5173\nn[::]:5173\nn192.168.1.5:5173\np503\nn[::ffff:127.0.0.1]:5173\n";
+        let v4 = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let v6 = IpAddr::V6(Ipv6Addr::LOCALHOST);
+        assert_eq!(
+            parse_lsof_listeners(text),
+            vec![
+                PortListener {
+                    pid: 501,
+                    addr: ListenAddr::Any
+                },
+                PortListener {
+                    pid: 502,
+                    addr: ListenAddr::Ip(v4)
+                },
+                PortListener {
+                    pid: 502,
+                    addr: ListenAddr::Ip(v6)
+                },
+                PortListener {
+                    pid: 502,
+                    addr: ListenAddr::Any
+                },
+                PortListener {
+                    pid: 503,
+                    addr: ListenAddr::Ip(v4)
+                },
+            ]
+        );
+        assert!(parse_lsof_listeners("").is_empty());
+    }
+
+    #[test]
+    fn a_wildcard_preview_counts_for_loopback_only_where_the_listing_is_complete() {
+        let v4 = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let v6 = IpAddr::V6(Ipv6Addr::LOCALHOST);
+        let ours = |pid: u32| pid == 10 || pid == 11;
+        let any = [PortListener {
+            pid: 10,
+            addr: ListenAddr::Any,
+        }];
+        // macOS: another user's 127.0.0.1:P beside the preview's *:P would
+        // not be listed, so a wildcard is not enough.
+        assert_eq!(preview_connect_addr(&any, &ours, false, &[v4, v6]), None);
+        // Linux lists every user's sockets: the wildcard holds 127.0.0.1.
+        assert_eq!(preview_connect_addr(&any, &ours, true, &[v4, v6]), Some(v4));
+        // Bound to exactly the address: fine on both.
+        let exact = [PortListener {
+            pid: 11,
+            addr: ListenAddr::Ip(v6),
+        }];
+        for complete in [false, true] {
+            assert_eq!(
+                preview_connect_addr(&exact, &ours, complete, &[v4, v6]),
+                Some(v6)
+            );
+            assert_eq!(preview_connect_addr(&exact, &ours, complete, &[v4]), None);
+        }
+        // `localhost` connects to the exact address the preview holds.
+        let both = [
+            PortListener {
+                pid: 10,
+                addr: ListenAddr::Any,
+            },
+            PortListener {
+                pid: 11,
+                addr: ListenAddr::Ip(v4),
+            },
+        ];
+        assert_eq!(
+            preview_connect_addr(&both, &ours, false, &[v4, v6]),
+            Some(v4)
+        );
+        // Any listener that is not the preview's refuses the port.
+        let shared = [
+            PortListener {
+                pid: 11,
+                addr: ListenAddr::Ip(v4),
+            },
+            PortListener {
+                pid: 99,
+                addr: ListenAddr::Ip(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2))),
+            },
+        ];
+        for complete in [false, true] {
+            assert_eq!(preview_connect_addr(&shared, &ours, complete, &[v4]), None);
+            assert_eq!(preview_connect_addr(&[], &ours, complete, &[v4]), None);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn proc_addresses_read_as_where_they_listen() {
+        let v4 = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        assert_eq!(proc_listen_addr("0100007F"), Some(ListenAddr::Ip(v4)));
+        assert_eq!(proc_listen_addr("00000000"), Some(ListenAddr::Any));
+        assert_eq!(
+            proc_listen_addr("00000000000000000000000001000000"),
+            Some(ListenAddr::Ip(IpAddr::V6(Ipv6Addr::LOCALHOST)))
+        );
+        assert_eq!(
+            proc_listen_addr("00000000000000000000000000000000"),
+            Some(ListenAddr::Any)
+        );
+        assert_eq!(
+            proc_listen_addr("0000000000000000FFFF00000100007F"),
+            Some(ListenAddr::Ip(v4))
+        );
+        assert_eq!(
+            proc_listen_addr("0000000000000000FFFF000000000000"),
+            Some(ListenAddr::Any)
+        );
+        assert_eq!(proc_listen_addr("zz"), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn fetch_preview_script_connects_to_the_address_the_preview_holds() {
+        // SAFETY: getsid(0) reads this process's session id.
+        let session = unsafe { libc::getsid(0) } as u32;
+        let ok = serve_once(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\nContent-Length: 2\r\nConnection: close\r\n\r\n1;",
+        );
+        // `serve_once` binds 127.0.0.1; `localhost` reads from there.
+        let script = fetch_preview_script(Some(session), &format!("http://localhost:{ok}/a.js"));
+        assert_eq!(script.status, Some(200), "{:?}", script.error);
     }
 }
