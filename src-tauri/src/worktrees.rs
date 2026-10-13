@@ -1136,7 +1136,11 @@ mod tests {
             Some(&folder.to_string_lossy()),
         )
         .unwrap();
-        assert!(Path::new(&tree.path).starts_with(folder.join("repo")));
+        // git reports the resolved path. On macOS the temp folder is under
+        // /var, a link to /private/var, so compare resolved paths (Mac test 0.5).
+        let folder = folder.canonicalize().unwrap();
+        let tree_path = Path::new(&tree.path).canonicalize().unwrap();
+        assert!(tree_path.starts_with(folder.join("repo")));
     }
 
     #[test]
