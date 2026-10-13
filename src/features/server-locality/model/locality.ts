@@ -1,8 +1,19 @@
 import type { HarnessId, Session } from "../../sessions/model/session";
 import { providerLocality } from "../../model-setup/model/providerLocality";
+import { findModelProvider, providerForAccount } from "../../model-setup/model/modelProviders";
+import { isLoopbackUrl } from "../../model-setup/model/loopback";
 import { gatewaySessionInput } from "../../gateway-connectors/model/sessionGateway";
+import {
+  selectedProviderAccountId,
+  supportsProviderAccounts,
+} from "../../providers/model/providerAccounts";
 import { serverLocality, type LocalityServer } from "./serverLocality";
-import { knownHarnessServers } from "./sessionServers";
+import {
+  knownHarnessModelRoute,
+  knownHarnessServers,
+  requestHarnessReport,
+  type ReportedModelRoute,
+} from "./sessionServers";
 
 /**
  * Where a session's content goes: only to this Mac, to a hosted service, or
@@ -58,6 +69,60 @@ export type LocalityPart = {
   locality: Locality;
 };
 
+/** The account a session's turns run on, as a turn and the Connectors list resolve it. */
+export function localityAccount(session: LocalitySession): string | undefined {
+  if (session.providerAccountId) return session.providerAccountId;
+  if (!supportsProviderAccounts(session.harness)) return undefined;
+  try {
+    return selectedProviderAccountId(session.harness, session.cwd);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Where a route the harness reported goes (Mac finding 5.6). The provider's
+ * base URL from the harness's own configuration is parsed with the URL
+ * parser: loopback (`localhost`, 127.0.0.0/8, `::1`, no user name or
+ * password) is local, any other address is hosted. A provider the Models page
+ * set up as rented or OpenRouter is hosted whatever its URL. `openai` with no
+ * base URL is hosted. Anything else is unknown.
+ */
+export function reportedRouteLocality(route: ReportedModelRoute): Locality {
+  const known = findModelProvider(route.provider)?.entry?.kind;
+  if (known === "rented" || known === "openrouter") return "hosted";
+  const baseUrl = Object.prototype.hasOwnProperty.call(route.baseUrls, route.provider)
+    ? route.baseUrls[route.provider]
+    : undefined;
+  if (baseUrl) return isLoopbackUrl(baseUrl) ? "local" : "hosted";
+  if (route.provider === "openai") return "hosted";
+  return "unknown";
+}
+
+/**
+ * The model route of a session that can pick a provider: the provider picked
+ * for the chat, else the one the Models page wrote for its account, else what
+ * the session's own harness reported from its configuration. A chat's pick
+ * is passed to the harness, so it wins over the configuration.
+ */
+export function modelRoutePart(session: LocalitySession): LocalityPart {
+  const account = localityAccount(session);
+  const picked = session.modelProvider || providerForAccount(account)?.id;
+  if (picked) {
+    return { label: picked, kind: "model", locality: providerLocality(picked) };
+  }
+  const cwd = session.worktreeCwd || session.cwd || "";
+  const route = knownHarnessModelRoute(session.harness, account, cwd);
+  if (route) {
+    return {
+      label: route.provider,
+      kind: "model",
+      locality: reportedRouteLocality(route),
+    };
+  }
+  return { label: "model", kind: "model", locality: "unknown" };
+}
+
 /**
  * Each part that decides a session's locality, for the destinations line:
  * the model route, then every MCP server the session starts.
@@ -65,6 +130,10 @@ export type LocalityPart = {
  * `servers` is the session's own enabled servers when the caller knows them.
  * Without it, the last list the harness reported for this account and folder
  * is used. With neither, the harness's own servers are unknown.
+ *
+ * MonoCode's own outbound calls (link previews, usage figures, the version
+ * check, the star check, GitHub lookups) are not parts: they do not carry a
+ * chat's transcript to a model, so they never decide a session's locality.
  */
 export function sessionLocalityParts(
   session: LocalitySession,
@@ -73,17 +142,11 @@ export function sessionLocalityParts(
   if (harnessIsHosted(session.harness)) {
     return [{ label: session.harness, kind: "harness", locality: "hosted" }];
   }
-  const parts: LocalityPart[] = [
-    {
-      label: session.modelProvider || "model",
-      kind: "model",
-      locality: providerLocality(session.modelProvider),
-    },
-  ];
+  const parts: LocalityPart[] = [modelRoutePart(session)];
   const cwd = session.worktreeCwd || session.cwd || "";
   const off = new Set(session.disabledMcpServers ?? []);
   const own =
-    servers ?? knownHarnessServers(session.harness, session.providerAccountId, cwd);
+    servers ?? knownHarnessServers(session.harness, localityAccount(session), cwd);
   if (!own) {
     parts.push({ label: "this harness's servers", kind: "server", locality: "unknown" });
   } else {
@@ -92,7 +155,7 @@ export function sessionLocalityParts(
       parts.push({ label: server.name, kind: "server", locality: serverLocality(server) });
     }
   }
-  let gateway: { name: string; command: string; args: string[] }[] = [];
+  let gateway: LocalityServer[] = [];
   try {
     gateway = gatewaySessionInput(
       {
@@ -131,9 +194,10 @@ export function sessionLocalityParts(
  * harness home and every enabled tool are local:
  *
  * - Claude Code, Cursor, Grok Build, Antigravity and Devin are hosted.
- * - The model route is `providerLocality(session.modelProvider)` (lane 5).
- *   A session with no provider recorded is unknown. The harness home is
- *   judged by the same route: a home is local when its provider is.
+ * - The model route is the chat's provider, else its account's provider,
+ *   else the route the harness reported from its own configuration
+ *   (`modelRoutePart`). With none of these it is unknown. The harness home
+ *   is judged by the same route: a home is local when its provider is.
  * - Every MCP server the session starts must be local: its own servers (see
  *   `sessionLocalityParts`) and every gateway connector not switched off.
  */
@@ -144,6 +208,27 @@ export function sessionIsLocal(
   return combineLocality(
     sessionLocalityParts(session, servers).map((part) => part.locality),
   );
+}
+
+/**
+ * `sessionIsLocal` after asking the session's own harness, once per account
+ * and folder, for its servers and model route when they are not known yet.
+ * Used where a decision gates content (local-only memory), so a Codex on a
+ * wrapper home is read before it is judged. A failed or slow probe leaves
+ * the parts unknown, which counts as hosted.
+ */
+export async function sessionLocalityNow(
+  session: LocalitySession,
+  servers?: readonly LocalityServer[],
+): Promise<Locality> {
+  if (!harnessIsHosted(session.harness)) {
+    await requestHarnessReport(
+      session.harness,
+      localityAccount(session),
+      session.worktreeCwd || session.cwd || "",
+    );
+  }
+  return sessionIsLocal(session, servers);
 }
 
 /** Whether a locality counts as local. "unknown" never does. */

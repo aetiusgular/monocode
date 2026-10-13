@@ -2,6 +2,7 @@ import {
   describeServerLocality,
   localityExplanation,
   localityLabel,
+  localityMarkable,
   type LocalityServer,
 } from "../model/serverLocality";
 import {
@@ -41,7 +42,7 @@ export function ServerLocalityTag({
   const mark = serverMark(server.name);
   const explanation = localityExplanation(result);
   const className = `shrink-0 rounded px-1 text-[10px] font-medium uppercase tracking-wide ${TONE[result.locality]}`;
-  if (!editable) {
+  if (!editable || !localityMarkable(result)) {
     return (
       <span data-server-locality={result.locality} title={explanation} className={className}>
         {label}

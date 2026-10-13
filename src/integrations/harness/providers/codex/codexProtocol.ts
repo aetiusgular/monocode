@@ -441,6 +441,44 @@ export function codexConfiguredMcpServers(result: unknown): Set<string> | null {
   return servers ? new Set(Object.keys(servers)) : null;
 }
 
+/** The model route a Codex reports in `config/read`. */
+export type CodexModelRoute = {
+  /** The effective `model_provider`; Codex uses `openai` when none is set. */
+  provider: string;
+  /** Base URL of each provider the configuration defines, by id. */
+  baseUrls: Record<string, string>;
+};
+
+const MAX_ROUTE_PROVIDERS = 64;
+const PROVIDER_ID = /^[A-Za-z0-9_.-]{1,80}$/;
+
+/**
+ * The effective model provider and the base URLs of the configured
+ * providers, from a `config/read` result, or null when the result does not
+ * have the expected shape. Codex 0.161.0 answers with `config.model_provider`
+ * (null when unset) and `config.model_providers.<id>.base_url`.
+ */
+export function codexModelRoute(result: unknown): CodexModelRoute | null {
+  const config = asRecord(asRecord(result)?.config);
+  if (!config) return null;
+  const raw = config.model_provider;
+  if (raw != null && typeof raw !== "string") return null;
+  const provider = typeof raw === "string" && raw.trim() ? raw.trim() : "openai";
+  if (!PROVIDER_ID.test(provider)) return null;
+  const baseUrls: Record<string, string> = Object.create(null);
+  const providers = asRecord(config.model_providers);
+  let count = 0;
+  for (const [id, entry] of Object.entries(providers ?? {})) {
+    if (count >= MAX_ROUTE_PROVIDERS) break;
+    if (!PROVIDER_ID.test(id)) continue;
+    const url = stringField(asRecord(entry), "base_url");
+    if (!url || url.length > 2_048) continue;
+    baseUrls[id] = url;
+    count += 1;
+  }
+  return { provider, baseUrls };
+}
+
 /**
  * The MCP servers in a `config/read` result, by name, or null when the result
  * does not have the expected shape. `config/read` answers with the effective
@@ -457,10 +495,17 @@ export function codexMcpServerList(result: unknown): HarnessMcpServer[] | null {
       const entry = asRecord(servers?.[name]);
       const command = stringField(entry, "command");
       const url = stringField(entry, "url");
+      const args = Array.isArray(entry?.args)
+        ? entry.args
+            .filter((arg): arg is string => typeof arg === "string")
+            .slice(0, 64)
+            .map((arg) => arg.slice(0, 2_048))
+        : [];
       return {
         name,
         enabled: entry?.enabled !== false,
         ...(command ? { command } : {}),
+        ...(command && args.length ? { args } : {}),
         ...(url ? { url } : {}),
       };
     });

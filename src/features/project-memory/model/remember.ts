@@ -1,7 +1,7 @@
 import { MEMORY_ENTRY_MAX } from "../../monos/model/monoMemory";
 import {
   isLocal,
-  sessionIsLocal,
+  sessionLocalityNow,
   type LocalitySession,
 } from "../../server-locality/model/locality";
 import { addProjectMemory, type MemoryAddResult } from "./projectMemory";
@@ -27,6 +27,6 @@ export async function rememberText(
   const fact = rememberableText(text);
   if (!fact) throw new Error("Nothing to remember");
   return addProjectMemory(project, fact, {
-    local: isLocal(sessionIsLocal(session)),
+    local: isLocal(await sessionLocalityNow(session)),
   });
 }

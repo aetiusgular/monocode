@@ -28,7 +28,10 @@ import {
 import { useReportedMcpServers } from "../model/reportedMcpServers";
 import { noteHarnessServers } from "../../server-locality/model/sessionServers";
 import { ServerLocalityTag } from "../../server-locality/ui/ServerLocalityTag";
-import type { LocalityServer } from "../../server-locality/model/serverLocality";
+import {
+  connectorLocalityServer,
+  type LocalityServer,
+} from "../../server-locality/model/serverLocality";
 import {
   loadClaudeConnectors,
   loadingClaudeConnectors,
@@ -317,20 +320,12 @@ export function ConnectorsPopover({
   const checking = !answer.servers && !discovered;
   // #9: what each row's locality is decided from. Reported servers carry
   // their command or address; gateway rows are Docker gateway entries.
-  const localityServer = (name: string): LocalityServer => {
-    const reportedServer = answer.servers?.find((server) => server.name === name);
-    if (reportedServer) {
-      return {
-        name,
-        ...(reportedServer.command ? { command: reportedServer.command } : {}),
-        ...(reportedServer.url ? { url: reportedServer.url } : {}),
-      };
-    }
-    if (gatewayNames.has(name)) {
-      return { name, command: "docker", args: ["mcp", "gateway", "run"] };
-    }
-    return { name };
-  };
+  const localityServer = (name: string): LocalityServer =>
+    connectorLocalityServer(
+      name,
+      answer.servers?.find((server) => server.name === name),
+      installed.connectors,
+    );
   const title = HARNESS_TITLE[harness];
   const caveat = connectorSwitchCaveat(harness);
   return (

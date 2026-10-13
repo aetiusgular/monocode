@@ -3,7 +3,15 @@ import { DEFAULT_PROVIDER_ACCOUNT_ID } from "../../../../features/providers/mode
 import { acquireHarnessBridge } from "../../core/child";
 import type { HarnessMcpServer, ListMcpServersInput } from "../../core/types";
 import { withCodexProbe } from "./codexCatalog";
-import { codexMcpServerList } from "./codexProtocol";
+import {
+  codexMcpServerList,
+  codexModelRoute,
+  type CodexModelRoute,
+} from "./codexProtocol";
+import {
+  noteHarnessModelRoute,
+  noteHarnessServers,
+} from "../../../../features/server-locality/model/sessionServers";
 
 const PROBE_TIMEOUT_MS = 10_000;
 const REQUEST_TIMEOUT_MS = 8_000;
@@ -12,11 +20,17 @@ const CACHE_TTL_MS = 60_000;
 /** A failed probe is retried sooner, but not on every open of the list. */
 const FAILURE_TTL_MS = 15_000;
 
+/** What one `config/read` said: the servers, and the model route when readable. */
+export type CodexConfigReport = {
+  servers: HarnessMcpServer[];
+  route?: CodexModelRoute;
+};
+
 type Entry =
-  { at: number; servers: HarnessMcpServer[] } | { at: number; error: Error };
+  { at: number; report: CodexConfigReport } | { at: number; error: Error };
 
 const cache = new Map<string, Entry>();
-const inFlight = new Map<string, Promise<HarnessMcpServer[]>>();
+const inFlight = new Map<string, Promise<CodexConfigReport>>();
 
 /** Forget every answer, so the next call asks Codex again. */
 export function clearCodexMcpServersCache(): void {
@@ -37,6 +51,18 @@ export function clearCodexMcpServersCache(): void {
 export function listCodexMcpServers(
   input: ListMcpServersInput,
 ): Promise<HarnessMcpServer[]> {
+  return readCodexConfigReport(input).then((report) => report.servers);
+}
+
+/**
+ * The servers and the model route of one session's Codex, from the same
+ * cached `config/read` (Mac finding 5.6). A wrapper script may set its own
+ * `CODEX_HOME`, which MonoCode cannot see; the Codex it starts can say which
+ * provider it uses and where that provider's base URL points.
+ */
+export function readCodexConfigReport(
+  input: ListMcpServersInput,
+): Promise<CodexConfigReport> {
   const account = input.providerAccountId ?? DEFAULT_PROVIDER_ACCOUNT_ID;
   const key = [
     account,
@@ -50,19 +76,23 @@ export function listCodexMcpServers(
     if (age >= 0 && age < (failed ? FAILURE_TTL_MS : CACHE_TTL_MS)) {
       return failed
         ? Promise.reject(cached.error)
-        : Promise.resolve(cached.servers);
+        : Promise.resolve(cached.report);
     }
   }
   // A refresh asked for while a probe is running is answered by that probe.
   const pending = inFlight.get(key);
   if (pending) return pending;
-  const probe = probeCodexMcpServers(input.cwd, account)
+  const probe = probeCodexConfig(input.cwd, account)
     .then(
-      (servers) => {
+      (report) => {
         if (inFlight.get(key) === probe) {
-          cache.set(key, { at: Date.now(), servers });
+          cache.set(key, { at: Date.now(), report });
         }
-        return servers;
+        // #9 and 5.6: what this Codex reported decides whether its sessions
+        // in this folder are local.
+        noteHarnessServers("codex", account, input.cwd, report.servers);
+        noteHarnessModelRoute("codex", account, input.cwd, report.route);
+        return report;
       },
       (cause: unknown) => {
         const error = cause instanceof Error ? cause : new Error(String(cause));
@@ -79,10 +109,10 @@ export function listCodexMcpServers(
   return probe;
 }
 
-async function probeCodexMcpServers(
+async function probeCodexConfig(
   cwd: string,
   providerAccountId: string,
-): Promise<HarnessMcpServer[]> {
+): Promise<CodexConfigReport> {
   const release = await acquireHarnessBridge();
   try {
     return await withCodexProbe(
@@ -93,13 +123,17 @@ async function probeCodexMcpServers(
         timeoutMessage: "Codex did not report its MCP servers in time",
       },
       async (rpc) => {
-        const servers = codexMcpServerList(
-          await rpc.request("config/read", { cwd }, REQUEST_TIMEOUT_MS),
+        const result = await rpc.request(
+          "config/read",
+          { cwd },
+          REQUEST_TIMEOUT_MS,
         );
+        const servers = codexMcpServerList(result);
         if (!servers) {
           throw new Error("Codex returned an unreadable configuration");
         }
-        return servers;
+        const route = codexModelRoute(result);
+        return route ? { servers, route } : { servers };
       },
     );
   } finally {

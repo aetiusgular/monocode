@@ -312,7 +312,8 @@ describe("codexMcpServerList", () => {
       }),
     ).toEqual([
       { name: "bare", enabled: true },
-      { name: "github", enabled: true, command: "gh-mcp" },
+      // Arguments are kept for the locality rule (`mcp-remote <url>`).
+      { name: "github", enabled: true, command: "gh-mcp", args: ["serve"] },
       { name: "linear", enabled: true, url: "https://mcp.linear.app/mcp" },
       { name: "sentry", enabled: false, url: "https://mcp.sentry.dev/mcp" },
     ]);

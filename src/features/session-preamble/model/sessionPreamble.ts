@@ -7,11 +7,14 @@ import {
   readProjectContext,
 } from "../../project-context/model/projectContext";
 import { instructionParts } from "../../project-context/model/instructions";
-import { memoryPart } from "../../project-memory/model/projectMemory";
+import {
+  localOnlyCount,
+  memoryPart,
+} from "../../project-memory/model/projectMemory";
 import { previewPreamblePart } from "../../app-preview/model/previewPreamble";
 import {
   isLocal,
-  sessionIsLocal,
+  sessionLocalityNow,
   type LocalitySession,
 } from "../../server-locality/model/locality";
 import type { Block, Session } from "../../sessions/model/session";
@@ -143,7 +146,12 @@ export async function gatherPreambleParts(
       text: request.operatorBlock,
       required: true,
     });
-  const local = isLocal(sessionIsLocal(session));
+  // Asking the harness about its home is needed only when local-only entries
+  // are at stake.
+  const local =
+    !!memory?.text &&
+    localOnlyCount(memory.text) > 0 &&
+    isLocal(await sessionLocalityNow(session));
   const mem = memory?.text
     ? memoryPart(memory.text, { local, today })
     : undefined;

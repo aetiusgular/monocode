@@ -1,6 +1,6 @@
 import {
   isLocal,
-  sessionIsLocal,
+  sessionLocalityNow,
   type LocalitySession,
 } from "../../server-locality/model/locality";
 import { chatContextPrefs } from "../../session-preamble/model/chatContext";
@@ -51,7 +51,7 @@ export async function handleProjectMemory(
   if (!project || project === "~")
     throw new Error("This session has no project, so it has no project memory");
   noTopic(input);
-  const local = isLocal(sessionIsLocal(source));
+  const local = isLocal(await sessionLocalityNow(source));
   switch (action) {
     case "memory.read": {
       const memory = await readProjectContext(project, "MEMORY.md");

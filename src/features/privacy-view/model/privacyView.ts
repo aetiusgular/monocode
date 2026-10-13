@@ -8,16 +8,17 @@ import {
 } from "../../sessions/model/session";
 import {
   isLocal,
+  localityAccount,
+  modelRoutePart,
   sessionIsLocal,
+  sessionLocalityParts,
   type Locality,
 } from "../../server-locality/model/locality";
+import { knownHarnessModelRoute } from "../../server-locality/model/sessionServers";
 import { serverLocality } from "../../server-locality/model/serverLocality";
 import { findModelProvider } from "../../model-setup/model/modelProviders";
 import { urlHost } from "../../model-setup/model/loopback";
-import {
-  sessionModelProvider,
-  sessionProviderLocality,
-} from "../../model-setup/model/sessionProvider";
+import { sessionModelProvider } from "../../model-setup/model/sessionProvider";
 import { sanitizePermissionsProfile } from "../../model-setup/model/permissionsProfile";
 import {
   OUTBOUND_CALLS,
@@ -140,18 +141,52 @@ function modelDestination(session: PrivacySession): Destination {
       detail: "Anthropic, through Claude Code",
       locality: "hosted",
     };
+  if (!harnessCan(session.harness, "modelProvider"))
+    return {
+      kind: "model",
+      label: "Model",
+      detail: "Set by the harness's own config, not read by MonoCode",
+      locality: "unknown",
+    };
   const id = sessionModelProvider(session);
   const provider = findModelProvider(id);
-  const locality = sessionProviderLocality(session);
+  const route = modelRoutePart(session);
+  if (id) {
+    return {
+      kind: "model",
+      label: "Model",
+      detail: provider
+        ? `${provider.label} (${urlHost(provider.baseUrl) ?? provider.baseUrl})`
+        : `${id}, not set up in MonoCode`,
+      locality: route.locality,
+    };
+  }
+  // 5.6: the session's own Codex said which provider its home names.
+  const reported = knownHarnessModelRoute(
+    session.harness,
+    localityAccount(session),
+    sessionWorkCwd(session),
+  );
+  if (reported) {
+    const url = Object.prototype.hasOwnProperty.call(
+      reported.baseUrls,
+      reported.provider,
+    )
+      ? reported.baseUrls[reported.provider]
+      : undefined;
+    const host = urlHost(url);
+    return {
+      kind: "model",
+      label: "Model",
+      detail: `${reported.provider}${host ? ` (${host})` : ""}, from the harness's own config`,
+      locality: route.locality,
+    };
+  }
   return {
     kind: "model",
     label: "Model",
-    detail: provider
-      ? `${provider.label} (${urlHost(provider.baseUrl) ?? provider.baseUrl})`
-      : id
-        ? `${id}, not set up in MonoCode`
-        : "Set by the harness's own config, not read by MonoCode",
-    locality,
+    detail: "Set by the harness's own config, not reported to MonoCode yet",
+    locality: "unknown",
   };
 }
 
@@ -190,6 +225,8 @@ export function privacyView(
       kind: "connector",
       label: server.name,
       detail: "Docker gateway connector",
+      // One rule for every place a connector's mark is shown (12.8): the
+      // catalog facts are found by the profile in its arguments.
       locality: serverLocality({
         name: server.name,
         command: server.command,
@@ -197,27 +234,38 @@ export function privacyView(
       }),
     });
   }
+  // MonoCode's own calls are listed, but they carry no transcript to a
+  // model, so they never end Private (Mac finding 2.23).
   for (const call of OUTBOUND_CALLS) {
     if (!input.outboundOn || !input.outboundOn(call.id)) continue;
     destinations.push({
       kind: "monocode",
       label: call.label,
-      detail: `MonoCode itself: ${call.hosts.join(", ")}`,
+      detail: `MonoCode itself, not this chat: ${call.hosts.join(", ")}`,
       locality: "hosted",
     });
   }
 
-  const contract = sessionIsLocal(session);
   const sessionDestinations = destinations.filter(
     (item) => item.kind !== "monocode",
   );
-  const away = sessionDestinations.find((item) => !isLocal(item.locality));
-  const isPrivate = isLocal(contract) && !away;
+  // Name what ended Private: a hosted part before one that is only unknown.
+  const away =
+    sessionDestinations.find((item) => item.locality === "hosted") ??
+    sessionDestinations.find((item) => !isLocal(item.locality));
+  // The same rule memory and the other gates use: model route, harness home
+  // and every enabled tool local (sessionIsLocal).
+  const isPrivate = isLocal(sessionIsLocal(session)) && !away;
   let notPrivateBecause: string | undefined;
   if (!isPrivate) {
+    const part = away
+      ? undefined
+      : sessionLocalityParts(session).find((item) => !isLocal(item.locality));
     notPrivateBecause = away
-      ? `${away.label}${away.detail ? ` (${away.detail})` : ""} is ${away.locality === "hosted" ? "hosted" : "not known to be local"}`
-      : "Its model, home or tools are not all known to be local";
+      ? `${away.kind === "model" ? "its model" : away.label} ${away.locality === "hosted" ? "is hosted" : "is not known to be local"}`
+      : part
+        ? `${part.kind === "model" ? "its model" : part.label} ${part.locality === "hosted" ? "is hosted" : "is not known to be local"}`
+        : "Its model, home or tools are not all known to be local";
   }
   const sandbox = sandboxView(session);
   return {

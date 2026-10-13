@@ -2,6 +2,10 @@ import type { ConnectorRow } from "../../session-tools/model/connectors";
 import type { HarnessId } from "../../sessions/model/session";
 import type { InstalledConnector, InstalledState } from "./installed";
 import {
+  describeServerLocality,
+  gatewayLocalityServer,
+} from "../../server-locality/model/serverLocality";
+import {
   claudeAiDuplicates,
   harnessTakesGatewayConnectors,
   launchableConnectors,
@@ -69,10 +73,7 @@ export function withGatewayRows(
       const state = dockerDown || gatewayStatusDetail(connector);
       return {
         name: connector.sessionName,
-        detail: [
-          connector.kind === "remote" ? "Hosted" : "Runs in Docker",
-          state,
-        ]
+        detail: [connectorKindDetail(connector), state]
           .filter(Boolean)
           .join(" · "),
         enabled:
@@ -120,4 +121,22 @@ export function claudeAiDuplicateToggle(input: {
     explicitlyOn: false,
     listOff: input.disabled.includes(gateway),
   };
+}
+
+/**
+ * Where a connector runs, for its row (12.8). A container with no network
+ * or one known to make no call says so; any other container may reach the
+ * network.
+ */
+export function connectorKindDetail(
+  connector: Pick<
+    InstalledConnector,
+    "sessionName" | "profileId" | "kind" | "server" | "image" | "noNetwork"
+  >,
+): string {
+  if (connector.kind === "remote") return "Hosted";
+  const result = describeServerLocality(gatewayLocalityServer(connector), {});
+  return result.locality === "local"
+    ? "Runs in Docker, no network"
+    : "Runs in Docker, may reach the network";
 }

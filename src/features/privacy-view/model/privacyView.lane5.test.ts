@@ -159,7 +159,10 @@ describe("destinations and the private mark", () => {
   it("counts the wrapper case as not private", () => {
     localityMock.session = "local";
     const view = privacyView(codex());
-    expect(view.destinations[0].detail).toContain("not read by MonoCode");
+    // 5.6: MonoCode now asks the harness; until it answers, nothing is known.
+    expect(view.destinations[0].detail).toContain(
+      "not reported to MonoCode yet",
+    );
     expect(view.private).toBe(false);
   });
 });

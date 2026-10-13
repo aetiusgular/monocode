@@ -18,7 +18,8 @@ import {
   generateCodexPrContent,
 } from "./codexGit";
 import { refreshCodexCatalog } from "./codexCatalog";
-import { listCodexMcpServers } from "./codexMcpServers";
+import { listCodexMcpServers, readCodexConfigReport } from "./codexMcpServers";
+import { registerHarnessConfigProbe } from "../../../../features/server-locality/model/sessionServers";
 import { generateCodexSessionTitle } from "./codexTitle";
 import {
   runCodexTextPrompt,
@@ -87,5 +88,7 @@ let registered = false;
 export function ensureCodexRegistered(): void {
   if (registered && getHarness("codex") === codexAdapter) return;
   registerHarness(codexAdapter);
+  // 5.6: the session's own Codex says which provider it runs on.
+  registerHarnessConfigProbe("codex", (input) => readCodexConfigReport(input));
   registered = true;
 }

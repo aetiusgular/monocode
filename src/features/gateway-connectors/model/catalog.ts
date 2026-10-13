@@ -45,6 +45,8 @@ export type CatalogConnector = {
   settings: ConnectorSetting[];
   remoteUrl?: string;
   image?: string;
+  /** The catalog runs the container with no network (`disableNetwork`). */
+  noNetwork?: true;
   category?: string;
   tags: string[];
   tools: string[];
@@ -199,6 +201,9 @@ export function trimCatalogEntry(entry: unknown): CatalogConnector | null {
     settings: trimSettings(server.config, name),
     ...(kind === "remote" && remoteUrl ? { remoteUrl } : {}),
     ...(kind === "container" && image ? { image } : {}),
+    ...(kind === "container" && server.disableNetwork === true
+      ? { noNetwork: true as const }
+      : {}),
     ...(category ? { category } : {}),
     tags: names(metadata?.tags, "name", MAX_TAGS),
     tools: names(server.tools, "name", MAX_TOOLS),
@@ -306,6 +311,9 @@ function readSavedEntry(value: unknown): CatalogConnector | null {
     settings: readSavedSettings(entry.settings),
     ...(remoteUrl ? { remoteUrl } : {}),
     ...(image ? { image } : {}),
+    ...(kind === "container" && entry.noNetwork === true
+      ? { noNetwork: true as const }
+      : {}),
     ...(category ? { category } : {}),
     tags: names(entry.tags, "name", MAX_TAGS),
     tools: names(entry.tools, "name", MAX_TOOLS),

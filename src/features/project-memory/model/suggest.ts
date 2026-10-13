@@ -10,7 +10,7 @@ import { MEMORY_ENTRY_MAX } from "../../monos/model/monoMemory";
 import { nativeModelId } from "../../sessions/model/models";
 import {
   isLocal,
-  sessionIsLocal,
+  sessionLocalityNow,
   type LocalitySession,
 } from "../../server-locality/model/locality";
 import type { Block, Session } from "../../sessions/model/session";
@@ -141,7 +141,7 @@ export async function suggestMemories(
   }
   const facts = parseSuggestions(reply);
   if (!facts.length) return { ok: true, proposals: [] };
-  const local = isLocal(sessionIsLocal(session));
+  const local = isLocal(await sessionLocalityNow(session));
   const proposals = await propose(
     session.cwd,
     facts.map((fact) => ({

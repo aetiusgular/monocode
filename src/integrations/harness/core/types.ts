@@ -390,6 +390,8 @@ export type HarnessMcpServer = {
   enabled: boolean;
   /** Program a stdio server runs. */
   command?: string;
+  /** Its arguments, for a locality decision (`mcp-remote <url>`). */
+  args?: string[];
   /** Address of an HTTP server. */
   url?: string;
 };

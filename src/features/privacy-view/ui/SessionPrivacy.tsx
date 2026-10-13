@@ -1,4 +1,4 @@
-import { useMemo, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useSyncExternalStore } from "react";
 import {
   isPreviewLive,
   previewForSession,
@@ -15,6 +15,17 @@ import {
   type PrivacySession,
 } from "../model/privacyView";
 import { PrivacySection, PrivateBadge } from "./PrivacySection";
+import {
+  harnessReportsVersion,
+  requestHarnessReport,
+  subscribeHarnessReports,
+} from "../../server-locality/model/sessionServers";
+import {
+  harnessIsHosted,
+  localityAccount,
+} from "../../server-locality/model/locality";
+import { useServerMarksVersion } from "../../server-locality/model/serverMarks";
+import { useInstalledConnectors } from "../../gateway-connectors/model/installed";
 
 export type PrivacyPanelSession = PrivacySession & { id?: string };
 
@@ -26,6 +37,21 @@ export function usePrivacyView(session: PrivacyPanelSession) {
   useSyncExternalStore(subscribePreviews, previewsVersion, previewsVersion);
   const preview = session.id ? previewForSession(session.id) : undefined;
   const previewCommand = isPreviewLive(preview) ? preview?.command : undefined;
+  // 5.6 and 2.23: what the harness reports about its own home and servers,
+  // your server marks and the added connectors all decide the routes.
+  const reports = useSyncExternalStore(
+    subscribeHarnessReports,
+    harnessReportsVersion,
+    harnessReportsVersion,
+  );
+  const marks = useServerMarksVersion();
+  const installed = useInstalledConnectors();
+  const account = localityAccount(session);
+  const workCwd = sessionWorkCwd(session);
+  useEffect(() => {
+    if (harnessIsHosted(session.harness)) return;
+    void requestHarnessReport(session.harness, account, workCwd);
+  }, [session.harness, account, workCwd]);
   // Blocks change on every streamed token; only the network log reads them,
   // so the rest is keyed on the fields that decide the routes.
   const routeKey = JSON.stringify([
@@ -64,7 +90,7 @@ export function usePrivacyView(session: PrivacyPanelSession) {
     );
     // providers: the model route reads the provider list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeKey, providers, outbound, previewCommand]);
+  }, [routeKey, providers, outbound, previewCommand, reports, marks, installed]);
   const log = useMemo(() => networkLog(session.blocks), [session.blocks]);
   return useMemo(() => ({ ...routes, networkLog: log }), [routes, log]);
 }

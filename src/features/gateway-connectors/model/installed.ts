@@ -59,6 +59,10 @@ export type InstalledConnector = {
   description: string;
   icon?: string;
   kind: CatalogConnector["kind"];
+  /** Container image, for a container connector. */
+  image?: string;
+  /** The catalog runs the container with no network. */
+  noNetwork?: true;
   auth: ConnectorAuth;
   /** The MCP server name sessions see for this connector. */
   sessionName: string;
@@ -284,6 +288,12 @@ export function joinConnectorStatus(input: {
       description: server.description,
       ...(server.icon ? { icon: server.icon } : {}),
       kind: server.kind,
+      ...(server.kind === "container" && server.image
+        ? { image: server.image }
+        : {}),
+      ...(server.kind === "container" && server.noNetwork
+        ? { noNetwork: true as const }
+        : {}),
       auth: server.auth,
       sessionName:
         saved && SESSION_NAME.test(saved)
@@ -436,6 +446,14 @@ function loadSaved(): InstalledState {
         ? { icon: item.icon }
         : {}),
       kind: item?.kind === "remote" ? "remote" : "container",
+      ...(item?.kind !== "remote" &&
+      typeof item?.image === "string" &&
+      item.image.length <= 300
+        ? { image: item.image }
+        : {}),
+      ...(item?.kind !== "remote" && item?.noNetwork === true
+        ? { noNetwork: true as const }
+        : {}),
       auth: auth === "oauth" || auth === "secrets" ? auth : "none",
       sessionName,
       secrets: strings(item?.secrets),
