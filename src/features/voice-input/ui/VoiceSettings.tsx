@@ -73,12 +73,14 @@ export function VoiceSettings({
   const [download, setDownload] = useState<Download>({ kind: "idle" });
   const [mic, setMic] = useState<MicTest>({ kind: "idle" });
   const mounted = useRef(true);
-  useEffect(
-    () => () => {
+  // Set on every mount: StrictMode unmounts and mounts again once, and a
+  // flag left false kept the row on "Starting…" after the download (0.14).
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
       mounted.current = false;
-    },
-    [],
-  );
+    };
+  }, []);
 
   if (!deps.supported) {
     return (
