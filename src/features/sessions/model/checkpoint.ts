@@ -86,12 +86,15 @@ export function ensureSessionCheckpoint(
 
 /** Why the backend took no checkpoint on purpose. */
 export type CheckpointSkipped = {
-  reason: "homeRepository" | (string & {});
+  reason: "homeRepository" | "unresolvedRepository" | (string & {});
   repository: string;
 };
 
 /** The chat notice for a skipped checkpoint. */
 export function checkpointSkippedNotice(skip: CheckpointSkipped): string {
+  if (skip.reason === "unresolvedRepository") {
+    return `No checkpoint for this turn: the repository top folder for ${skip.repository} could not be found, so it may cover your home folder.`;
+  }
   return `No checkpoint for this turn: the repository at ${skip.repository} covers your home folder.`;
 }
 

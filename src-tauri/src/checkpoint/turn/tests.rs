@@ -883,6 +883,88 @@ mod home_repository {
         );
     }
 
+    // Security fix F7: a top folder that cannot be resolved inside a
+    // repository is a skip, not a checkpoint.
+    #[test]
+    fn a_folder_whose_repository_top_cannot_be_resolved_is_skipped() {
+        let dir = scratch();
+        let home = dir.join("tonyg");
+        init(&home);
+        let project = home.join("broken checkout");
+        std::fs::create_dir_all(&project).unwrap();
+        // A `.git` file pointing nowhere: git fails with "not a git
+        // repository: /nowhere", not the "parent directories" wording.
+        std::fs::write(project.join(".git"), "gitdir: /nonexistent-monocode-test\n").unwrap();
+        std::fs::write(project.join("a.txt"), "one\n").unwrap();
+        let fixture = Home {
+            store: CheckpointStore::with_home(dir.join("checkpoints"), Some(home.clone())),
+            dir,
+        };
+        let cwd = project.to_str().unwrap();
+        let objects = object_count(&home);
+        let skip = fixture
+            .store
+            .begin_turn_or_skip("session", cwd, "first", Some(&["a.txt".into()]))
+            .unwrap()
+            .expect("the checkpoint is skipped");
+        assert_eq!(skip.reason, "unresolvedRepository");
+        assert_eq!(
+            skip.repository,
+            path_to_js(&std::fs::canonicalize(&project).unwrap())
+        );
+        fixture.store.begin_turn("session", cwd, "first").unwrap();
+        fixture.store.finish_turn("session", cwd, "first").unwrap();
+        fixture.store.ensure("session", cwd).unwrap();
+        assert!(fixture
+            .store
+            .undo("session", cwd, None)
+            .unwrap_err()
+            .contains("could not be found"));
+        assert!(!fixture.store.session_dir("session").exists());
+        assert_eq!(monocode_refs(&home), "");
+        assert_eq!(object_count(&home), objects, "no object was written");
+    }
+
+    #[test]
+    fn a_missing_folder_is_skipped_without_running_git() {
+        let dir = scratch();
+        let home = dir.join("tonyg");
+        let fixture = Home {
+            store: CheckpointStore::with_home(dir.join("checkpoints"), Some(home.clone())),
+            dir: dir.clone(),
+        };
+        let gone = dir.join("gone");
+        let skip = fixture
+            .store
+            .begin_turn_or_skip("session", gone.to_str().unwrap(), "first", None)
+            .unwrap()
+            .expect("the checkpoint is skipped");
+        assert_eq!(skip.reason, "unresolvedRepository");
+        assert!(!fixture.store.session_dir("session").exists());
+    }
+
+    #[test]
+    fn the_top_is_looked_up_once_and_read_by_kind() {
+        let dir = scratch();
+        let plain = dir.join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert!(matches!(show_toplevel(&plain), TopLookup::NotRepository(_)));
+        let repo = dir.join("repo with space");
+        init(&repo);
+        match show_toplevel(&repo) {
+            TopLookup::Top(text) => assert_eq!(
+                std::fs::canonicalize(text).unwrap(),
+                std::fs::canonicalize(&repo).unwrap()
+            ),
+            _ => panic!("a repository has a top"),
+        }
+        let broken = dir.join("broken");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join(".git"), "gitdir: /nonexistent-monocode-test\n").unwrap();
+        assert!(matches!(show_toplevel(&broken), TopLookup::Failed));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn the_file_system_root_always_counts_as_covering_home() {
         assert!(covers_home(Path::new("/"), None));

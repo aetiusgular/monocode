@@ -58,20 +58,36 @@ struct Change {
 }
 
 impl CheckpointStore {
+    /// Tests start turns this way; the app goes through
+    /// `begin_turn_or_skip`, which reports the skip.
+    #[cfg(test)]
     pub(super) fn begin_turn(&self, session_id: &str, cwd: &str, id: &str) -> Result<(), String> {
         // Callers report the skip; this only makes sure no git runs.
-        if self.home_skip(cwd).is_some() {
-            return Ok(());
+        match self.repo_top(cwd) {
+            Ok((root, top)) => self.begin_turn_at(session_id, cwd, id, &root, top),
+            Err(_) => Ok(()),
         }
-        let root = std::fs::canonicalize(project_root(cwd)?).map_err(|e| e.to_string())?;
-        let discovered = run_git(&root, &["rev-parse", "--show-toplevel"]);
-        if let Err(error) = &discovered {
-            if error.contains("not a git repository")
-                && read_review(&self.session_dir(session_id))?.is_none()
-            {
-                // Preserve structured-edit review for folders without Git.
-                return self.ensure(session_id, cwd);
-            }
+    }
+
+    /// `begin_turn` with the folder's repository top already found (and the
+    /// home skip already decided) by `repo_top`, so no second
+    /// `rev-parse` can disagree with the first.
+    pub(super) fn begin_turn_at(
+        &self,
+        session_id: &str,
+        cwd: &str,
+        id: &str,
+        root: &Path,
+        top: RepoTop,
+    ) -> Result<(), String> {
+        let root = root.to_path_buf();
+        let discovered: Result<Vec<u8>, String> = match top {
+            RepoTop::Top(printed) => Ok(printed.into_bytes()),
+            RepoTop::NotRepository(error) => Err(error),
+        };
+        if discovered.is_err() && read_review(&self.session_dir(session_id))?.is_none() {
+            // Preserve structured-edit review for folders without Git.
+            return self.ensure(session_id, cwd);
         }
         let dir = self.session_dir(session_id);
         let mut review = read_review(&dir)?
@@ -89,7 +105,7 @@ impl CheckpointStore {
         if let Some(pending) = &pending {
             // A reload can interrupt checkpoint completion after the provider
             // already wrote files. Continue from that original boundary.
-            self.finish_turn(session_id, cwd, &pending.id)?;
+            self.finish_turn_checked(session_id, cwd, &pending.id)?;
             review = read_review(&dir)?.ok_or("Missing continued turn review")?;
         }
         let mut turn = RecordedTurn {
@@ -153,6 +169,12 @@ impl CheckpointStore {
         if self.home_skip(cwd).is_some() {
             return Ok(());
         }
+        self.finish_turn_checked(session_id, cwd, id)
+    }
+
+    /// `finish_turn` once the caller has found the repository top and ruled
+    /// out the skip.
+    fn finish_turn_checked(&self, session_id: &str, cwd: &str, id: &str) -> Result<(), String> {
         let dir = self.session_dir(session_id);
         let Some(mut review) = self.matching_turn_review(session_id, cwd)? else {
             return Ok(());
@@ -654,11 +676,49 @@ fn run_git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
 }
 
 /// The repository's top folder, or None outside a repository.
-pub(super) fn show_toplevel(root: &Path) -> Option<PathBuf> {
-    let bytes = run_git(root, &["rev-parse", "--show-toplevel"]).ok()?;
-    let text = String::from_utf8(bytes).ok()?;
-    let text = text.trim_end_matches(['\r', '\n']);
-    (!text.is_empty()).then(|| PathBuf::from(text))
+/// A folder's repository top, as `begin_turn_at` takes it.
+pub(super) enum RepoTop {
+    /// Not inside a repository; git's message.
+    NotRepository(String),
+    /// The top folder, as git printed it.
+    Top(String),
+}
+
+/// What `rev-parse --show-toplevel` said.
+pub(super) enum TopLookup {
+    /// "not a git repository (or any of the parent directories)", or the
+    /// same up to a mount point.
+    NotRepository(String),
+    /// The top folder, as git printed it.
+    Top(String),
+    /// Anything else: git missing, a broken `.git` file, dubious ownership,
+    /// output that is not a path.
+    Failed,
+}
+
+pub(super) fn show_toplevel(root: &Path) -> TopLookup {
+    match run_git(root, &["rev-parse", "--show-toplevel"]) {
+        Ok(bytes) => match String::from_utf8(bytes) {
+            Ok(text) => {
+                let text = text.trim_end_matches(['\r', '\n']);
+                if text.is_empty() {
+                    TopLookup::Failed
+                } else {
+                    TopLookup::Top(text.to_string())
+                }
+            }
+            Err(_) => TopLookup::Failed,
+        },
+        // Git stops at a file system boundary with its own wording; nothing
+        // above it is a repository git would use here either.
+        Err(error)
+            if error.contains("not a git repository (or any of the parent directories)")
+                || error.contains("not a git repository (or any parent up to mount point") =>
+        {
+            TopLookup::NotRepository(error)
+        }
+        Err(_) => TopLookup::Failed,
+    }
 }
 
 struct PrivateIndex(PathBuf);

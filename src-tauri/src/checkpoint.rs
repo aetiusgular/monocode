@@ -32,7 +32,8 @@ pub struct CheckpointStore {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckpointSkipped {
-    /// Always "homeRepository" for now.
+    /// "homeRepository", or "unresolvedRepository" when the repository's
+    /// top folder could not be found.
     pub reason: String,
     /// The repository's top folder.
     pub repository: String,
@@ -40,6 +41,12 @@ pub struct CheckpointSkipped {
 
 impl CheckpointSkipped {
     fn message(&self) -> String {
+        if self.reason == "unresolvedRepository" {
+            return format!(
+                "Skipped: the repository top folder for {} could not be found.",
+                self.repository
+            );
+        }
         format!(
             "Skipped: the repository at {} covers your home folder.",
             self.repository
@@ -74,16 +81,46 @@ impl CheckpointStore {
         }
     }
 
-    /// The skip for a folder whose repository covers the home folder. Only
+    /// The folder's repository top, found once, or the skip. Only
     /// `rev-parse --show-toplevel` runs here, through the guarded command, so
     /// nothing is written and no repository command or hook runs.
+    ///
+    /// A repository that covers the home folder is skipped. So is a folder
+    /// whose top cannot be resolved (git fails for any reason but "not a git
+    /// repository", or a path does not resolve): it may sit inside the home
+    /// folder's repository. A folder that is not a repository is not a skip.
+    fn repo_top(&self, cwd: &str) -> Result<(PathBuf, turn::RepoTop), CheckpointSkipped> {
+        let unresolved = |repository: String| CheckpointSkipped {
+            reason: "unresolvedRepository".into(),
+            repository,
+        };
+        let root = project_root(cwd)
+            .ok()
+            .and_then(|root| std::fs::canonicalize(root).ok())
+            .ok_or_else(|| unresolved(cwd.to_string()))?;
+        match turn::show_toplevel(&root) {
+            turn::TopLookup::NotRepository(error) => {
+                Ok((root, turn::RepoTop::NotRepository(error)))
+            }
+            turn::TopLookup::Failed => Err(unresolved(path_to_js(&root))),
+            turn::TopLookup::Top(printed) => {
+                let top =
+                    std::fs::canonicalize(&printed).map_err(|_| unresolved(path_to_js(&root)))?;
+                if covers_home(&top, self.home.as_deref()) {
+                    return Err(CheckpointSkipped {
+                        reason: "homeRepository".into(),
+                        repository: path_to_js(&top),
+                    });
+                }
+                Ok((root, turn::RepoTop::Top(printed)))
+            }
+        }
+    }
+
+    /// The skip for a folder whose repository covers the home folder or
+    /// cannot be resolved (see `repo_top`).
     fn home_skip(&self, cwd: &str) -> Option<CheckpointSkipped> {
-        let root = std::fs::canonicalize(project_root(cwd).ok()?).ok()?;
-        let top = turn::show_toplevel(&root)?;
-        covers_home(&top, self.home.as_deref()).then(|| CheckpointSkipped {
-            reason: "homeRepository".into(),
-            repository: path_to_js(&std::fs::canonicalize(&top).unwrap_or(top)),
-        })
+        self.repo_top(cwd).err()
     }
 
     /// The turn's starting checkpoint, or the reason none was taken.
@@ -94,13 +131,17 @@ impl CheckpointStore {
         turn_id: &str,
         edited_paths: Option<&[String]>,
     ) -> Result<Option<CheckpointSkipped>, String> {
-        if let Some(skip) = self.home_skip(cwd) {
-            return Ok(Some(skip));
-        }
+        // The top is found once and handed to `begin_turn_at`, so the home
+        // check and the checkpoint read the same answer.
+        let (root, top) = match self.repo_top(cwd) {
+            Ok(found) => found,
+            Err(skip) => return Ok(Some(skip)),
+        };
         if let Some(paths) = edited_paths {
             self.capture_turn_paths(session_id, cwd, paths)?;
         }
-        self.begin_turn(session_id, cwd, turn_id).map(|()| None)
+        self.begin_turn_at(session_id, cwd, turn_id, &root, top)
+            .map(|()| None)
     }
 
     fn refuse_home(&self, cwd: &str) -> Result<(), String> {
