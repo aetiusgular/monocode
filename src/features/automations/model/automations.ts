@@ -575,6 +575,17 @@ export async function beginAutomationRun(
   return begun;
 }
 
+/**
+ * Cancel a run that has not started (security fix R7). It then reads
+ * Skipped, "Cancelled before it started.". False when it already started,
+ * finished or is gone.
+ */
+export async function cancelAutomationRun(runId: string): Promise<boolean> {
+  const cancelled = await invoke<boolean>("automation_run_cancel", { runId });
+  emitLocalChange();
+  return cancelled === true;
+}
+
 /** Pending runs created at or before `createdBefore`. */
 export function pendingAutomationRuns(
   createdBefore: number,

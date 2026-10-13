@@ -801,6 +801,38 @@ fn cancel_pending_runs(
     Ok(changed)
 }
 
+/// Cancel one run the user picked in Run history (security fix R7). Only a
+/// run that has not started: it reads Skipped, "Cancelled before it
+/// started.", and `begin_run` then finds nothing to start. Any other run is
+/// left alone and `false` comes back.
+fn cancel_run(conn: &Connection, run_id: &str, now: i64) -> Result<bool, String> {
+    let raw = conn
+        .query_row(
+            "SELECT run_json FROM automation_runs WHERE id = ?1",
+            [run_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some(raw) = raw else {
+        return Ok(false);
+    };
+    let mut run: AutomationRun = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+    if run.status != "pending" {
+        return Ok(false);
+    }
+    run.status = "skipped".into();
+    run.completed_at = Some(now);
+    run.error = Some(CANCELLED.into());
+    write_run(conn, &run)?;
+    if let Some(mut automation) = get(conn, &run.automation_id)? {
+        apply_run_summary(&mut automation, &run);
+        write_automation(conn, &automation)?;
+    }
+    trim_history(conn, &run.automation_id)?;
+    Ok(true)
+}
+
 /// Delete an automation. Its runs go with it (`ON DELETE CASCADE`), so a
 /// pending run can no longer start: `begin_run` finds nothing.
 fn delete_automation(conn: &Connection, id: &str) -> Result<(), String> {
@@ -1094,6 +1126,26 @@ pub fn automation_run_begin(
     drop(conn);
     let _ = app.emit(CHANGED, ());
     Ok(begun)
+}
+
+/// Cancel a run that has not started yet. `false` when it already started,
+/// finished or is gone.
+#[tauri::command(async)]
+pub fn automation_run_cancel(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    run_id: String,
+) -> Result<bool, String> {
+    validate_id(&run_id, "automation run")?;
+    let mut conn = store.lock_conn()?;
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    let cancelled = cancel_run(&tx, &run_id, now_millis())?;
+    tx.commit().map_err(|error| error.to_string())?;
+    drop(conn);
+    if cancelled {
+        let _ = app.emit(CHANGED, ());
+    }
+    Ok(cancelled)
 }
 
 /// Pending runs created at or before `created_before`, for the scheduler to
@@ -2100,5 +2152,37 @@ mod tests {
             .map(|run| run.id)
             .collect();
         assert_eq!(ids, vec!["old".to_string()]);
+    }
+
+    // Security fix R7: a pending run can be cancelled from Run history,
+    // also the one run of a one-time automation that turned itself off.
+    #[test]
+    fn cancelling_a_pending_run_stops_it_and_leaves_others_alone() {
+        let at = 1_000;
+        let conn = claim_store(vec![time_trigger("once", at, 0)], at);
+        set_enabled(&conn, false);
+        write_run(&conn, &pending_run("run-1", "scheduled", at)).unwrap();
+        write_run(&conn, &pending_run("manual", "manual", at)).unwrap();
+        let mut running = pending_run("run-2", "scheduled", at);
+        running.status = "running".into();
+        write_run(&conn, &running).unwrap();
+
+        assert!(cancel_run(&conn, "run-1", at + 1).unwrap());
+        let (status, error) = run_status(&conn, "run-1");
+        assert_eq!(status, "skipped");
+        assert_eq!(error.as_deref(), Some(CANCELLED));
+        // It can no longer start, and a second cancel does nothing.
+        assert!(begin_run(&conn, "run-1", at + 2).unwrap().is_none());
+        assert!(!cancel_run(&conn, "run-1", at + 3).unwrap());
+        assert_eq!(run_status(&conn, "run-1").0, "skipped");
+        // A manual run is pending too and can be cancelled.
+        assert!(cancel_run(&conn, "manual", at + 4).unwrap());
+        assert_eq!(run_status(&conn, "manual").0, "skipped");
+        // A started run and an unknown id are left alone.
+        assert!(!cancel_run(&conn, "run-2", at + 5).unwrap());
+        assert_eq!(run_status(&conn, "run-2").0, "running");
+        assert!(!cancel_run(&conn, "no-such-run", at + 6).unwrap());
+        let automation = get(&conn, "automation-id").unwrap().unwrap();
+        assert_eq!(automation.last_run_status.as_deref(), Some("skipped"));
     }
 }

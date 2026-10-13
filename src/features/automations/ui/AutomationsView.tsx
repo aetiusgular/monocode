@@ -61,6 +61,7 @@ import {
   intervalLabel,
   joinLocalMoment,
   listAutomationRuns,
+  cancelAutomationRun,
   listAutomations,
   newAutomationDraft,
   nextAutomationRunAt,
@@ -479,6 +480,13 @@ function AutomationsContent({
             draft={editorDraft}
             recents={recents}
             runs={editorDraft.id ? runs : []}
+            onCancelRun={(runId) => {
+              void cancelAutomationRun(runId).catch((reason: unknown) =>
+                setError(
+                  reason instanceof Error ? reason.message : String(reason),
+                ),
+              );
+            }}
             saving={saving}
             running={editorDraft.id === running}
             dirty={draft != null}
@@ -726,19 +734,21 @@ function AutomationPicker({
 const RUN_GRID =
   "grid grid-cols-[minmax(0,1.4fr)_9.5rem_6.75rem_3.5rem] items-center gap-4 px-4";
 
-function RunRow({
+export function RunRow({
   run,
   draft,
   onOpenSession,
+  onCancel,
 }: {
   run: AutomationRun;
   draft: AutomationDraft;
   onOpenSession: (sessionId: string) => void | Promise<void>;
+  onCancel?: (runId: string) => void;
 }) {
   const trigger = runTriggerMeta(run, draft);
   const sessionId = run.sessionId;
   return (
-    <li>
+    <li className="relative">
       <button
         type="button"
         disabled={!sessionId}
@@ -772,6 +782,17 @@ function RunRow({
           {formatAutomationRunDuration(run)}
         </span>
       </button>
+      {run.status === "pending" && onCancel ? (
+        <button
+          type="button"
+          data-automation-run-cancel
+          title="Cancel this run before it starts"
+          onClick={() => onCancel(run.id)}
+          className="absolute right-3 top-3 rounded-md bg-content/10 px-2 py-0.5 text-[11px] text-content/80 hover:bg-content/20"
+        >
+          Cancel
+        </button>
+      ) : null}
       {run.status === "failed" && run.error ? (
         <p
           role="alert"
@@ -856,10 +877,13 @@ function AutomationEditor({
   onRun,
   onDelete,
   onOpenSession,
+  onCancelRun,
 }: {
   draft: AutomationDraft;
   recents: RecentProject[];
   runs: AutomationRun[];
+  /** Cancel a run that has not started, from its row in Run history. */
+  onCancelRun?: (runId: string) => void;
   saving: boolean;
   running: boolean;
   dirty: boolean;
@@ -1533,6 +1557,7 @@ function AutomationEditor({
                       run={run}
                       draft={draft}
                       onOpenSession={onOpenSession}
+                      onCancel={onCancelRun}
                     />
                   ))}
                 </ul>
