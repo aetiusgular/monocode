@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
-const inline = vi.fn(async (prompt: string) => `${prompt}\n[files]`);
+const { inline } = vi.hoisted(() => ({
+  inline: vi.fn(async (prompt: string, _typed?: string) => `${prompt}\n[files]`),
+}));
 vi.mock("../../files/model/inlineFileMentions", () => ({ inlineFileMentionsForTurn: inline }));
 vi.mock("../../files/model/fileMentions", () => ({ applyFileMentionsToTurn: async (t: string) => t }));
 vi.mock("../../notes", () => ({ applyNotesToTurn: async (t: string) => t }));
