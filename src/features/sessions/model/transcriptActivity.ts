@@ -911,6 +911,8 @@ type PhaseTally = {
   order: ActivityWorkKind[];
   reads: Set<string>;
   edits: Set<string>;
+  /** Edits that were declined, refused or failed: nothing was written. */
+  editsNotApplied: number;
   searches: number;
   runs: number;
   /** Commands the agent left running when it yielded, and how many still are. */
@@ -927,6 +929,7 @@ function tallySteps(steps: Block[]): PhaseTally {
     order: [],
     reads: new Set(),
     edits: new Set(),
+    editsNotApplied: 0,
     searches: 0,
     runs: 0,
     background: 0,
@@ -954,7 +957,9 @@ function tallySteps(steps: Block[]): PhaseTally {
     if (!tally.order.includes(category)) tally.order.push(category);
     switch (category) {
       case "edit":
-        tally.edits.add(target);
+        // Only an edit that went through changed a file (Mac 5.13).
+        if (toolCallState(block) === "rejected") tally.editsNotApplied += 1;
+        else tally.edits.add(target);
         break;
       case "agent":
         tally.agents += 1;
@@ -993,6 +998,11 @@ function workSummary(
 ): string {
   switch (kind) {
     case "edit":
+      if (tally.edits.size === 0) {
+        return tally.editsNotApplied === 1
+          ? "Edit not applied"
+          : `${tally.editsNotApplied} edits not applied`;
+      }
       return `${live ? "Editing" : "Edited"} ${fileLabel(tally.edits)}`;
     case "research":
       if (tally.reads.size > 0 && tally.searches === 0) {
