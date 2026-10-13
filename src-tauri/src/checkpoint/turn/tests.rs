@@ -984,3 +984,90 @@ mod home_repository {
         ));
     }
 }
+
+// Security fix R6: the checkpoint's git calls read git's messages in English
+// and stay in the repository the turn started in.
+#[test]
+fn checkpoint_git_reads_messages_in_english_and_pins_the_repository() {
+    let f = Fixture::new();
+    let env = |command: &Command, name: &str| {
+        command
+            .get_envs()
+            .find(|(key, _)| *key == std::ffi::OsStr::new(name))
+            .map(|(_, value)| value.map(|v| v.to_os_string()))
+    };
+    let plain = git_command(&f.repo, &["status"]);
+    assert_eq!(env(&plain, "LC_ALL"), Some(Some("C".into())));
+    assert_eq!(env(&plain, "LANGUAGE"), Some(Some("".into())));
+    assert_eq!(env(&plain, "GIT_CEILING_DIRECTORIES"), Some(None));
+    let pin = PinnedRepo::find(&f.repo).unwrap();
+    let pinned = git_command_in(&f.repo, Some(&pin), &["status"]);
+    assert_eq!(env(&pinned, "LC_ALL"), Some(Some("C".into())));
+    assert_eq!(
+        env(&pinned, "GIT_WORK_TREE"),
+        Some(Some(f.repo.as_os_str().to_os_string()))
+    );
+    assert_eq!(
+        env(&pinned, "GIT_CEILING_DIRECTORIES"),
+        Some(Some(f.dir.as_os_str().to_os_string()))
+    );
+    let git_dir = env(&pinned, "GIT_DIR").unwrap().unwrap();
+    assert!(Path::new(&git_dir).ends_with(".git"), "{git_dir:?}");
+}
+
+#[test]
+fn a_pinned_lookup_never_climbs_above_the_top() {
+    let f = Fixture::new();
+    // A folder inside the repository that is not its top: with the search
+    // held to the folder itself, the repository above is not found.
+    let inner = f.repo.join("inner");
+    std::fs::create_dir_all(&inner).unwrap();
+    assert!(PinnedRepo::find(&inner).is_err());
+    assert!(PinnedRepo::find(&f.repo).is_ok());
+}
+
+#[test]
+fn a_repository_made_inside_the_folder_mid_turn_is_not_used() {
+    let f = Fixture::new();
+    let sub = f.repo.join("sub dir");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("b.txt"), "one\n").unwrap();
+    let cwd = sub.to_str().unwrap();
+    f.store.begin_turn("session", cwd, "first").unwrap();
+    // The agent makes a repository in the chat's folder during the turn.
+    for args in [
+        &["init", "-q"][..],
+        &["add", "b.txt"][..],
+        &[
+            "-c",
+            "user.name=a",
+            "-c",
+            "user.email=a@a",
+            "commit",
+            "-qm",
+            "x",
+        ][..],
+    ] {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(&sub)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+    f.store.finish_turn("session", cwd, "first").unwrap();
+    let after = turn_ref("session", "first", "after");
+    assert!(
+        run_git(&f.repo, &["rev-parse", "--verify", &after]).is_ok(),
+        "the turn's result belongs in the repository it started in"
+    );
+    let nested = Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", &after])
+        .current_dir(&sub)
+        .output()
+        .unwrap();
+    assert!(
+        !nested.status.success(),
+        "nothing was written to the new repository"
+    );
+}

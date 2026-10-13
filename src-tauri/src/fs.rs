@@ -2620,7 +2620,10 @@ fn git_locate_file(path: &Path) -> Result<Option<GitFileLocation>, String> {
     // location, and a tracked symlink belongs to the checkout holding the link.
     let directory = std::fs::canonicalize(parent).map_err(|e| e.to_string())?;
     let actual = directory.join(path.strip_prefix(parent).map_err(|e| e.to_string())?);
-    let output = git_cmd()
+    let mut command = git_cmd();
+    // The error below is read as text: English whatever the locale (R6).
+    crate::git_guard::english(&mut command);
+    let output = command
         .args(["-C"])
         .arg(&directory)
         .args(["rev-parse", "--show-toplevel"])

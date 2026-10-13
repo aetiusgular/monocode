@@ -16,7 +16,7 @@
 //! alone. Writes the user clicks (`add`, `commit`, `checkout` and the like)
 //! keep the filters and hooks, because a filter shapes what is stored. Writes
 //! MonoCode makes on its own, such as the turn checkpoint, go through
-//! `guard_everything`, which holds them too. Reads and those writes also run
+//! `guard_everything_pinned`, which holds them too. Reads and those writes also run
 //! no hook. A submodule's own config is not read, so reads leave dirty
 //! submodules alone.
 
@@ -157,14 +157,22 @@ pub(crate) fn plain_git() -> Command {
     crate::hide_window_console(&mut command);
     command
         .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
-        .env("LANGUAGE", "");
+        .env("GIT_TERMINAL_PROMPT", "0");
+    english(&mut command);
     command
 }
 
-fn repo_drivers(root: &Path) -> Result<RepoDrivers, String> {
+/// Git's messages in English whatever the user's locale, for a call whose
+/// error text MonoCode reads ("not a git repository").
+pub(crate) fn english(command: &mut Command) -> &mut Command {
+    command.env("LC_ALL", "C").env("LANGUAGE", "")
+}
+
+fn repo_drivers(root: &Path, envs: &[(&str, &std::ffi::OsStr)]) -> Result<RepoDrivers, String> {
     let mut command = plain_git();
+    for (name, value) in envs {
+        command.env(name, value);
+    }
     let output = command
         .args(["-c", "core.fsmonitor=false", "-C"])
         .arg(root)
@@ -355,31 +363,44 @@ enum Mode {
 /// arguments, for one call MonoCode makes in `root`. `Err` means the call must
 /// not run.
 pub(crate) fn guard(root: &Path, args: &[&str]) -> Result<(Vec<String>, Vec<String>), String> {
-    guard_with(root, args, Mode::Auto)
+    guard_with(root, args, Mode::Auto, &[])
 }
 
 /// `guard` for calls MonoCode makes on its own that also write, such as the
 /// turn checkpoint's private index: no repository filter, driver or hook runs.
 /// The snapshot then holds the files as they are on disk, and a restore
 /// through the same guard writes them back as they were.
+#[cfg(test)]
 pub(crate) fn guard_everything(
     root: &Path,
     args: &[&str],
 ) -> Result<(Vec<String>, Vec<String>), String> {
-    guard_with(root, args, Mode::Everything)
+    guard_with(root, args, Mode::Everything, &[])
+}
+
+/// `guard_everything` for a call pinned to one repository by `GIT_DIR`,
+/// `GIT_WORK_TREE` and `GIT_CEILING_DIRECTORIES`: the config is read from
+/// that same repository, never one found again from `root`.
+pub(crate) fn guard_everything_pinned(
+    root: &Path,
+    args: &[&str],
+    envs: &[(&str, &std::ffi::OsStr)],
+) -> Result<(Vec<String>, Vec<String>), String> {
+    guard_with(root, args, Mode::Everything, envs)
 }
 
 fn guard_with(
     root: &Path,
     args: &[&str],
     mode: Mode,
+    envs: &[(&str, &std::ffi::OsStr)],
 ) -> Result<(Vec<String>, Vec<String>), String> {
     let mut globals = vec!["-c".to_string(), "core.fsmonitor=false".to_string()];
     let mut rest: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
     if subcommand(args).is_none() || (mode == Mode::Auto && is_write(args)) {
         return Ok((globals, rest));
     }
-    globals.extend(override_args(&repo_drivers(root)?));
+    globals.extend(override_args(&repo_drivers(root, envs)?));
     globals.extend([
         "-c".to_string(),
         "log.showSignature=false".to_string(),
@@ -832,6 +853,21 @@ mod tests {
         // A valueless boolean entry has no newline.
         assert_eq!(config_names_commands(b"local\0pager.log\0"), Ok(false));
         assert!(config_names_commands(b"local\0alias.\xff\nx\0").is_err());
+    }
+
+    #[test]
+    fn english_sets_the_c_locale() {
+        let mut command = Command::new("git");
+        english(&mut command);
+        let envs: Vec<_> = command.get_envs().collect();
+        assert!(envs.contains(&(
+            std::ffi::OsStr::new("LC_ALL"),
+            Some(std::ffi::OsStr::new("C"))
+        )));
+        assert!(envs.contains(&(
+            std::ffi::OsStr::new("LANGUAGE"),
+            Some(std::ffi::OsStr::new(""))
+        )));
     }
 
     #[test]

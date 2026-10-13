@@ -85,6 +85,13 @@ impl CheckpointStore {
             RepoTop::Top(printed) => Ok(printed.into_bytes()),
             RepoTop::NotRepository(error) => Err(error),
         };
+        // Every later call goes to the repository found here (R6).
+        let pin: Result<PinnedRepo, String> = match &discovered {
+            Ok(printed) => std::str::from_utf8(printed)
+                .map_err(|e| e.to_string())
+                .and_then(|top| PinnedRepo::find(Path::new(top))),
+            Err(error) => Err(error.clone()),
+        };
         if discovered.is_err() && read_review(&self.session_dir(session_id))?.is_none() {
             // Preserve structured-edit review for folders without Git.
             return self.ensure(session_id, cwd);
@@ -115,8 +122,11 @@ impl CheckpointStore {
             head: if let Some(pending) = &pending {
                 pending.head.clone()
             } else {
-                run_git(&root, &["rev-parse", "--verify", "HEAD"])
+                pin.as_ref()
                     .ok()
+                    .and_then(|pin| {
+                        run_git_in(&root, Some(pin), &["rev-parse", "--verify", "HEAD"]).ok()
+                    })
                     .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_string())
             },
             shared: pending.as_ref().is_some_and(|turn| turn.shared),
@@ -145,12 +155,13 @@ impl CheckpointStore {
                 }
                 write_review(&other_dir, &other)?;
             }
+            let pin = pin.clone()?;
             let reference = turn_ref(session_id, id, "before");
             if let Some(before) = &turn.before {
-                run_git(&root, &["update-ref", &reference, before])?;
+                run_git_in(&root, Some(&pin), &["update-ref", &reference, before])?;
                 Ok(before.clone())
             } else {
-                capture_workspace(&root, &reference)
+                capture_workspace_in(&root, Some(&pin), &reference)
             }
         })();
         match capture {
@@ -183,7 +194,15 @@ impl CheckpointStore {
             return Ok(());
         };
         if turn.before.is_some() {
-            match capture_workspace(Path::new(&review.cwd), &turn_ref(session_id, id, "after")) {
+            // The repository the turn started in, never one found again (R6).
+            let captured = PinnedRepo::find(Path::new(&review.repo)).and_then(|pin| {
+                capture_workspace_in(
+                    Path::new(&review.cwd),
+                    Some(&pin),
+                    &turn_ref(session_id, id, "after"),
+                )
+            });
+            match captured {
                 Ok(oid) => turn.after = Some(oid),
                 Err(error) => turn.error = Some(error),
             }
@@ -627,16 +646,66 @@ fn resolve_edit_path(workspace: &Path, root: &Path, path: &str) -> Result<String
     resolve_turn_path(&relative)
 }
 
+/// The one repository a turn's checkpoint is taken in (security fix R6).
+/// Every git call for the turn after the top was found names it with
+/// `GIT_DIR` and `GIT_WORK_TREE`, and `GIT_CEILING_DIRECTORIES` stops any
+/// search above the top, so git cannot find another repository on the way,
+/// such as a home folder that is a repository or one an agent made inside
+/// the folder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PinnedRepo {
+    git_dir: PathBuf,
+    top: PathBuf,
+}
+
+impl PinnedRepo {
+    /// The git folder of the repository whose top is `top`, read with the
+    /// search held to `top` itself.
+    pub(super) fn find(top: &Path) -> Result<Self, String> {
+        let mut command = git_command(top, &["rev-parse", "--absolute-git-dir"]);
+        if let Some(parent) = top.parent() {
+            command.env("GIT_CEILING_DIRECTORIES", parent);
+        }
+        let printed = String::from_utf8(checked_output(&mut command)?)
+            .map_err(|_| "git printed a repository folder that is not text".to_string())?;
+        let git_dir = printed.trim_end_matches(['\r', '\n']);
+        if git_dir.is_empty() || !Path::new(git_dir).is_absolute() {
+            return Err("git printed no repository folder".into());
+        }
+        Ok(Self {
+            git_dir: PathBuf::from(git_dir),
+            top: top.to_path_buf(),
+        })
+    }
+
+    fn envs(&self) -> Vec<(&'static str, &std::ffi::OsStr)> {
+        let mut envs = vec![
+            ("GIT_DIR", self.git_dir.as_os_str()),
+            ("GIT_WORK_TREE", self.top.as_os_str()),
+        ];
+        if let Some(parent) = self.top.parent() {
+            envs.push(("GIT_CEILING_DIRECTORIES", parent.as_os_str()));
+        }
+        envs
+    }
+}
+
 fn git_command(root: &Path, args: &[&str]) -> Command {
+    git_command_in(root, None, args)
+}
+
+/// `git_command` held to `pin` when there is one.
+fn git_command_in(root: &Path, pin: Option<&PinnedRepo>, args: &[&str]) -> Command {
     let mut command = Command::new("git");
     crate::hide_window_console(&mut command);
+    let envs = pin.map(PinnedRepo::envs).unwrap_or_default();
     // The checkpoint runs after every turn with no click, so the repository's
     // own filters, diff drivers and hooks are off for every call, its private
     // index writes included (Mac finding 10.1, security review F1).
     // When their names cannot be read or passed back safely, the call is
     // replaced by an option git refuses, so it fails rather than runs them.
-    let (globals, args_guarded) =
-        crate::git_guard::guard_everything(root, args).unwrap_or_else(|_| {
+    let (globals, args_guarded) = crate::git_guard::guard_everything_pinned(root, args, &envs)
+        .unwrap_or_else(|_| {
             (
                 vec!["-c".into(), "core.fsmonitor=false".into()],
                 vec!["--monocode-refused-this-repository-config".into()],
@@ -651,14 +720,22 @@ fn git_command(root: &Path, args: &[&str]) -> Command {
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_LITERAL_PATHSPECS", "1")
+        // Git's messages are matched as text (`show_toplevel`): English
+        // whatever the user's locale.
+        .env("LC_ALL", "C")
+        .env("LANGUAGE", "")
         .env("PATH", crate::harness::gui_search_path());
     for name in [
         "GIT_DIR",
         "GIT_WORK_TREE",
         "GIT_COMMON_DIR",
         "GIT_INDEX_FILE",
+        "GIT_CEILING_DIRECTORIES",
     ] {
         command.env_remove(name);
+    }
+    for (name, value) in envs {
+        command.env(name, value);
     }
     command
 }
@@ -673,6 +750,10 @@ fn checked_output(command: &mut Command) -> Result<Vec<u8>, String> {
 
 fn run_git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     checked_output(&mut git_command(root, args))
+}
+
+fn run_git_in(root: &Path, pin: Option<&PinnedRepo>, args: &[&str]) -> Result<Vec<u8>, String> {
+    checked_output(&mut git_command_in(root, pin, args))
 }
 
 /// The repository's top folder, or None outside a repository.
@@ -730,7 +811,15 @@ impl Drop for PrivateIndex {
 }
 
 fn capture_workspace(root: &Path, reference: &str) -> Result<String, String> {
-    if run_git(root, &["config", "--bool", "core.sparseCheckout"])
+    capture_workspace_in(root, None, reference)
+}
+
+fn capture_workspace_in(
+    root: &Path,
+    pin: Option<&PinnedRepo>,
+    reference: &str,
+) -> Result<String, String> {
+    if run_git_in(root, pin, &["config", "--bool", "core.sparseCheckout"])
         .ok()
         .is_some_and(|bytes| bytes.starts_with(b"true"))
     {
@@ -741,7 +830,7 @@ fn capture_workspace(root: &Path, reference: &str) -> Result<String, String> {
     );
     let run = |args: &[&str]| {
         checked_output(
-            git_command(root, args)
+            git_command_in(root, pin, args)
                 .env("GIT_INDEX_FILE", &index.0)
                 .env("GIT_AUTHOR_NAME", "MonoCode")
                 .env("GIT_AUTHOR_EMAIL", "checkpoint@monocode.local")
@@ -749,7 +838,7 @@ fn capture_workspace(root: &Path, reference: &str) -> Result<String, String> {
                 .env("GIT_COMMITTER_EMAIL", "checkpoint@monocode.local"),
         )
     };
-    if run_git(root, &["rev-parse", "--verify", "HEAD"]).is_ok() {
+    if run_git_in(root, pin, &["rev-parse", "--verify", "HEAD"]).is_ok() {
         run(&["read-tree", "HEAD"])?;
     } else {
         run(&["read-tree", "--empty"])?;

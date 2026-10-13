@@ -35,19 +35,26 @@ pub struct Worktrees {
     pub default_root: String,
 }
 
-fn git(root: &Path, args: &[&str]) -> Result<String, String> {
+fn git_command(root: &Path, args: &[&str]) -> Command {
     let mut command = Command::new("git");
     crate::hide_window_console(&mut command);
     // `core.fsmonitor` names a command in `.git/config`, which an agent can
     // write; listing files must not start it (security review, finding F7).
-    let output = command
+    command
         .arg("-c")
         .arg("core.fsmonitor=false")
         .arg("-C")
         .arg(root)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0");
+    // `list` reads git's "not a git repository" (security fix R6).
+    crate::git_guard::english(&mut command);
+    command
+}
+
+fn git(root: &Path, args: &[&str]) -> Result<String, String> {
+    let output = git_command(root, args)
         .output()
         .map_err(|e| e.to_string())?;
     if !output.status.success() {
@@ -1615,5 +1622,20 @@ mod tests {
             )
             .unwrap();
         assert!(detached);
+    }
+
+    // Security fix R6: `list` matches git's English message.
+    #[test]
+    fn worktree_git_reads_messages_in_english() {
+        let command = git_command(Path::new("/"), &["worktree", "list"]);
+        let envs: Vec<_> = command.get_envs().collect();
+        assert!(envs.contains(&(
+            std::ffi::OsStr::new("LC_ALL"),
+            Some(std::ffi::OsStr::new("C"))
+        )));
+        assert!(envs.contains(&(
+            std::ffi::OsStr::new("LANGUAGE"),
+            Some(std::ffi::OsStr::new(""))
+        )));
     }
 }
