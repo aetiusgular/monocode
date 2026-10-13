@@ -247,6 +247,50 @@ export function profileToolsResetArgs(id: string, server: string): string[] {
   return ["mcp", "profile", "tools", id, "--enable-all", server];
 }
 
+/** Most tools one `profile tools` call may turn on, as the app caps it. */
+export const MAX_ENABLE_TOOLS = 200;
+
+/**
+ * Several tools of one server on in one call. Used to write the allowlist as
+ * every tool but one, when the catalog lists no tools for the server: there
+ * `--disable` expands a null allowlist from the empty snapshot and leaves no
+ * tool on (gateway v0.44.1, `pkg/workingset/tools.go`).
+ */
+export function profileToolsEnableArgs(
+  id: string,
+  server: string,
+  tools: readonly string[],
+): string[] {
+  check(isOwnProfileId(id), "MonoCode profile id", id);
+  check(canSwitchTools(server), "server name", server);
+  if (tools.length < 2 || tools.length > MAX_ENABLE_TOOLS)
+    throw new Error(`Expected 2 to ${MAX_ENABLE_TOOLS} tools`);
+  const args = ["mcp", "profile", "tools", id];
+  for (const tool of tools) {
+    check(isToolName(tool), "tool name", tool);
+    args.push("--enable", `${server}.${tool}`);
+  }
+  return args;
+}
+
+/**
+ * The tools the gateway serves for one of MonoCode's profiles, as JSON. The
+ * verbose dry run prints only a count per server, so this is where the names
+ * of a server the catalog lists no tools for come from.
+ */
+export function profileToolListArgs(id: string): string[] {
+  check(isOwnProfileId(id), "MonoCode profile id", id);
+  return [
+    "mcp",
+    "tools",
+    "ls",
+    "--format",
+    "json",
+    "--gateway-arg=--profile",
+    `--gateway-arg=${id}`,
+  ];
+}
+
 export function gatewayDryRunArgs(id: string): string[] {
   check(isOwnProfileId(id), "MonoCode profile id", id);
   return ["mcp", "gateway", "run", "--profile", id, "--dry-run", "--verbose"];
@@ -374,6 +418,27 @@ function allowedShape(args: readonly string[]): string | null {
         ? "profile-tools"
         : null;
     }
+    if (
+      verb === "tools" &&
+      isOwnProfileId(args[3] ?? "") &&
+      args.length >= 8 &&
+      args.length % 2 === 0 &&
+      args.length - 4 <= MAX_ENABLE_TOOLS * 2
+    ) {
+      const pairs = args.slice(4);
+      const server = pairs[1].slice(0, Math.max(0, pairs[1].indexOf(".")));
+      const ok = pairs.every((value, index) => {
+        if (index % 2 === 0) return value === "--enable";
+        const at = value.indexOf(".");
+        return (
+          at > 0 &&
+          value.slice(0, at) === server &&
+          canSwitchTools(server) &&
+          isToolName(value.slice(at + 1))
+        );
+      });
+      if (ok) return "profile-tools-enable-list";
+    }
     if (is("profile", "tools", "*", "--enable-all", "*"))
       return isOwnProfileId(args[3]) && canSwitchTools(args[5])
         ? "profile-tools-reset"
@@ -400,6 +465,20 @@ function allowedShape(args: readonly string[]): string | null {
       return ok ? "profile-config-set" : null;
     }
     return null;
+  }
+  if (group === "tools") {
+    return is(
+      "tools",
+      "ls",
+      "--format",
+      "json",
+      "--gateway-arg=--profile",
+      "*",
+    ) &&
+      args[6].startsWith("--gateway-arg=") &&
+      isOwnProfileId(args[6].slice("--gateway-arg=".length))
+      ? "tools-list"
+      : null;
   }
   if (group === "gateway") {
     return is("gateway", "run", "--profile", "*", "--dry-run", "--verbose") &&

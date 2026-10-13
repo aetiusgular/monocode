@@ -28,10 +28,14 @@ const NOTE = "text-[11px] leading-4 text-content/45";
 export function ConnectorToolsSection({
   profileId,
   server,
+  testedNames = [],
 }: {
   profileId: string;
   server: string;
+  /** Tool names from the last passing test, for a catalog with none. */
+  testedNames?: readonly string[];
 }) {
+  const namesKey = testedNames.join("\n");
   const [state, setState] = useState<ConnectorTools | ToolsUnavailable | null>(
     null,
   );
@@ -40,13 +44,17 @@ export function ConnectorToolsSection({
 
   useEffect(() => {
     let live = true;
-    void readConnectorTools(profileId, server).then((value) => {
+    void readConnectorTools(
+      profileId,
+      server,
+      namesKey ? namesKey.split("\n") : [],
+    ).then((value) => {
       if (live) setState(value);
     });
     return () => {
       live = false;
     };
-  }, [profileId, server]);
+  }, [profileId, server, namesKey]);
 
   const smallest = useMemo(() => smallestContextWindow(), []);
   if (!state) {
@@ -98,7 +106,11 @@ export function ConnectorToolsSection({
             disabled={busy !== null}
             onClick={() =>
               void apply("all", () =>
-                enableAllConnectorTools(profileId, server),
+                enableAllConnectorTools(
+                  profileId,
+                  server,
+                  state.fromTest ? state.tools.map((tool) => tool.name) : [],
+                ),
               )
             }
             className="rounded-md border border-content/10 px-2 py-0.5 text-[12px] text-content/75 hover:bg-content/10 disabled:opacity-40"
@@ -107,6 +119,12 @@ export function ConnectorToolsSection({
           </button>
         ) : null}
       </div>
+      {state.fromTest ? (
+        <p className={NOTE}>
+          The catalog lists no tools for this connector. These are the tools its
+          last test read from the connector.
+        </p>
+      ) : null}
       <p className={NOTE}>
         A tool turned off here is never offered, in any chat or harness that
         uses this connector, and its definition stops costing context.
@@ -149,7 +167,7 @@ export function ConnectorToolsSection({
                 disabled={busy !== null}
                 onChange={(on) =>
                   void apply(tool.name, () =>
-                    setConnectorTool(profileId, server, tool.name, on),
+                    setConnectorTool(profileId, server, tool.name, on, state),
                   )
                 }
               />

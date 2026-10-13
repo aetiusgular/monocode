@@ -8,6 +8,8 @@ import {
   DRY_RUN_TIMEOUT_MS,
   gatewayDryRunArgs,
   isServerName,
+  isToolName,
+  MAX_ENABLE_TOOLS,
   oauthAuthorizeArgs,
   oauthListArgs,
   oauthRevokeArgs,
@@ -28,6 +30,7 @@ import {
   type ConnectorSetting,
 } from "./catalog";
 import { parseDryRun, type TestCause } from "./dryRun";
+import { readTestedToolNames } from "./connectorTools";
 import { bringAppToFront } from "../../../platform/tauri/appWindow";
 
 /** What adding a connector still needs before it can be tested. */
@@ -49,6 +52,12 @@ export type TestResult = {
   cause?: TestCause;
   /** The run's output, the last 4 KB of it. */
   output: string;
+  /**
+   * Tool names read from the gateway after a passing test, for a server the
+   * catalog lists no tools for (Mac test 4.15). Kept across tests, since the
+   * gateway serves only the tools the allowlist leaves on.
+   */
+  toolNames?: string[];
 };
 
 /** One connector MonoCode added: a `monocode_` profile with one server. */
@@ -371,6 +380,12 @@ function loadTests(): Record<string, TestResult> {
         : {}),
       output:
         typeof item.output === "string" ? item.output.slice(-MAX_OUTPUT) : "",
+      ...(() => {
+        const names = strings(item.toolNames)
+          .filter(isToolName)
+          .slice(0, MAX_ENABLE_TOOLS);
+        return names.length ? { toolNames: names } : {};
+      })(),
     };
   }
   return out;
@@ -617,6 +632,17 @@ function saveTest(profileId: string, result: TestResult | undefined): void {
   });
 }
 
+/** Names known before, then new ones, without repeats, capped. */
+export function mergeToolNames(
+  before: readonly string[] | undefined,
+  read: readonly string[] | undefined,
+): string[] | undefined {
+  if (!read?.length) return before ? [...before] : undefined;
+  const out = [...(before ?? [])];
+  for (const name of read) if (!out.includes(name)) out.push(name);
+  return out.slice(0, MAX_ENABLE_TOOLS);
+}
+
 const without = (list: readonly string[], id: string) =>
   list.filter((entry) => entry !== id);
 
@@ -648,12 +674,19 @@ export async function testConnector(
       set({ dockerState: "not-running", error: outcome.reason });
       return;
     }
+    const toolNames = outcome.ok
+      ? mergeToolNames(
+          tests[id]?.toolNames,
+          await readTestedToolNames(id, connector.server),
+        )
+      : tests[id]?.toolNames;
     saveTest(id, {
       at: Date.now(),
       ok: outcome.ok,
       tools: outcome.tools,
       ...(outcome.ok ? {} : { reason: outcome.reason, cause: outcome.cause }),
       output: output.slice(-MAX_OUTPUT),
+      ...(toolNames?.length ? { toolNames } : {}),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

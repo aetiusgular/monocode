@@ -365,6 +365,7 @@ export function ConnectorDetail({
           <ConnectorToolsSection
             profileId={connector.profileId}
             server={connector.server}
+            testedNames={connector.test?.toolNames}
           />
         ) : entry.tools.length > 0 ? (
           <section aria-label="Tools">

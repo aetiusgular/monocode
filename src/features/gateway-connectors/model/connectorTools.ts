@@ -21,8 +21,11 @@ import { loadTraitOverrides } from "../../model-traits/model/modelTraits";
 import {
   canSwitchTools,
   isToolName,
+  MAX_ENABLE_TOOLS,
   profileShowArgs,
   profileToolArgs,
+  profileToolListArgs,
+  profileToolsEnableArgs,
   profileToolsResetArgs,
 } from "./dockerArgs";
 
@@ -41,6 +44,11 @@ export type ConnectorTools = {
   allOn: boolean;
   /** Tools on, counted from the allowlist when there is one. */
   onCount: number;
+  /**
+   * The names come from the connector's last passing test, not the catalog
+   * (Mac test 4.15: remote servers such as Notion list no tools there).
+   */
+  fromTest?: true;
 };
 
 /** Why tools cannot be switched one by one for this connector. */
@@ -56,6 +64,8 @@ function recordOf(value: unknown): Record<string, unknown> | null {
 export function parseProfileTools(
   show: unknown,
   server: string,
+  /** Tool names from the last passing test, used when the catalog has none. */
+  testedNames: readonly string[] = [],
 ): ConnectorTools | ToolsUnavailable {
   const servers = recordOf(show)?.servers;
   if (!Array.isArray(servers)) {
@@ -79,8 +89,17 @@ export function parseProfileTools(
       typeof rec?.description === "string" ? rec.description : "";
     return [{ name, description }];
   });
+  const fromTest = known.length === 0;
+  if (fromTest) {
+    for (const name of testedNames) {
+      if (isToolName(name)) known.push({ name, description: "" });
+    }
+  }
   if (known.length === 0) {
-    return { reason: "The catalog lists no tools for this connector." };
+    return {
+      reason:
+        "The catalog lists no tools for this connector. Test it to read them from the connector.",
+    };
   }
   const allow = entry.tools;
   const allOn = allow === null || allow === undefined;
@@ -101,7 +120,65 @@ export function parseProfileTools(
     tools,
     allOn,
     onCount: tools.filter((tool) => tool.on).length,
+    ...(fromTest ? { fromTest: true as const } : {}),
   };
+}
+
+/** Whether the profile's snapshot of `server` lists any tools. */
+export function catalogListsTools(show: unknown, server: string): boolean {
+  const servers = recordOf(show)?.servers;
+  if (!Array.isArray(servers)) return false;
+  const entry = servers
+    .map(recordOf)
+    .find((rec) => recordOf(recordOf(rec?.snapshot)?.server)?.name === server);
+  const listed = recordOf(recordOf(entry?.snapshot)?.server)?.tools;
+  return Array.isArray(listed) && listed.length > 0;
+}
+
+/**
+ * Tool names from `docker mcp tools ls --format json`: the gateway's
+ * `[]*mcp.Tool`, `{ name, description, inputSchema }` each. Names the
+ * allowlist cannot carry are dropped; at most `MAX_ENABLE_TOOLS`.
+ */
+export function parseToolList(stdout: string): string[] {
+  let value: unknown;
+  try {
+    value = JSON.parse(stdout);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  for (const item of value) {
+    const name = recordOf(item)?.name;
+    if (typeof name !== "string" || !isToolName(name) || out.includes(name))
+      continue;
+    out.push(name);
+    if (out.length >= MAX_ENABLE_TOOLS) break;
+  }
+  return out;
+}
+
+/**
+ * The tool names the gateway serves for a profile whose catalog entry lists
+ * none, or undefined when the catalog lists them or they cannot be read.
+ * Only tools the allowlist leaves on are served, so callers merge the answer
+ * with names they already know.
+ */
+export async function readTestedToolNames(
+  profileId: string,
+  server: string,
+): Promise<string[] | undefined> {
+  try {
+    if (catalogListsTools(await readShow(profileId), server)) return undefined;
+    const { stdout } = await runDockerMcp(profileToolListArgs(profileId), {
+      timeoutMs: 180_000,
+    });
+    const names = parseToolList(stdout);
+    return names.length ? names : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function toolsAvailable(
@@ -118,9 +195,10 @@ async function readShow(profileId: string): Promise<unknown> {
 export async function readConnectorTools(
   profileId: string,
   server: string,
+  testedNames: readonly string[] = [],
 ): Promise<ConnectorTools | ToolsUnavailable> {
   try {
-    return parseProfileTools(await readShow(profileId), server);
+    return parseProfileTools(await readShow(profileId), server, testedNames);
   } catch (err) {
     return { reason: err instanceof Error ? err.message : String(err) };
   }
@@ -139,18 +217,37 @@ export async function setConnectorTool(
   server: string,
   tool: string,
   on: boolean,
+  /** The tools as shown, when their names came from the last test. */
+  shown?: ConnectorTools,
 ): Promise<ToolChange> {
+  const testedNames = shown?.fromTest
+    ? shown.tools.map((entry) => entry.name)
+    : [];
   let args: string[];
   try {
-    args = profileToolArgs(profileId, server, tool, on);
+    // With no tool list in the snapshot, `--disable` on a null allowlist
+    // leaves an empty one: every tool off. Write the allowlist as every
+    // other tool instead.
+    const others = testedNames.filter((name) => name !== tool);
+    args =
+      !on && shown?.fromTest && shown.allOn && others.length >= 2
+        ? profileToolsEnableArgs(profileId, server, others)
+        : !on && shown?.fromTest && shown.allOn && others.length === 1
+          ? profileToolArgs(profileId, server, others[0], true)
+          : profileToolArgs(profileId, server, tool, on);
   } catch (err) {
     return {
       ok: false,
       reason: err instanceof Error ? err.message : String(err),
     };
   }
-  return change(profileId, server, args, (tools) =>
-    tools.tools.some((entry) => entry.name === tool && entry.on === on),
+  return change(
+    profileId,
+    server,
+    args,
+    (tools) =>
+      tools.tools.some((entry) => entry.name === tool && entry.on === on),
+    testedNames,
   );
 }
 
@@ -158,6 +255,7 @@ export async function setConnectorTool(
 export async function enableAllConnectorTools(
   profileId: string,
   server: string,
+  testedNames: readonly string[] = [],
 ): Promise<ToolChange> {
   let args: string[];
   try {
@@ -168,7 +266,7 @@ export async function enableAllConnectorTools(
       reason: err instanceof Error ? err.message : String(err),
     };
   }
-  return change(profileId, server, args, (tools) => tools.allOn);
+  return change(profileId, server, args, (tools) => tools.allOn, testedNames);
 }
 
 async function change(
@@ -176,6 +274,7 @@ async function change(
   server: string,
   args: string[],
   took: (tools: ConnectorTools) => boolean,
+  testedNames: readonly string[] = [],
 ): Promise<ToolChange> {
   try {
     await runDockerMcp(args);
@@ -185,7 +284,7 @@ async function change(
       reason: err instanceof Error ? err.message : String(err),
     };
   }
-  const after = await readConnectorTools(profileId, server);
+  const after = await readConnectorTools(profileId, server, testedNames);
   if (!toolsAvailable(after)) return { ok: false, reason: after.reason };
   if (!took(after)) {
     return {

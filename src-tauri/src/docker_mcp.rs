@@ -33,6 +33,8 @@ const MAX_PROFILE_SERVERS: usize = 32;
 const MAX_STDERR_CHARS: usize = 64 * 1024;
 const MAX_CONFIG_SETS: usize = 64;
 const MAX_CONFIG_VALUE_CHARS: usize = 1000;
+/// Tools one `profile tools` call may turn on; the gateway's catalog cap.
+const MAX_ENABLE_TOOLS: usize = 200;
 /// Config property names that would put a credential in plain profile
 /// config. Docker's secret store is the place for those.
 const SECRET_LIKE: [&str; 7] = [
@@ -205,6 +207,25 @@ fn allowed_timeout(args: &[String], home: Option<&Path>) -> Option<Duration> {
         {
             Some(DEFAULT_TIMEOUT)
         }
+        // Mac test 4.15: the first tool switched off on a server whose catalog
+        // lists no tools. `--disable` would expand a null allowlist from the
+        // empty snapshot and turn every tool off, so the allowlist is written
+        // as every other tool, one server, in one call.
+        ["mcp", "profile", "tools", id, rest @ ..]
+            if is_own_profile_id(id) && is_enable_list(rest) =>
+        {
+            Some(DEFAULT_TIMEOUT)
+        }
+        // Mac test 4.15: the tool names of a connector whose catalog lists
+        // none, from the gateway serving its profile.
+        ["mcp", "tools", "ls", "--format", "json", profile_flag, id_flag]
+            if *profile_flag == "--gateway-arg=--profile"
+                && id_flag
+                    .strip_prefix("--gateway-arg=")
+                    .is_some_and(is_own_profile_id) =>
+        {
+            Some(DRY_RUN_TIMEOUT)
+        }
         ["mcp", "gateway", "run", "--profile", id, "--dry-run", "--verbose"]
             if is_own_profile_id(id) =>
         {
@@ -253,6 +274,20 @@ fn is_tool_ref(value: &str) -> bool {
         && bytes
             .iter()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+}
+
+/// Two to `MAX_ENABLE_TOOLS` pairs of `--enable <server>.<tool>`, all for one
+/// server. One pair is the single-tool shape above.
+fn is_enable_list(args: &[&str]) -> bool {
+    if args.len() < 4 || args.len() % 2 != 0 || args.len() > MAX_ENABLE_TOOLS * 2 {
+        return false;
+    }
+    let server = args[1].split_once('.').map(|(server, _)| server);
+    args.chunks(2).all(|pair| {
+        pair[0] == "--enable"
+            && is_tool_ref(pair[1])
+            && pair[1].split_once('.').map(|(s, _)| s) == server
+    })
 }
 
 /// `^[a-z0-9][a-z0-9._-]{0,99}$`
@@ -743,6 +778,82 @@ mod tests {
             "--disable",
             &format!("github.{}", "a".repeat(129))
         ]));
+    }
+
+    #[test]
+    fn allows_an_enable_list_for_one_server_only() {
+        let list = |refs: &[&str]| {
+            let mut out = vec!["mcp", "profile", "tools", "monocode_notion_remote"];
+            for r in refs {
+                out.push("--enable");
+                out.push(r);
+            }
+            allowed(&out)
+        };
+        assert!(list(&[
+            "notion-remote.notion-search",
+            "notion-remote.notion-fetch"
+        ]));
+        // Another server, a disable or a bad name anywhere in the list fails.
+        assert!(!list(&[
+            "notion-remote.notion-search",
+            "github.create_issue"
+        ]));
+        assert!(!list(&["notion-remote.notion-search", "notion-remote.a b"]));
+        assert!(!allowed(&[
+            "mcp",
+            "profile",
+            "tools",
+            "monocode_notion_remote",
+            "--enable",
+            "notion-remote.a",
+            "--disable",
+            "notion-remote.b"
+        ]));
+        assert!(!allowed(&[
+            "mcp",
+            "profile",
+            "tools",
+            "research",
+            "--enable",
+            "notion-remote.a",
+            "--enable",
+            "notion-remote.b"
+        ]));
+        let many: Vec<String> = (0..=MAX_ENABLE_TOOLS)
+            .map(|i| format!("notion-remote.t{i}"))
+            .collect();
+        let refs: Vec<&str> = many.iter().map(String::as_str).collect();
+        assert!(!list(&refs));
+        assert!(list(&refs[..MAX_ENABLE_TOOLS]));
+    }
+
+    #[test]
+    fn allows_the_tool_list_of_own_profiles_only() {
+        assert!(allowed(&[
+            "mcp",
+            "tools",
+            "ls",
+            "--format",
+            "json",
+            "--gateway-arg=--profile",
+            "--gateway-arg=monocode_notion_remote"
+        ]));
+        for (flag, id) in [
+            ("--gateway-arg=--profile", "--gateway-arg=research"),
+            ("--gateway-arg=--servers", "--gateway-arg=monocode_x"),
+            (
+                "--gateway-arg=--profile",
+                "--gateway-arg=monocode_x,--verbose",
+            ),
+            ("--gateway-arg=--profile", "monocode_x"),
+        ] {
+            assert!(
+                !allowed(&["mcp", "tools", "ls", "--format", "json", flag, id]),
+                "{flag} {id}"
+            );
+        }
+        assert!(!allowed(&["mcp", "tools", "call", "notion-search"]));
     }
 
     #[test]
