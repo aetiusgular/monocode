@@ -27,9 +27,21 @@ const MAX_RULE_LENGTH = 190;
 
 /** Characters that let one command line run, feed or write more than one command. */
 const COMPOUND = /[;&|`<>\n\r]|\$\(/;
-/** Control characters never belong in a stored rule. */
-// eslint-disable-next-line no-control-regex
-const CONTROL = /[\u0000-\u001f\u007f]/;
+/**
+ * Characters never kept in a rule or matched in a command: control
+ * characters, and Unicode spaces and invisible marks. JavaScript's `trim()`
+ * drops Unicode spaces, but bash and zsh pass them on as word characters, so
+ * `git branch <no-break space>` would read as `git branch` and still make a
+ * branch.
+ */
+const CONTROL =
+  // eslint-disable-next-line no-control-regex
+  /[\u0000-\u001f\u007f-\u00a0\u00ad\u1680\u180e\u2000-\u200f\u2028-\u202f\u205f-\u206f\u3000\ufeff]/;
+
+/** Removes ASCII spaces and tabs at both ends, and nothing else. */
+function trimAscii(text: string): string {
+  return text.replace(/^[ \t]+|[ \t]+$/g, "");
+}
 
 /**
  * Whether MonoCode keeps a prefix rule for these words. An allowlist, the
@@ -50,7 +62,7 @@ export function isCompoundCommand(command: string): boolean {
 }
 
 function squash(text: string): string {
-  return text.trim().replace(/[ \t]+/g, " ");
+  return trimAscii(text).replace(/[ \t]+/g, " ");
 }
 
 /**
@@ -66,7 +78,7 @@ export function parseCommandRule(raw: unknown): CommandRule | null {
   if (!text) return null;
   const prefixed = /^(.*?)(?: \*|:\*)$/.exec(text);
   if (prefixed) {
-    const prefix = prefixed[1].trim();
+    const prefix = trimAscii(prefixed[1]);
     if (
       !prefix ||
       prefix.includes("*") ||
@@ -78,7 +90,7 @@ export function parseCommandRule(raw: unknown): CommandRule | null {
   }
   if (text === "*") return null;
   // An exact rule keeps the text as given: inside quotes, spacing matters.
-  return { kind: "exact", command: raw.trim() };
+  return { kind: "exact", command: trimAscii(raw) };
 }
 
 /** An exact rule for this command text, or null where none is kept. */
@@ -138,9 +150,8 @@ export function shellWords(command: string): string[] | null {
   let word = "";
   let inWord = false;
   let i = 0;
-  const text = command.trim();
-  // eslint-disable-next-line no-control-regex
-  if (/[\u0000-\u001f\u007f]/.test(text.replace(/[ \t]/g, ""))) return null;
+  const text = trimAscii(command);
+  if (CONTROL.test(text.replace(/[ \t]/g, ""))) return null;
   while (i < text.length) {
     const c = text[i];
     if (c === " " || c === "\t") {
@@ -580,7 +591,7 @@ export function commandMatchesRule(
   rule: CommandRule,
 ): boolean {
   if (typeof command !== "string" || CONTROL.test(command)) return false;
-  if (rule.kind === "exact") return command.trim() === rule.command;
+  if (rule.kind === "exact") return trimAscii(command) === rule.command;
   if (isCompoundCommand(command)) return false;
   const prefix = rule.prefix.split(" ");
   const policy = prefixPolicy(prefix);
