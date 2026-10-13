@@ -2802,7 +2802,7 @@ function UserMessageBlock({
                   ref={(element) => {
                     textRef.current = element;
                   }}
-                  className={`min-w-0 whitespace-pre-wrap break-words font-sans text-sm ${expanded ? "" : "line-clamp-4"}`}
+                  className={`user-message-text min-w-0 whitespace-pre-wrap break-words font-sans text-sm ${expanded ? "" : "line-clamp-4"}`}
                 >
                   {displayText}
                 </pre>

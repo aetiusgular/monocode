@@ -3923,12 +3923,14 @@ html.theme-light .btw-burst {
    blocks and inline code keep their own fonts. */
 html.chat-font-serif .agent-markdown:not(.markdown-preview .agent-markdown),
 html.chat-font-serif .user-message-bubble,
-html.chat-font-serif .user-message-bubble .user-message-with-link {
+html.chat-font-serif .user-message-bubble .user-message-with-link,
+html.chat-font-serif .user-message-bubble .user-message-text {
   font-family: var(--font-chat-serif);
 }
 
 html.chat-font-mono .agent-markdown:not(.markdown-preview .agent-markdown),
 html.chat-font-mono .user-message-bubble,
-html.chat-font-mono .user-message-bubble .user-message-with-link {
+html.chat-font-mono .user-message-bubble .user-message-with-link,
+html.chat-font-mono .user-message-bubble .user-message-text {
   font-family: var(--font-mono);
 }
