@@ -13,6 +13,7 @@ import {
   recordPreviewConfirmed,
 } from "./confirmations";
 import {
+  namedPorts,
   previewCandidates,
   previewFingerprint,
   type PreviewCandidate,
@@ -122,10 +123,19 @@ export const PROBE_SLOW_MS = 3_000;
 const FAST_WINDOW_MS = 30_000;
 /** A server that has not answered in two minutes is left alone until asked. */
 export const PROBE_GIVE_UP_MS = 120_000;
+/**
+ * Mac test 6.18: how long a server may run without printing an address
+ * before MonoCode probes the ports it was given or its command names.
+ */
+export const ADDRESS_FALLBACK_MS = 3_000;
+/** The host passed with PORT to a server on a free port (Mac test 6.17). */
+export const AUTO_PORT_HOST = "127.0.0.1";
 
 let deps: PreviewDeps = DEFAULT_DEPS;
 const previews = new Map<string, AppPreview>();
 const timers = new Map<string, unknown>();
+/** Address probes for servers that print no address, by chat. */
+const addressTimers = new Map<string, unknown>();
 const listeners = new Set<() => void>();
 let version = 0;
 let unsubscribeProcesses: (() => void) | undefined;
@@ -140,6 +150,8 @@ export function setPreviewDepsForTest(next: Partial<PreviewDeps> | null): void {
 export function resetPreviewsForTest(): void {
   for (const handle of timers.values()) deps.clearTimeout(handle);
   timers.clear();
+  for (const handle of addressTimers.values()) deps.clearTimeout(handle);
+  addressTimers.clear();
   previews.clear();
   listeners.clear();
   unsubscribeProcesses?.();
@@ -259,6 +271,84 @@ function cancelProbe(sessionId: string): void {
   const handle = timers.get(sessionId);
   if (handle !== undefined) deps.clearTimeout(handle);
   timers.delete(sessionId);
+  const address = addressTimers.get(sessionId);
+  if (address !== undefined) deps.clearTimeout(address);
+  addressTimers.delete(sessionId);
+}
+
+/** The ports to try for a server that printed no address. */
+export function fallbackPorts(preview: AppPreview): number[] {
+  const ports = preview.port ? [preview.port] : [];
+  for (const port of namedPorts(preview.candidate))
+    if (!ports.includes(port)) ports.push(port);
+  return ports;
+}
+
+function scheduleAddressProbe(sessionId: string, ms: number): void {
+  const earlier = addressTimers.get(sessionId);
+  if (earlier !== undefined) deps.clearTimeout(earlier);
+  addressTimers.set(
+    sessionId,
+    deps.setTimeout(() => {
+      addressTimers.delete(sessionId);
+      void findAddress(sessionId);
+    }, ms),
+  );
+}
+
+/**
+ * Mac test 6.18: a server that listens but prints no address. Probe the
+ * port MonoCode passed as PORT and the ports its command names, through the
+ * loopback-only probe; the first that answers 2xx to 4xx is the address.
+ * Tried again every few seconds until the probe gives up.
+ */
+export async function findAddress(
+  sessionId: string,
+): Promise<AppPreview | undefined> {
+  const before = previews.get(sessionId);
+  if (!before || before.url || !isPreviewLive(before)) return before;
+  for (const port of fallbackPorts(before)) {
+    const url = previewUrlForPort(port);
+    if (!url) continue;
+    const result = await deps.probe(url).catch(
+      (): PreviewProbeResult => ({ error: "no answer" }),
+    );
+    const current = previews.get(sessionId);
+    if (
+      !current ||
+      current.processId !== before.processId ||
+      !isPreviewLive(current) ||
+      current.url
+    )
+      return current;
+    const status = result.status;
+    if (typeof status === "number" && status >= 200 && status < 500) {
+      set(sessionId, {
+        url,
+        port,
+        status: "ready",
+        httpStatus: status,
+        frame: {
+          blocked: result.frameBlocked === true,
+          ...(result.frameReason ? { reason: result.frameReason } : {}),
+        },
+        error: undefined,
+      });
+      scheduleProbe(sessionId, PROBE_SLOW_MS);
+      return previews.get(sessionId);
+    }
+  }
+  const current = previews.get(sessionId);
+  if (
+    current &&
+    !current.url &&
+    isPreviewLive(current) &&
+    current.processId === before.processId &&
+    fallbackPorts(current).length &&
+    deps.now() - current.startedAt < PROBE_GIVE_UP_MS
+  )
+    scheduleAddressProbe(sessionId, PROBE_SLOW_MS);
+  return current;
 }
 
 function scheduleProbe(sessionId: string, ms: number): void {
@@ -334,7 +424,13 @@ async function launch(
   await stopPreview(sessionId);
   const runCwd = await deps.resolveCwd(workCwd, candidate.cwd);
   const port = candidate.autoPort ? await deps.freePort() : candidate.port;
+  // A free port goes with HOST=127.0.0.1, so a server that reads HOST stays
+  // on this machine (Mac test 6.17). A HOST the launch file sets, shown in
+  // the confirm box, is kept.
   const env = {
+    ...(candidate.autoPort && port && !("HOST" in candidate.env)
+      ? { HOST: AUTO_PORT_HOST }
+      : {}),
     ...candidate.env,
     ...(candidate.autoPort && port ? { PORT: String(port) } : {}),
   };
@@ -387,6 +483,8 @@ async function launch(
   syncFromProcess(preview);
   const synced = previews.get(sessionId) ?? preview;
   if (synced.url && isPreviewLive(synced)) scheduleProbe(sessionId, PROBE_FAST_MS);
+  else if (isPreviewLive(synced) && fallbackPorts(synced).length)
+    scheduleAddressProbe(sessionId, ADDRESS_FALLBACK_MS);
   return previews.get(sessionId) ?? preview;
 }
 

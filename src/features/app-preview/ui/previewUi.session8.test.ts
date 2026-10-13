@@ -130,6 +130,17 @@ describe("the confirmation", () => {
     return calls;
   }
 
+  // Mac test 6.17.
+  it("notes what HOST cannot ensure, for a free port only", () => {
+    const auto = { ...candidate, key: "launch:serve", autoPort: true };
+    choices(auto, [auto]);
+    expect(container.querySelector("[data-preview-host-note]")?.textContent).toBe(
+      "MonoCode passes HOST=127.0.0.1. A server that ignores it may listen on every network interface.",
+    );
+    choices(candidate);
+    expect(container.querySelector("[data-preview-host-note]")).toBeNull();
+  });
+
   it("shows the exact command, the script, the environment and the risk", () => {
     const withEnv = { ...candidate, env: { NODE_ENV: "development" }, cwd: "web app" };
     const calls = choices(withEnv, [withEnv]);

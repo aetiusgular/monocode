@@ -309,6 +309,30 @@ export function scriptPort(body: string): number | undefined {
     : undefined;
 }
 
+/**
+ * Mac test 6.18: ports a command names, for a server that prints no address.
+ * Only `--port N`, `--port=N`, `-p N` and `PORT=N`, in the script a package
+ * manager runs and in the arguments. Patterns such as `listen(N)` are not
+ * read: they are too easy to misread.
+ */
+export function namedPorts(candidate: PreviewCandidate): number[] {
+  const text = [candidate.scriptBody ?? "", ...candidate.args].join(" ");
+  const found: number[] = [];
+  const pattern =
+    /(?:--port[= ]|(?:^|\s)-p\s+|(?:^|[\s;&|(])PORT=)['"]?(\d{2,5})\b/g;
+  for (const match of text.matchAll(pattern)) {
+    const value = Number(match[1]);
+    if (
+      Number.isInteger(value) &&
+      value >= 1 &&
+      value <= 65_535 &&
+      !found.includes(value)
+    )
+      found.push(value);
+  }
+  return found.slice(0, 4);
+}
+
 export function packageScriptCandidates(
   textValue: string,
   lockfiles: readonly string[] = [],

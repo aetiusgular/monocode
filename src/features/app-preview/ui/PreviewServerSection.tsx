@@ -319,6 +319,11 @@ export function PreviewChoices({
             <ShownScript label="With:" body={text.env.join("\n")} />
           ) : null}
           {text.port ? <p className="text-content/65">Port: {text.port}</p> : null}
+          {text.host ? (
+            <p className="text-content/65" data-preview-host-note>
+              {text.host}
+            </p>
+          ) : null}
           <p className="text-content/50">From {text.source}.</p>
           <p className="text-amber-700 dark:text-amber-300">{text.warning}</p>
           {again ? (

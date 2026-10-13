@@ -20,12 +20,18 @@ export type PreviewConfirmText = {
   npmrc?: string;
   env: string[];
   port?: string;
+  /** For a free port: the host MonoCode passes, and what it cannot ensure. */
+  host?: string;
   source: string;
   warning: string;
 };
 
 export const PREVIEW_WARNING =
   "It runs this project's code with your full rights, outside the agent's sandbox, and reloads files as the agent edits them. While it runs, this chat does not count as sandboxed.";
+
+/** Mac test 6.17: `npx serve .` listened on every interface. */
+export const AUTO_PORT_HOST_NOTE =
+  "MonoCode passes HOST=127.0.0.1. A server that ignores it may listen on every network interface.";
 
 export function previewConfirmText(candidate: PreviewCandidate): PreviewConfirmText {
   return {
@@ -48,6 +54,7 @@ export function previewConfirmText(candidate: PreviewCandidate): PreviewConfirmT
       : candidate.port
         ? { port: String(candidate.port) }
         : {}),
+    ...(candidate.autoPort ? { host: AUTO_PORT_HOST_NOTE } : {}),
     source:
       candidate.source === "launch.json"
         ? `.claude/launch.json, "${candidate.label}"`

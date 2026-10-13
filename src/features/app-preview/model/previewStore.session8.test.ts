@@ -236,7 +236,12 @@ describe("starting a preview", () => {
 
   it("passes a free port as PORT when the configuration asks", async () => {
     const preview = await start({ autoPort: true });
-    expect(fake.starts[0].command.env).toEqual({ PORT: "49152" });
+    // Mac test 6.17: HOST goes with PORT, so a server that reads it stays on
+    // this machine.
+    expect(fake.starts[0].command.env).toEqual({
+      HOST: "127.0.0.1",
+      PORT: "49152",
+    });
     expect(preview.url).toBe("http://localhost:49152/");
     expect(preview.status).toBe("waiting");
   });
