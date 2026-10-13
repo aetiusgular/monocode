@@ -80,11 +80,19 @@ fn parse_worktrees(text: &str) -> Vec<Worktree> {
     result
 }
 
+/// Shown for a folder outside any repository, in place of git's own
+/// "fatal: not a git repository" line (Mac finding 4.x).
+const NOT_A_REPOSITORY: &str = "This folder is not a git repository. Worktrees need one.";
+
 fn list(root: &Path) -> Result<Vec<Worktree>, String> {
-    Ok(parse_worktrees(&git(
-        root,
-        &["worktree", "list", "--porcelain", "-z"],
-    )?))
+    let text = git(root, &["worktree", "list", "--porcelain", "-z"]).map_err(|error| {
+        if error.contains("not a git repository") {
+            NOT_A_REPOSITORY.to_string()
+        } else {
+            error
+        }
+    })?;
+    Ok(parse_worktrees(&text))
 }
 
 fn same_path(a: &Path, b: &Path) -> bool {
@@ -999,6 +1007,30 @@ pub async fn git_orchestration_branch_remove(cwd: String, branch: String) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_folder_that_is_not_a_repository_gets_a_plain_message() {
+        let dir =
+            std::env::temp_dir().join(format!("monocode-worktree-plain-{}", uuid::Uuid::new_v4()));
+        let folder = dir.join("not a repo");
+        std::fs::create_dir_all(&folder).unwrap();
+        let error = list(&folder).unwrap_err();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(error, NOT_A_REPOSITORY);
+        assert!(!error.contains("fatal"));
+    }
+
+    #[test]
+    fn a_repository_with_no_commits_still_lists_its_main_worktree() {
+        let dir =
+            std::env::temp_dir().join(format!("monocode-worktree-empty-{}", uuid::Uuid::new_v4()));
+        let root = dir.join("codex-scratch");
+        std::fs::create_dir_all(&root).unwrap();
+        git_checked(&root, &["init"]).unwrap();
+        let listed = list(&root);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(listed.unwrap().len(), 1);
+    }
 
     struct Repo(PathBuf);
     impl Drop for Repo {
