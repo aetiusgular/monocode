@@ -18,6 +18,7 @@ fn backup_ref(session_id: &str, label: &str) -> String {
 impl CheckpointStore {
     fn saved_turn(&self, session_id: &str, cwd: &str, turn_id: &str) -> Result<SavedTurn, String> {
         validate_id(turn_id, "turn")?;
+        self.refuse_home(cwd)?;
         let path = self
             .session_dir(session_id)
             .join("turns")

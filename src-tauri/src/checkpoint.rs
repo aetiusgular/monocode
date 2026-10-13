@@ -23,13 +23,90 @@ mod turn;
 pub struct CheckpointStore {
     root: PathBuf,
     gate: Arc<Mutex<()>>,
+    /// The user's home folder. A repository whose top folder is this folder
+    /// or one of its parents is never checkpointed (Mac finding 11.16).
+    home: Option<PathBuf>,
+}
+
+/// Why no checkpoint was taken, when one was skipped on purpose.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointSkipped {
+    /// Always "homeRepository" for now.
+    pub reason: String,
+    /// The repository's top folder.
+    pub repository: String,
+}
+
+impl CheckpointSkipped {
+    fn message(&self) -> String {
+        format!(
+            "Skipped: the repository at {} covers your home folder.",
+            self.repository
+        )
+    }
+}
+
+/// True when `top` is the home folder or one of its parents, `/` included.
+/// Both paths are compared after resolving symbolic links.
+fn covers_home(top: &Path, home: Option<&Path>) -> bool {
+    let top = std::fs::canonicalize(top).unwrap_or_else(|_| top.to_path_buf());
+    if top.parent().is_none() {
+        return true;
+    }
+    let Some(home) = home else {
+        return false;
+    };
+    let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    home.starts_with(&top)
 }
 
 impl CheckpointStore {
     fn new(root: PathBuf) -> Self {
+        Self::with_home(root, crate::dirs_home().map(PathBuf::from))
+    }
+
+    fn with_home(root: PathBuf, home: Option<PathBuf>) -> Self {
         Self {
             root,
             gate: Arc::new(Mutex::new(())),
+            home,
+        }
+    }
+
+    /// The skip for a folder whose repository covers the home folder. Only
+    /// `rev-parse --show-toplevel` runs here, through the guarded command, so
+    /// nothing is written and no repository command or hook runs.
+    fn home_skip(&self, cwd: &str) -> Option<CheckpointSkipped> {
+        let root = std::fs::canonicalize(project_root(cwd).ok()?).ok()?;
+        let top = turn::show_toplevel(&root)?;
+        covers_home(&top, self.home.as_deref()).then(|| CheckpointSkipped {
+            reason: "homeRepository".into(),
+            repository: path_to_js(&std::fs::canonicalize(&top).unwrap_or(top)),
+        })
+    }
+
+    /// The turn's starting checkpoint, or the reason none was taken.
+    fn begin_turn_or_skip(
+        &self,
+        session_id: &str,
+        cwd: &str,
+        turn_id: &str,
+        edited_paths: Option<&[String]>,
+    ) -> Result<Option<CheckpointSkipped>, String> {
+        if let Some(skip) = self.home_skip(cwd) {
+            return Ok(Some(skip));
+        }
+        if let Some(paths) = edited_paths {
+            self.capture_turn_paths(session_id, cwd, paths)?;
+        }
+        self.begin_turn(session_id, cwd, turn_id).map(|()| None)
+    }
+
+    fn refuse_home(&self, cwd: &str) -> Result<(), String> {
+        match self.home_skip(cwd) {
+            Some(skip) => Err(skip.message()),
+            None => Ok(()),
         }
     }
 
@@ -49,6 +126,9 @@ impl CheckpointStore {
     }
 
     fn ensure(&self, session_id: &str, cwd: &str) -> Result<(), String> {
+        if self.home_skip(cwd).is_some() {
+            return Ok(());
+        }
         let root = project_root(cwd)?;
         let dir = self.session_dir(session_id);
         if let Some(manifest) = read_manifest(&dir)? {
@@ -89,6 +169,9 @@ impl CheckpointStore {
     }
 
     fn prepare(&self, session_id: &str, cwd: &str, paths: &[String]) -> Result<(), String> {
+        if paths.is_empty() || self.home_skip(cwd).is_some() {
+            return Ok(());
+        }
         if self.has_turn_review(session_id, cwd)? {
             return Ok(());
         }
@@ -144,6 +227,9 @@ impl CheckpointStore {
     }
 
     fn capture(&self, session_id: &str, cwd: &str, paths: &[String]) -> Result<(), String> {
+        if paths.is_empty() || self.home_skip(cwd).is_some() {
+            return Ok(());
+        }
         if self.capture_turn_paths(session_id, cwd, paths)? {
             return Ok(());
         }
@@ -194,6 +280,10 @@ impl CheckpointStore {
     }
 
     fn status(&self, session_id: &str, cwd: &str) -> Result<CheckpointStatus, String> {
+        // The chat already says why there is no checkpoint; no review card.
+        if self.home_skip(cwd).is_some() {
+            return Ok(CheckpointStatus { files: Vec::new() });
+        }
         if let Some(status) = self.turn_status(session_id, cwd)? {
             return Ok(status);
         }
@@ -216,6 +306,8 @@ impl CheckpointStore {
         from_cwd: &str,
         to_cwd: &str,
     ) -> Result<CheckpointApplyResult, String> {
+        self.refuse_home(from_cwd)?;
+        self.refuse_home(to_cwd)?;
         let manifest = self
             .load_matching(session_id, from_cwd)?
             .ok_or("This worker has no recoverable change checkpoint")?;
@@ -280,6 +372,9 @@ impl CheckpointStore {
     }
 
     fn cleanup_safe(&self, session_id: &str, cwd: &str) -> Result<bool, String> {
+        if self.home_skip(cwd).is_some() {
+            return Ok(false);
+        }
         let Some(manifest) = self.load_matching(session_id, cwd)? else {
             return Ok(false);
         };
@@ -306,6 +401,7 @@ impl CheckpointStore {
         cwd: &str,
         relative: &str,
     ) -> Result<CheckpointFileDiff, String> {
+        self.refuse_home(cwd)?;
         if let Some(diff) = self.turn_file_diff(session_id, cwd, relative)? {
             return Ok(diff);
         }
@@ -398,6 +494,7 @@ impl CheckpointStore {
         cwd: &str,
         relative: Option<&str>,
     ) -> Result<CheckpointStatus, String> {
+        self.refuse_home(cwd)?;
         if let Some(status) = self.undo_turn(session_id, cwd, relative)? {
             return Ok(status);
         }
@@ -441,6 +538,7 @@ impl CheckpointStore {
         cwd: &str,
         relative: Option<&str>,
     ) -> Result<CheckpointStatus, String> {
+        self.refuse_home(cwd)?;
         if let Some(status) = self.keep_turn(session_id, cwd, relative)? {
             return Ok(status);
         }
@@ -631,16 +729,13 @@ pub async fn session_checkpoint_begin_turn(
     cwd: String,
     turn_id: String,
     edited_paths: Option<Vec<String>>,
-) -> Result<(), String> {
+) -> Result<Option<CheckpointSkipped>, String> {
     validate_id(&session_id, "session")?;
     validate_id(&turn_id, "turn")?;
     let store = store.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         store.exclusive(|store| {
-            if let Some(paths) = &edited_paths {
-                store.capture_turn_paths(&session_id, &cwd, paths)?;
-            }
-            store.begin_turn(&session_id, &cwd, &turn_id)
+            store.begin_turn_or_skip(&session_id, &cwd, &turn_id, edited_paths.as_deref())
         })
     })
     .await
@@ -729,7 +824,9 @@ pub async fn session_checkpoint_status(
     tauri::async_runtime::spawn_blocking(move || {
         store.exclusive(|store| {
             if let Some(paths) = &edited_paths {
-                store.recover_orphaned_turn(&session_id, &cwd, paths)?;
+                if store.home_skip(&cwd).is_none() {
+                    store.recover_orphaned_turn(&session_id, &cwd, paths)?;
+                }
             }
             store.status(&session_id, &cwd)
         })

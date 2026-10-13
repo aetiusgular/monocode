@@ -694,3 +694,211 @@ fn checkpoints_scope_nested_workspaces_and_repositories_without_head() {
     f.store.undo("unborn", cwd, None).unwrap();
     assert!(!unborn.join("new.txt").exists());
 }
+
+/// Mac finding 11.16: a home folder that is a git repository.
+mod home_repository {
+    use super::*;
+
+    struct Home {
+        dir: PathBuf,
+        store: CheckpointStore,
+    }
+
+    impl Drop for Home {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn init(repo: &Path) {
+        std::fs::create_dir_all(repo).unwrap();
+        run_git(repo, &["init"]).unwrap();
+        run_git(repo, &["config", "user.name", "Test"]).unwrap();
+        run_git(repo, &["config", "user.email", "test@example.invalid"]).unwrap();
+    }
+
+    fn scratch() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("monocode-home-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn monocode_refs(repo: &Path) -> String {
+        String::from_utf8(
+            run_git(
+                repo,
+                &["for-each-ref", "--format=%(refname)", "refs/monocode"],
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn object_count(repo: &Path) -> usize {
+        fn walk(dir: &Path) -> usize {
+            std::fs::read_dir(dir)
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .map(|entry| {
+                            let path = entry.path();
+                            if path.is_dir() {
+                                walk(&path)
+                            } else {
+                                1
+                            }
+                        })
+                        .sum()
+                })
+                .unwrap_or(0)
+        }
+        walk(&repo.join(".git/objects"))
+    }
+
+    fn assert_skipped(store: &CheckpointStore, repo: &Path, cwd: &Path) {
+        let objects = object_count(repo);
+        let skip = store
+            .begin_turn_or_skip("session", cwd.to_str().unwrap(), "first", None)
+            .unwrap()
+            .expect("the checkpoint is skipped");
+        assert_eq!(skip.reason, "homeRepository");
+        assert_eq!(
+            skip.repository,
+            path_to_js(&std::fs::canonicalize(repo).unwrap())
+        );
+        store
+            .finish_turn("session", cwd.to_str().unwrap(), "first")
+            .unwrap();
+        let cwd = cwd.to_str().unwrap();
+        assert!(store.status("session", cwd).unwrap().files.is_empty());
+        store.ensure("session", cwd).unwrap();
+        store.capture("session", cwd, &["x.txt".into()]).unwrap();
+        assert!(store
+            .undo("session", cwd, None)
+            .unwrap_err()
+            .contains("covers your home folder"));
+        assert!(store
+            .restore_preview("session", cwd, "first")
+            .unwrap_err()
+            .contains("covers your home folder"));
+        assert_eq!(monocode_refs(repo), "");
+        assert_eq!(object_count(repo), objects, "no object was written");
+        assert!(!store.session_dir("session").exists());
+    }
+
+    #[test]
+    fn a_project_inside_a_home_folder_repository_is_skipped() {
+        let dir = scratch();
+        let home = dir.join("tonyg");
+        init(&home);
+        let project = home.join("code project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("big.bin"), vec![7u8; 4096]).unwrap();
+        let fixture = Home {
+            store: CheckpointStore::with_home(dir.join("checkpoints"), Some(home.clone())),
+            dir,
+        };
+        assert_skipped(&fixture.store, &home, &project);
+        // The home folder itself as the chat folder: a Mono conversation.
+        assert_skipped(&fixture.store, &home, &home);
+    }
+
+    #[test]
+    fn a_repository_above_the_home_folder_is_skipped() {
+        let dir = scratch();
+        let top = dir.join("Users");
+        init(&top);
+        let home = top.join("tonyg");
+        std::fs::create_dir_all(&home).unwrap();
+        let fixture = Home {
+            store: CheckpointStore::with_home(dir.join("checkpoints"), Some(home.clone())),
+            dir,
+        };
+        assert_skipped(&fixture.store, &top, &home);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_home_folder_reached_through_a_symbolic_link_is_still_skipped() {
+        let dir = scratch();
+        let real = dir.join("real-home");
+        init(&real);
+        let link = dir.join("home-link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let fixture = Home {
+            store: CheckpointStore::with_home(dir.join("checkpoints"), Some(link.clone())),
+            dir,
+        };
+        assert_skipped(&fixture.store, &real, &real);
+        assert_skipped(&fixture.store, &real, &link);
+    }
+
+    #[test]
+    fn a_repository_inside_the_home_folder_still_records_turns() {
+        let dir = scratch();
+        let home = dir.join("tonyg");
+        init(&home);
+        let repo = home.join("monocode");
+        init(&repo);
+        std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+        run_git(&repo, &["add", "."]).unwrap();
+        run_git(&repo, &["commit", "-m", "initial"]).unwrap();
+        let fixture = Home {
+            store: CheckpointStore::with_home(dir.join("checkpoints"), Some(home.clone())),
+            dir,
+        };
+        let cwd = repo.to_str().unwrap();
+        assert_eq!(
+            fixture
+                .store
+                .begin_turn_or_skip("session", cwd, "first", None)
+                .unwrap(),
+            None
+        );
+        std::fs::write(repo.join("a.txt"), "two\n").unwrap();
+        fixture.store.finish_turn("session", cwd, "first").unwrap();
+        let status = fixture.store.status("session", cwd).unwrap();
+        assert_eq!(status.files.len(), 1);
+        assert!(monocode_refs(&repo).contains("refs/monocode/checkpoints/session/first"));
+        assert_eq!(monocode_refs(&home), "");
+    }
+
+    #[test]
+    fn a_folder_that_is_not_a_repository_is_not_reported_as_skipped() {
+        let dir = scratch();
+        let home = dir.join("tonyg");
+        let plain = home.join("notes");
+        std::fs::create_dir_all(&plain).unwrap();
+        let fixture = Home {
+            store: CheckpointStore::with_home(dir.join("checkpoints"), Some(home.clone())),
+            dir,
+        };
+        assert!(fixture.store.home_skip(plain.to_str().unwrap()).is_none());
+        assert_eq!(
+            fixture
+                .store
+                .begin_turn_or_skip("session", plain.to_str().unwrap(), "first", None)
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn the_file_system_root_always_counts_as_covering_home() {
+        assert!(covers_home(Path::new("/"), None));
+        assert!(covers_home(Path::new("/"), Some(Path::new("/Users/tonyg"))));
+        assert!(!covers_home(
+            Path::new("/Users/tonyg/code"),
+            Some(Path::new("/Users/tonyg"))
+        ));
+        assert!(covers_home(
+            Path::new("/Users/tonyg"),
+            Some(Path::new("/Users/tonyg"))
+        ));
+        // A sibling whose name starts the same is not a parent.
+        assert!(!covers_home(
+            Path::new("/Users/tony"),
+            Some(Path::new("/Users/tonyg"))
+        ));
+    }
+}

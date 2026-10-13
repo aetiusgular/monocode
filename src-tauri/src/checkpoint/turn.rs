@@ -59,6 +59,10 @@ struct Change {
 
 impl CheckpointStore {
     pub(super) fn begin_turn(&self, session_id: &str, cwd: &str, id: &str) -> Result<(), String> {
+        // Callers report the skip; this only makes sure no git runs.
+        if self.home_skip(cwd).is_some() {
+            return Ok(());
+        }
         let root = std::fs::canonicalize(project_root(cwd)?).map_err(|e| e.to_string())?;
         let discovered = run_git(&root, &["rev-parse", "--show-toplevel"]);
         if let Err(error) = &discovered {
@@ -146,6 +150,9 @@ impl CheckpointStore {
     }
 
     pub(super) fn finish_turn(&self, session_id: &str, cwd: &str, id: &str) -> Result<(), String> {
+        if self.home_skip(cwd).is_some() {
+            return Ok(());
+        }
         let dir = self.session_dir(session_id);
         let Some(mut review) = self.matching_turn_review(session_id, cwd)? else {
             return Ok(());
@@ -516,7 +523,7 @@ impl CheckpointStore {
         }
         let prefix = format!("refs/monocode/checkpoints/{session_id}/");
         for repo in repos {
-            if !Path::new(&repo).is_dir() {
+            if !Path::new(&repo).is_dir() || covers_home(Path::new(&repo), self.home.as_deref()) {
                 continue;
             }
             let refs = run_git(
@@ -644,6 +651,14 @@ fn checked_output(command: &mut Command) -> Result<Vec<u8>, String> {
 
 fn run_git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     checked_output(&mut git_command(root, args))
+}
+
+/// The repository's top folder, or None outside a repository.
+pub(super) fn show_toplevel(root: &Path) -> Option<PathBuf> {
+    let bytes = run_git(root, &["rev-parse", "--show-toplevel"]).ok()?;
+    let text = String::from_utf8(bytes).ok()?;
+    let text = text.trim_end_matches(['\r', '\n']);
+    (!text.is_empty()).then(|| PathBuf::from(text))
 }
 
 struct PrivateIndex(PathBuf);

@@ -7991,6 +7991,7 @@ function Workspace({
                 sessionId,
                 workCwd,
                 sessionEditPaths(current.blocks),
+                (text) => routeTurnEvent({ type: "status", text }),
               )
             : undefined;
         if (turnGen.current.get(sessionId) !== gen) {

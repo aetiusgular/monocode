@@ -84,24 +84,55 @@ export function ensureSessionCheckpoint(
   );
 }
 
+/** Why the backend took no checkpoint on purpose. */
+export type CheckpointSkipped = {
+  reason: "homeRepository" | (string & {});
+  repository: string;
+};
+
+/** The chat notice for a skipped checkpoint. */
+export function checkpointSkippedNotice(skip: CheckpointSkipped): string {
+  return `No checkpoint for this turn: the repository at ${skip.repository} covers your home folder.`;
+}
+
+/** Chats already told, so the notice shows once per chat and repository. */
+const skipNoticesShown = new Set<string>();
+
 /** Record the workspace before execution, including existing uncommitted files. */
 export async function beginSessionTurn(
   sessionId: string,
   cwd: string,
   editedPaths?: readonly string[],
+  onSkipped?: (notice: string) => void,
 ): Promise<string | undefined> {
   if (!cwd || cwd === "~") return undefined;
   const id = crypto.randomUUID();
   activeTurns.set(sessionId, { id, cwd });
   // Capture errors are also persisted by the backend and shown in the review.
-  await enqueueCheckpoint(sessionId, () =>
-    invoke<void>("session_checkpoint_begin_turn", {
-      sessionId,
-      cwd,
-      turnId: id,
-      ...(editedPaths === undefined ? {} : { editedPaths }),
-    }),
-  ).catch(console.error);
+  const skipped = await enqueueCheckpoint(sessionId, () =>
+    invoke<CheckpointSkipped | null | undefined>(
+      "session_checkpoint_begin_turn",
+      {
+        sessionId,
+        cwd,
+        turnId: id,
+        ...(editedPaths === undefined ? {} : { editedPaths }),
+      },
+    ),
+  ).catch((error: unknown) => {
+    console.error(error);
+    return undefined;
+  });
+  if (skipped) {
+    // No git ran, so there is no turn to finish or rewind to.
+    if (activeTurns.get(sessionId)?.id === id) activeTurns.delete(sessionId);
+    const key = JSON.stringify([sessionId, skipped.repository]);
+    if (!skipNoticesShown.has(key)) {
+      skipNoticesShown.add(key);
+      onSkipped?.(checkpointSkippedNotice(skipped));
+    }
+    return undefined;
+  }
   notifyReviewChanged(sessionId);
   return id;
 }
@@ -206,7 +237,8 @@ export function forgetSessionCheckpoint(sessionId: string): Promise<void> {
   return enqueueCheckpoint(sessionId, () =>
     invoke<void>("session_checkpoint_forget", { sessionId }),
   ).then(() => {
-    if (activeTurns.get(sessionId)?.id === activeId) activeTurns.delete(sessionId);
+    if (activeTurns.get(sessionId)?.id === activeId)
+      activeTurns.delete(sessionId);
   });
 }
 
