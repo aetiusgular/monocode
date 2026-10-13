@@ -223,6 +223,8 @@ describe("browser tools: site approval on Claude Code", () => {
     expect(cards(events)[0].site).toEqual({
       server: "playwright",
       host: "news.example",
+      hosts: ["news.example"],
+      ruleable: true,
       chatKey: "s1",
       projectKey: "/repo",
     });

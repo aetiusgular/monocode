@@ -558,6 +558,8 @@ describe("Claude Code per-chat tool rules", () => {
         requestId: cards(events)[0].requestId,
         decided: "deny",
         tool: { key: "Bash", label: "Bash" },
+        // What "Allow for this chat" keeps for a Bash card (Mac 11.T2.2).
+        chatRule: { key: "Bash(ls)", label: "Bash: the command ls" },
       },
       {
         requestId: cards(events)[1].requestId,
