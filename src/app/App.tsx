@@ -856,6 +856,7 @@ import {
   helperRouteForCheckout as helperRouteForCheckout_l4,
   helperRouteForSession as helperRouteForSession_l4,
   helperTitle as helperTitle_l4,
+  setCheckoutSessionsSource as setCheckoutSessionsSource_l4,
 } from "../integrations/harness/core/helperPrompt";
 import { setPrBarHost as setPrBarHost_l4 } from "../features/pr-bar/model/prBar";
 import {
@@ -12973,6 +12974,11 @@ function Workspace({
     return () => setPreviewHost_l3(null);
   }, []);
   // [lane-4] app-late
+  // 4.2: a Generate that holds only a folder finds the chat that owns it.
+  useEffect(() => {
+    setCheckoutSessionsSource_l4(() => sessionsRef.current);
+    return () => setCheckoutSessionsSource_l4(null);
+  }, []);
   // #33: the PR bar sends CI repairs to, and archives, the chat that owns a
   // checkout. It reaches the app through this host, not through props.
   useEffect(() => {

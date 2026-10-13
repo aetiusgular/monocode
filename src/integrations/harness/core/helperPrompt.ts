@@ -47,6 +47,10 @@ import {
 } from "../../../features/sessions/model/sessionTitle";
 import { pathKey } from "../../../shared/lib/paths";
 import {
+  harnessIsHosted,
+  modelRoutePart,
+} from "../../../features/server-locality/model/locality";
+import {
   selectedProviderAccountId,
   supportsProviderAccounts,
 } from "../../../features/providers/model/providerAccounts";
@@ -130,7 +134,7 @@ export function helperRouteForSession(session: RouteSession): HelperRoute {
   };
 }
 
-type CheckoutSession = RouteSession &
+export type CheckoutSession = RouteSession &
   Pick<Session, "id" | "cwd"> &
   Partial<Pick<Session, "worktreeCwd" | "workspaceMode" | "blocks" | "providerSessionId">>;
 
@@ -147,17 +151,50 @@ export function sessionWasUsed(
   return (session.blocks ?? []).some((block) => block.role === "user");
 }
 
+function sessionHasPrompt(session: Pick<Partial<Session>, "blocks">): boolean {
+  return (session.blocks ?? []).some((block) => block.role === "user");
+}
+
+/** When a chat last sent a prompt, in epoch ms, or 0 when it never did. */
+export function sessionLastUsedAt(
+  session: Pick<Partial<Session>, "blocks">,
+): number {
+  let last = 0;
+  for (const block of session.blocks ?? []) {
+    if (block.role !== "user") continue;
+    const at = Math.max(block.startedAt ?? 0, block.sentAt ?? 0);
+    if (at > last) last = at;
+  }
+  return last;
+}
+
 /**
- * The session that owns a checkout: the active one if it works there and was
- * used, else the first used open session whose working folder is that
- * checkout. Undefined when no used session works there, so the caller asks
- * before a diff leaves (F3).
+ * Who writes text for a checkout. `route` is the chat that owns it. `ask`
+ * means used chats on different harnesses or model routes work there and
+ * none runs on a local model: the user is asked before `route` gets the diff.
  */
-export function helperRouteForCheckout(
+export type CheckoutOwner =
+  | { kind: "owner"; route: HelperRoute }
+  | { kind: "ask"; route: HelperRoute };
+
+/**
+ * The owner of a checkout (Mac findings 10.2 and 4.2, corner case 7).
+ *
+ * - Only a used chat whose working folder is the checkout can own it. A blank
+ *   chat, active or not, never does.
+ * - Among used chats, the one that sent a prompt most recently wins. The
+ *   active tab only breaks a tie.
+ * - Used chats on more than one harness or model route: a local one wins
+ *   (the most recent). With none local, the caller asks first.
+ */
+export function checkoutOwner(
   sessions: readonly CheckoutSession[],
   cwd: string | undefined,
   active?: CheckoutSession | null,
-): HelperRoute | undefined {
+  routeIsLocal: (session: CheckoutSession) => boolean = (session) =>
+    !harnessIsHosted(session.harness) &&
+    modelRoutePart(session).locality === "local",
+): CheckoutOwner | undefined {
   if (!cwd || cwd === "~") return undefined;
   const key = pathKey(cwd);
   const works = (session: CheckoutSession) => {
@@ -167,10 +204,84 @@ export function helperRouteForCheckout(
       return false;
     }
   };
-  const owns = (session: CheckoutSession) => works(session) && sessionWasUsed(session);
-  if (active && owns(active)) return helperRouteForSession(active);
-  const owner = sessions.find(owns);
-  return owner ? helperRouteForSession(owner) : undefined;
+  const seen = new Set<string>();
+  const used: { session: CheckoutSession; at: number; order: number }[] = [];
+  const consider = (session: CheckoutSession | null | undefined, order: number) => {
+    if (!session || seen.has(session.id)) return;
+    seen.add(session.id);
+    if (works(session) && sessionWasUsed(session)) {
+      used.push({ session, at: sessionLastUsedAt(session), order });
+    }
+  };
+  // The active tab goes first, so it wins a tie on time.
+  consider(active, -1);
+  sessions.forEach((session, index) => consider(session, index));
+  if (used.length === 0) return undefined;
+  // A chat that sent a prompt outranks one the harness merely opened (a
+  // harness may bind a conversation before the first prompt).
+  if (used.some((entry) => entry.at > 0)) {
+    for (let index = used.length - 1; index >= 0; index -= 1) {
+      if (used[index]!.at === 0 && !sessionHasPrompt(used[index]!.session)) {
+        used.splice(index, 1);
+      }
+    }
+  }
+  used.sort((a, b) => b.at - a.at || a.order - b.order);
+  const local = used.map((entry) => routeIsLocal(entry.session));
+  const kinds = new Set(
+    used.map((entry, index) => `${entry.session.harness}\n${local[index]}`),
+  );
+  if (kinds.size === 1) {
+    return { kind: "owner", route: helperRouteForSession(used[0]!.session) };
+  }
+  const firstLocal = local.indexOf(true);
+  if (firstLocal >= 0) {
+    return {
+      kind: "owner",
+      route: helperRouteForSession(used[firstLocal]!.session),
+    };
+  }
+  return { kind: "ask", route: helperRouteForSession(used[0]!.session) };
+}
+
+/**
+ * The route for a checkout's owner, or undefined when no used chat works
+ * there or the owner is not clear, so the caller asks before a diff leaves
+ * (F3).
+ */
+export function helperRouteForCheckout(
+  sessions: readonly CheckoutSession[],
+  cwd: string | undefined,
+  active?: CheckoutSession | null,
+): HelperRoute | undefined {
+  const owner = checkoutOwner(sessions, cwd, active);
+  return owner?.kind === "owner" ? owner.route : undefined;
+}
+
+/**
+ * The open chats, for callers that hold only a folder: the composer's
+ * branch-switch Generate in a blank chat passes a bare harness id, and the
+ * owner of that checkout is looked up here before anyone is asked. App
+ * registers the source; with none, nothing is found.
+ */
+let checkoutSessionsSource: (() => readonly CheckoutSession[]) | null = null;
+
+export function setCheckoutSessionsSource(
+  source: (() => readonly CheckoutSession[]) | null,
+): void {
+  checkoutSessionsSource = source;
+}
+
+export function checkoutOwnerFromOpenChats(
+  cwd: string,
+): CheckoutOwner | undefined {
+  let sessions: readonly CheckoutSession[] = [];
+  try {
+    sessions = checkoutSessionsSource?.() ?? [];
+  } catch {
+    sessions = [];
+  }
+  return checkoutOwner(sessions, cwd, null);
 }
 
 export type HelperModelChoice = {
