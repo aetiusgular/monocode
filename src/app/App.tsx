@@ -813,6 +813,7 @@ import {
   setQuitWorkspace,
   type ResumedWorkspace,
 } from "./model/appLifecycle";
+import { withEmptyTurnNotice as withEmptyTurnNotice_s6 } from "../features/sessions/model/emptyTurn";
 // [lane-1] imports
 import { rewindOptions as rewindOptions_l1 } from "../features/rewind/model/rewind";
 import { cutChatTranscript as cutChatTranscript_l1 } from "../features/rewind/model/turnRewind";
@@ -8334,7 +8335,7 @@ function Workspace({
           setSessions((prev) =>
             prev.map((s) => {
               if (s.id !== sessionId) return s;
-              const stopped = stopStreaming(s);
+              const stopped = withEmptyTurnNotice_s6(stopStreaming(s));
               const providerFailed =
                 providerFailureSeen ||
                 isProviderFailureText(lastAssistantTextInTurn(stopped));
