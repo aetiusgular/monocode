@@ -216,13 +216,16 @@ beforeEach(() => {
 
 describe("5.6: the route a wrapper-home Codex reports", () => {
   it("reads the provider and base URL from Codex 0.161.0's config/read", () => {
+    // Security fix F3: the route also carries the configured model.
     expect(codexModelRoute(CONFIG_READ_OLLAMA)).toEqual({
       provider: "ollama_local",
       baseUrls: { ollama_local: "http://127.0.0.1:11434/v1" },
+      model: "qwen2.5:7b",
     });
     expect(codexModelRoute(CONFIG_READ_DEFAULT)).toEqual({
       provider: "openai",
       baseUrls: {},
+      model: "x",
     });
     expect(codexModelRoute({})).toBeNull();
     expect(codexModelRoute({ config: { model_provider: 3 } })).toBeNull();

@@ -9,11 +9,20 @@ import type { LocalityServer } from "./serverLocality";
  *
  * The Connectors list asks for the servers. A harness that can read its own
  * configuration registers a probe (`registerHarnessConfigProbe`), which
- * `requestHarnessReport` runs once per account and folder when a locality
- * decision needs it.
+ * `requestHarnessReport` runs per account and folder when a locality
+ * decision needs it and the last answer is older than a minute.
  */
 const reported = new Map<string, LocalityServer[]>();
 const routes = new Map<string, ReportedModelRoute>();
+/** When each answer came in, so a decision can ask again once it is old. */
+const reportedAt = new Map<string, number>();
+const routesAt = new Map<string, number>();
+/**
+ * How long a report stands for the harness's configuration: the same minute
+ * the Codex server list is cached for. A home edited after that is read
+ * again before local-only content is shared.
+ */
+export const HARNESS_REPORT_TTL_MS = 60_000;
 const MAX_SERVERS = 200;
 const MAX_KEYS = 200;
 
@@ -23,6 +32,8 @@ export type ReportedModelRoute = {
   provider: string;
   /** Base URL of each provider the configuration defines, by id. */
   baseUrls: Readonly<Record<string, string>>;
+  /** The model the configuration names, when it names one. */
+  model?: string;
 };
 
 export type HarnessReport = {
@@ -53,7 +64,11 @@ function accountKey(providerAccountId: string | undefined): string {
   return providerAccountId || "default";
 }
 
-function key(harness: HarnessId, providerAccountId: string | undefined, cwd: string): string {
+function key(
+  harness: HarnessId,
+  providerAccountId: string | undefined,
+  cwd: string,
+): string {
   return `${harness}\n${accountKey(providerAccountId)}\n${cwd}`;
 }
 
@@ -80,9 +95,11 @@ export function noteHarnessServers(
 ): void {
   const id = key(harness, providerAccountId, cwd);
   if (!servers) {
+    reportedAt.delete(id);
     if (reported.delete(id)) bump();
     return;
   }
+  capped(reportedAt, id, Date.now());
   capped(
     reported,
     id,
@@ -116,10 +133,16 @@ export function noteHarnessModelRoute(
 ): void {
   const id = key(harness, providerAccountId, cwd);
   if (!route) {
+    routesAt.delete(id);
     if (routes.delete(id)) bump();
     return;
   }
-  capped(routes, id, { provider: route.provider, baseUrls: { ...route.baseUrls } });
+  capped(routesAt, id, Date.now());
+  capped(routes, id, {
+    provider: route.provider,
+    baseUrls: { ...route.baseUrls },
+    ...(route.model ? { model: route.model } : {}),
+  });
   bump();
 }
 
@@ -132,8 +155,33 @@ export function knownHarnessModelRoute(
   return routes.get(key(harness, providerAccountId, cwd));
 }
 
+function fresh(at: Map<string, number>, id: string): boolean {
+  const when = at.get(id);
+  if (when === undefined) return false;
+  const age = Date.now() - when;
+  return age >= 0 && age < HARNESS_REPORT_TTL_MS;
+}
+
+/**
+ * True when the servers, and the model route unless `route` is false, were
+ * reported within the last minute. A decision that gates content needs a
+ * fresh report.
+ */
+export function harnessReportFresh(
+  harness: HarnessId,
+  providerAccountId: string | undefined,
+  cwd: string,
+  { route = true }: { route?: boolean } = {},
+): boolean {
+  const id = key(harness, providerAccountId, cwd);
+  return fresh(reportedAt, id) && (!route || fresh(routesAt, id));
+}
+
 /** A harness adapter registers how its own configuration is read. */
-export function registerHarnessConfigProbe(harness: HarnessId, probe: Probe | null): void {
+export function registerHarnessConfigProbe(
+  harness: HarnessId,
+  probe: Probe | null,
+): void {
   if (probe) probes.set(harness, probe);
   else probes.delete(harness);
 }
@@ -143,8 +191,8 @@ export function canProbeHarness(harness: HarnessId): boolean {
 }
 
 /**
- * Ask the harness for its servers and model route once for this account and
- * folder, unless both are known. Resolves when the answer is in, or when the
+ * Ask the harness for its servers and model route for this account and
+ * folder, unless both were reported within the last minute. Resolves when the answer is in, or when the
  * probe failed (everything stays unknown). Never rejects.
  */
 export function requestHarnessReport(
@@ -155,15 +203,18 @@ export function requestHarnessReport(
   const probe = probes.get(harness);
   if (!probe || !cwd || cwd === "~") return Promise.resolve();
   const id = key(harness, providerAccountId, cwd);
-  if (reported.has(id) && routes.has(id)) return Promise.resolve();
+  if (harnessReportFresh(harness, providerAccountId, cwd))
+    return Promise.resolve();
   const pending = inFlight.get(id);
   if (pending) return pending;
   const run = probe({ cwd, providerAccountId: accountKey(providerAccountId) })
     .then(
       (report) => {
         if (!report) return;
-        if (report.servers) noteHarnessServers(harness, providerAccountId, cwd, report.servers);
-        if (report.route) noteHarnessModelRoute(harness, providerAccountId, cwd, report.route);
+        if (report.servers)
+          noteHarnessServers(harness, providerAccountId, cwd, report.servers);
+        if (report.route)
+          noteHarnessModelRoute(harness, providerAccountId, cwd, report.route);
       },
       () => undefined,
     )
@@ -189,6 +240,8 @@ export function harnessReportsVersion(): number {
 export function __resetHarnessServers(): void {
   reported.clear();
   routes.clear();
+  reportedAt.clear();
+  routesAt.clear();
   inFlight.clear();
   probes.clear();
   bump();

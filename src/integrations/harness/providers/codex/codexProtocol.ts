@@ -447,6 +447,8 @@ export type CodexModelRoute = {
   provider: string;
   /** Base URL of each provider the configuration defines, by id. */
   baseUrls: Record<string, string>;
+  /** The model the configuration names, when it names one. */
+  model?: string;
 };
 
 const MAX_ROUTE_PROVIDERS = 64;
@@ -456,15 +458,48 @@ const PROVIDER_ID = /^[A-Za-z0-9_.-]{1,80}$/;
  * The effective model provider and the base URLs of the configured
  * providers, from a `config/read` result, or null when the result does not
  * have the expected shape. Codex 0.161.0 answers with `config.model_provider`
- * (null when unset) and `config.model_providers.<id>.base_url`.
+ * (null when unset), `config.model`, `config.model_providers.<id>.base_url`,
+ * `config.profile` (null when unset) and `config.profiles.<id>`.
+ *
+ * When `profile` names a profile, that profile's `model_provider` and
+ * `model` decide; a profile that is missing or names no provider gives null
+ * (unknown), since the top-level provider may not be the one in use. Codex
+ * 0.161.0 itself refuses a top-level `profile` in `config/read` ("legacy
+ * `profile = "x"` config is no longer supported"), so the probe fails and
+ * the route stays unknown there; this covers other versions.
  */
 export function codexModelRoute(result: unknown): CodexModelRoute | null {
   const config = asRecord(asRecord(result)?.config);
   if (!config) return null;
-  const raw = config.model_provider;
+  let source: Record<string, unknown> = config;
+  const profile = config.profile;
+  if (profile != null) {
+    if (typeof profile !== "string") return null;
+    if (profile.trim()) {
+      const profiles = asRecord(config.profiles);
+      const chosen =
+        profiles && Object.prototype.hasOwnProperty.call(profiles, profile)
+          ? asRecord(profiles[profile])
+          : null;
+      if (!chosen || typeof chosen.model_provider !== "string") return null;
+      source = chosen;
+    }
+  }
+  const raw = source.model_provider;
   if (raw != null && typeof raw !== "string") return null;
-  const provider = typeof raw === "string" && raw.trim() ? raw.trim() : "openai";
+  const provider =
+    typeof raw === "string" && raw.trim() ? raw.trim() : "openai";
   if (!PROVIDER_ID.test(provider)) return null;
+  const rawModel =
+    typeof source.model === "string" && source.model.trim()
+      ? source.model
+      : source !== config && typeof config.model === "string"
+        ? config.model
+        : undefined;
+  const model =
+    typeof rawModel === "string" && rawModel.trim() && rawModel.length <= 200
+      ? rawModel.trim()
+      : undefined;
   const baseUrls: Record<string, string> = Object.create(null);
   const providers = asRecord(config.model_providers);
   let count = 0;
@@ -476,7 +511,7 @@ export function codexModelRoute(result: unknown): CodexModelRoute | null {
     baseUrls[id] = url;
     count += 1;
   }
-  return { provider, baseUrls };
+  return model ? { provider, baseUrls, model } : { provider, baseUrls };
 }
 
 /**
@@ -584,7 +619,11 @@ export function stringField(
  * used `parsed_cmd`/`parsedCmd`, and an item replayed from one still carries
  * those, so every spelling is read.
  */
-const PARSED_COMMAND_KEYS = ["commandActions", "parsed_cmd", "parsedCmd"] as const;
+const PARSED_COMMAND_KEYS = [
+  "commandActions",
+  "parsed_cmd",
+  "parsedCmd",
+] as const;
 
 /** The action's own text. `command` is the protocol's, `cmd` the rollout files'. */
 const PARSED_COMMAND_FIELDS = ["command", "cmd"] as const;
@@ -616,9 +655,12 @@ export function codexCommandText(
     const posixShell = ["sh", "bash", "zsh", "dash", "ksh"].includes(
       launcher ?? "",
     );
-    const powerShell = ["pwsh", "pwsh.exe", "powershell", "powershell.exe"].includes(
-      launcher ?? "",
-    );
+    const powerShell = [
+      "pwsh",
+      "pwsh.exe",
+      "powershell",
+      "powershell.exe",
+    ].includes(launcher ?? "");
     const cmd = launcher === "cmd" || launcher === "cmd.exe";
     let flag = -1;
     for (let index = 1; index < parts.length - 1; index += 1) {
@@ -1290,7 +1332,8 @@ function mapSubAgentActivity(
   completed: boolean,
 ): HarnessEvent {
   const kind = (stringField(item, "kind") ?? "").toLowerCase();
-  const path = stringField(item, "agentPath") ?? stringField(item, "agent_path");
+  const path =
+    stringField(item, "agentPath") ?? stringField(item, "agent_path");
   const leaf = path?.split(/[/\\]/).filter(Boolean).pop();
   const title = leaf ? `${formatAgentType(leaf)} subagent` : "Subagent";
   if (kind === "interrupted") {
