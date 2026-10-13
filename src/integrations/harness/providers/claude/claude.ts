@@ -98,6 +98,7 @@ import { approvalTool } from "../../../../features/tool-access/model/toolAccess"
 import {
   commandRuleGate,
   packageScriptFingerprint,
+  ruleHeldToProjectScripts,
 } from "../../../../features/tool-access/model/commandRuleGate";
 import { recordScriptRuleFingerprint } from "../../../../features/tool-access/model/scriptRuleStore";
 import {
@@ -1577,12 +1578,19 @@ async function handleControlRequest(
   const tool = approvalTool(control.toolName);
   // A rule whose script changed since it was allowed is named on the card,
   // so allowing it again keeps the script as it is now.
-  const chatRule: ApprovalTool | undefined =
+  // A package script prefix waits for package.json; other cards do not wait.
+  const heldRule =
     commandGate_s6?.allow === false &&
     commandGate_s6.reason === "script-changed" &&
     commandRuleKey_s6
       ? { ...approvalTool(commandRuleKey_s6)!, changed: true }
-      : claudeCommandChatRule(toolName, input, control.permissionSuggestions);
+      : heldChatRule_s6(
+          claudeCommandChatRule(toolName, input, control.permissionSuggestions),
+          input.command,
+          live.cwd,
+        );
+  const chatRule: ApprovalTool | undefined =
+    heldRule instanceof Promise ? await heldRule : heldRule;
   // Read without holding the card back; an answer waits for it (R3).
   const scriptPrint = chatRule
     ? chatRuleScriptPrint_s6(chatRule.key, live.cwd)
@@ -2626,6 +2634,24 @@ function chatRuleScriptPrint_s6(
   if (script === null) return undefined;
   return packageScriptFingerprint(cwd, script).then(
     (fingerprint) => (fingerprint ? { ruleKey, fingerprint } : undefined),
+    () => undefined,
+  );
+}
+
+/**
+ * The card's rule, held to the scripts in the project's `package.json` (R4).
+ * Waits only for a package script prefix rule, so other cards are not held.
+ */
+function heldChatRule_s6(
+  chatRule: ApprovalTool | undefined,
+  command: unknown,
+  cwd: string,
+): ApprovalTool | undefined | Promise<ApprovalTool | undefined> {
+  const rule = chatRule ? commandRuleFromKey(chatRule.key) : null;
+  if (!rule || rule.kind !== "prefix" || packageScriptOf(rule) === null)
+    return chatRule;
+  return ruleHeldToProjectScripts(rule, command, cwd).then(
+    (held) => (held ? approvalTool(commandRuleKey(held)) : undefined),
     () => undefined,
   );
 }

@@ -214,3 +214,27 @@ describe("package script rules (R3)", () => {
     await finish(turn);
   });
 });
+
+describe("run prefixes for the project's scripts only (R4)", () => {
+  it("keeps an exact rule for a dependency's program and a prefix for a script", async () => {
+    answers.preview_read_config = pkg({ dev: "vite" });
+    const { events, turn } = await startTurn();
+    askBash("r1", "yarn run node x.js", "yarn run node *");
+    askBash("r2", "pnpm run exec ls");
+    askBash("r3", "yarn run dev -- src", "yarn run dev *");
+    await waitFor(() => cards(events).length === 3, "cards");
+    // The script rule's card waits for package.json, so cards may reorder.
+    const byCall = Object.fromEntries(
+      cards(events).map((card) => [card.callId, card.chatRule?.key]),
+    );
+    expect(byCall).toEqual({
+      use_r1: "Bash(yarn run node x.js)",
+      use_r2: "Bash(pnpm run exec ls)",
+      use_r3: "Bash(yarn run dev *)",
+    });
+    for (const card of cards(events))
+      respondClaudeApproval("s1", card.requestId, "deny");
+    await answer("r3");
+    await finish(turn);
+  });
+});

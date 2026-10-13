@@ -81,6 +81,14 @@ export function parseCommandRule(raw: unknown): CommandRule | null {
   return { kind: "exact", command: raw.trim() };
 }
 
+/** An exact rule for this command text, or null where none is kept. */
+export function exactCommandRule(command: unknown): CommandRule | null {
+  if (typeof command !== "string" || command.length > MAX_RULE_LENGTH)
+    return null;
+  const rule = parseCommandRule(command);
+  return rule?.kind === "exact" ? rule : null;
+}
+
 /** The rule in Claude Code's syntax, as stored. */
 export function formatCommandRule(rule: CommandRule): string {
   return rule.kind === "prefix" ? `${rule.prefix} *` : rule.command;

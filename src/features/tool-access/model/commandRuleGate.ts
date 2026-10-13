@@ -18,6 +18,7 @@ import type { PreviewConfigFiles } from "../../app-preview/model/launchConfig";
 import { sha256Hex } from "../../app-preview/model/sha256";
 import {
   commandRuleFromKey,
+  exactCommandRule,
   packageScriptOf,
   shellWords,
   type CommandRule,
@@ -180,4 +181,26 @@ export async function packageScriptFingerprint(
 
 function formatWords(rule: CommandRule): string {
   return rule.kind === "prefix" ? rule.prefix : rule.command;
+}
+
+/**
+ * The rule a card keeps, held to the project's scripts (security fix R4). A
+ * package script prefix (`npm test *`, `yarn run dev *`) stays a prefix only
+ * when `package.json` in `cwd` has that script. Otherwise `yarn run node *`
+ * or `pnpm run exec *` would run any dependency's program, so the card keeps
+ * an exact rule for this command. Any other rule is kept as it is.
+ */
+export async function ruleHeldToProjectScripts(
+  rule: CommandRule,
+  command: unknown,
+  cwd: string,
+  call: RuleGateInvoke = tauriInvoke,
+): Promise<CommandRule | null> {
+  if (rule.kind !== "prefix") return rule;
+  const script = packageScriptOf(rule);
+  if (script === null) return rule;
+  const project = await readPackageScripts(cwd, call);
+  if (project && Object.prototype.hasOwnProperty.call(project.scripts, script))
+    return rule;
+  return exactCommandRule(command);
 }
