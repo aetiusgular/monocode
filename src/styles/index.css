@@ -3860,11 +3860,44 @@ html.theme-light .btw-burst {
 }
 
 .agent-markdown .markdown-visual-frame {
+  position: relative;
   height: 360px;
   resize: vertical;
   overflow: hidden;
   min-height: 120px;
   max-height: 80vh;
+}
+
+/* The iframe would swallow pointer moves while the grip is dragged. */
+.agent-markdown .markdown-visual-frame[data-resizing] iframe {
+  pointer-events: none;
+}
+
+/* Visible corner grip (3.14). The iframe hides the native resizer. */
+.agent-markdown .markdown-visual-grip {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
+  width: 16px;
+  height: 16px;
+  cursor: ns-resize;
+  touch-action: none;
+  border-top-left-radius: 4px;
+  background:
+    linear-gradient(
+      135deg,
+      transparent 45%,
+      color-mix(in srgb, var(--color-content) 55%, transparent) 45% 52%,
+      transparent 52% 64%,
+      color-mix(in srgb, var(--color-content) 55%, transparent) 64% 71%,
+      transparent 71%
+    ),
+    color-mix(in srgb, var(--color-background-base, #fff) 85%, transparent);
+}
+
+.agent-markdown .markdown-visual-grip:focus-visible {
+  outline: 1px solid var(--color-accent);
 }
 
 .agent-markdown .markdown-visual-bar {
