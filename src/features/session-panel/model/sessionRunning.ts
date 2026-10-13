@@ -59,6 +59,13 @@ export type RunningInput = {
   blocks: readonly Block[];
   /** Item keys the user asked to stop, shown as stopping until they go. */
   stopping?: ReadonlySet<string>;
+  /**
+   * False once the turn has stopped or ended. A subagent read from the
+   * transcript stops with the turn, so it is not listed then, even when its
+   * tool row never got a closing status (Mac test 2.17: Codex's closing
+   * event for the row arrives after Stop and is dropped as stale).
+   */
+  busy?: boolean;
 };
 
 export function runningRowKey(row: Pick<RunningRow, "source" | "id">): string {
@@ -94,7 +101,10 @@ export function sessionRunningRows(input: RunningInput): RunningRow[] {
       stop: stoppable ? "harness" : "turn",
     });
   }
-  if (!harnessItems.some((item) => item.kind === "subagent")) {
+  if (
+    input.busy !== false &&
+    !harnessItems.some((item) => item.kind === "subagent")
+  ) {
     for (const row of transcriptSubagentRows(input.blocks)) add(row);
   }
   const order = new Map(

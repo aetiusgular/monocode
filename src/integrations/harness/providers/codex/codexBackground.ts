@@ -17,6 +17,13 @@ const PAGE_LIMIT = 50;
 const MAX_PAGES = 4;
 
 /**
+ * Connections that answered "no such method" once. The Running section asks
+ * every few seconds while a turn runs; a Codex without the methods is not
+ * asked again on the same connection.
+ */
+const missingOn = new WeakSet<CodexRequester>();
+
+/**
  * Codex's background terminal methods are experimental (rust-v0.161.0). A
  * home or version without them answers "method not found" or refuses the
  * experimental call; either means "no list here", not a failure to show.
@@ -61,6 +68,7 @@ export async function listCodexBackgroundTerminals(
   rpc: CodexRequester,
   threadId: string,
 ): Promise<BackgroundItem[] | null> {
+  if (missingOn.has(rpc)) return null;
   const items: BackgroundItem[] = [];
   let cursor: string | null = null;
   try {
@@ -82,7 +90,10 @@ export async function listCodexBackgroundTerminals(
       if (!cursor || items.length >= MAX_BACKGROUND_ITEMS) break;
     }
   } catch (error) {
-    if (isMissingMethodError(error)) return null;
+    if (isMissingMethodError(error)) {
+      missingOn.add(rpc);
+      return null;
+    }
     throw error;
   }
   return items.slice(0, MAX_BACKGROUND_ITEMS);
@@ -107,7 +118,12 @@ export async function terminateCodexBackgroundTerminal(
   }
 }
 
-/** The adapter's `listBackgroundTasks`: the live thread's terminals. */
+/**
+ * The adapter's `listBackgroundTasks`: the live thread's terminals. Codex
+ * 0.161.0 lists a unified-exec command here while the turn that started it
+ * still runs, not only once the turn has left it running. Null when there is
+ * no live thread yet, for example while the app-server starts for a turn.
+ */
 export async function listCodexBackgroundTasks(
   sessionId: string,
 ): Promise<BackgroundItem[] | null> {

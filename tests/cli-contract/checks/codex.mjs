@@ -380,6 +380,60 @@ async function checkBackground({ codexPath }) {
   };
 }
 
+// Mac test 1.8: is a command listed while the turn that started it still
+// runs, and does terminate end it there? MonoCode's Running section polls
+// during the turn and offers Stop on what this returns.
+async function checkBackgroundMidTurn({ codexPath }) {
+  const seen = {};
+  const s = await open({
+    codexPath,
+    script: (body, n) => {
+      if (n === 0) return [call("exec_command", { cmd: "sleep 120", yield_time_ms: 60000 }, "mt1")];
+      return [text("done")];
+    },
+  });
+  try {
+    const started = await s.client.request("thread/start", { cwd: s.dirs.work, ...FULL_ACCESS });
+    const threadId = started.thread.id;
+    const before = s.client.notifications.length;
+    await s.client.request("turn/start", { threadId, input: userInput("run it"), ...FULL_ACCESS_TURN });
+    await s.client.waitFor(
+      () => s.client.notifications.slice(before).find((n) => n.method === "item/started" && n.params?.item?.type === "commandExecution"),
+      30000,
+      "the command item",
+    );
+    await new Promise((r) => setTimeout(r, 1000));
+    try {
+      const list = await s.client.request("thread/backgroundTerminals/list", { threadId, cursor: null, limit: 50 });
+      seen.turnRunning = !s.client.notifications.slice(before).some((n) => n.method === "turn/completed");
+      seen.list = list.data.map((t) => ({ processId: t.processId, command: t.command }));
+      if (list.data[0]) {
+        seen.terminate = await s.client.request("thread/backgroundTerminals/terminate", { threadId, processId: list.data[0].processId });
+        const done = await s.client
+          .waitFor(() => s.client.notifications.slice(before).find((n) => n.method === "turn/completed"), 20000, "turn/completed")
+          .catch(() => null);
+        seen.turnEnded = !!done;
+        const after = await s.client.request("thread/backgroundTerminals/list", { threadId, cursor: null, limit: 50 });
+        seen.afterTerminate = after.data.length;
+      }
+    } catch (error) {
+      seen.error = error.message;
+    }
+  } finally {
+    await shut(s);
+  }
+  const ok =
+    !seen.error && seen.turnRunning && seen.list?.length === 1 && /sleep 120/.test(seen.list[0].command) &&
+    seen.terminate?.terminated === true && seen.turnEnded && seen.afterTerminate === 0;
+  return {
+    status: ok ? "pass" : "fail",
+    finding: seen.error
+      ? `thread/backgroundTerminals/list during a turn failed: "${seen.error}".`
+      : `During the turn the list held ${JSON.stringify(seen.list)}; terminate ${JSON.stringify(seen.terminate)}; the turn ${seen.turnEnded ? "then ended" : "did not end"}; ${seen.afterTerminate} left.`,
+    seen,
+  };
+}
+
 async function checkNetworkApproval({ codexPath }) {
   // The wire shape is read from Codex 0.161.0's generated schema. A live run
   // turns on the managed network proxy with a permissions profile that allows
@@ -638,6 +692,7 @@ export const codexChecks = [
   { id: "check-10", title: "Codex MCP tool call confirmation under supervised", flag: "#38b on Codex", run: check10 },
   { id: "mcp-flat-name", title: "Codex refuses a flat MCP tool name", flag: "gateway connectors on the local home", run: checkMcpFlatName },
   { id: "bg-terminals", title: "Codex thread/backgroundTerminals/list and /terminate", flag: "capabilities: codex backgroundList, backgroundStop", run: checkBackground },
+  { id: "bg-terminals-mid-turn", title: "Codex lists and terminates a command while its turn runs", flag: "Mac test 1.8: Running section polls during the turn", run: checkBackgroundMidTurn },
   { id: "net-approval", title: "Codex network approval and policy amendment shape", flag: "lane 5 always allow this host", run: checkNetworkApproval },
   { id: "apply-patch-heredoc", title: "Codex intercepts an apply_patch heredoc in exec_command", flag: "session 10 premise", run: checkApplyPatchIntercept },
   { id: "accept-for-session", title: "Codex acceptForSession on a file change", flag: "lane 5 Allow for this chat", run: checkAcceptForSession },

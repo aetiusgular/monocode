@@ -44,6 +44,11 @@ import { PanelSection } from "./PanelSection";
 
 /** How often an open section asks a polled harness for its list, in ms. */
 export const RUNNING_POLL_MS = 5_000;
+/**
+ * While a turn runs the section asks more often, so a command the turn
+ * starts is listed within a few seconds (Mac test 1.8).
+ */
+export const RUNNING_BUSY_POLL_MS = 2_000;
 /** How long a stop waits for the row to go before it reads as running again. */
 const STOPPING_HOLD_MS = 15_000;
 
@@ -60,8 +65,13 @@ const KIND_ICON: Record<BackgroundItem["kind"], ReactNode> = {
 };
 
 /**
- * Polls the harness's own list while the section is shown. A harness with
- * no list answers null once and is not asked again until it changes.
+ * Polls the harness's own list while the section is shown. Null means no
+ * list right now: the harness lacks the method, its process is between
+ * threads, or the call failed. While a turn runs that can change at any
+ * moment (a Codex app-server is restarted when a chat's connectors change),
+ * so the poll keeps asking. While idle it stops after a null and starts
+ * again with the next turn. A Codex without the methods is remembered by
+ * its adapter and costs no request.
  */
 function usePolledBackground(
   harness: HarnessId,
@@ -80,9 +90,11 @@ function usePolledBackground(
       const next = await listHarnessBackgroundTasks_l1(harness, sessionId);
       if (stopped) return;
       setItems(next);
-      // No list here: do not keep asking a harness that cannot answer.
-      if (next === null) return;
-      timer = setTimeout(() => void tick(), RUNNING_POLL_MS);
+      if (next === null && !busy) return;
+      timer = setTimeout(
+        () => void tick(),
+        busy ? RUNNING_BUSY_POLL_MS : RUNNING_POLL_MS,
+      );
     };
     void tick();
     return () => {
@@ -152,8 +164,9 @@ export function RunningSection({
         owned,
         blocks,
         stopping,
+        busy: busy === true,
       }),
-    [harness, pushed, polled, owned, blocks, stopping],
+    [harness, pushed, polled, owned, blocks, stopping, busy],
   );
   const now = useNow(active && rows.some((row) => row.status === "running"));
 
