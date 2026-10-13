@@ -8,7 +8,8 @@ export type SaveCopyResult =
 /**
  * Save on a file card: you pick a folder, and the document is copied into it.
  *
- * The copy goes through `copy_path`, which picks a free name (`report 2.pdf`)
+ * The copy goes through `copy_path`, which picks a free name the way Finder
+ * does (`report copy.pdf`, then `report copy 2.pdf`)
  * rather than overwrite anything already there, and leaves the agent's file
  * where it is. Nothing runs and nothing is sent anywhere.
  */

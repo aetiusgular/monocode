@@ -14,6 +14,7 @@ import {
   watchChild,
 } from "../../core/child";
 import { JsonRpcClient } from "../../core/jsonRpc";
+import { findModelProvider } from "../../../../features/model-setup/model/modelProviders";
 import {
   isProviderSessionId,
   limitImportedHistory,
@@ -129,8 +130,13 @@ export function codexThreadRows(
           ? thread.updatedAt
           : 0;
     const name = typeof thread.name === "string" ? thread.name : "";
-    const provider =
-      typeof thread.modelProvider === "string" ? oneLine(thread.modelProvider, 40) : "";
+    // The provider's own name where MonoCode knows it, not its config id
+    // (Mac finding 1.14: "ollama_local" for "Ollama on this Mac").
+    const providerId =
+      typeof thread.modelProvider === "string" ? thread.modelProvider : "";
+    const provider = providerId
+      ? oneLine(providerDisplayName(providerId), 40)
+      : "";
     const model = typeof thread.model === "string" ? oneLine(thread.model, 60) : "";
     rows.push({
       id: thread.id,
@@ -240,4 +246,12 @@ export function readCodexSessionTurns(
     }
     return codexTurnsHistory(thread?.turns);
   });
+}
+
+function providerDisplayName(id: string): string {
+  try {
+    return findModelProvider(id)?.label || id;
+  } catch {
+    return id;
+  }
 }

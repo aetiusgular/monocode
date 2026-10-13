@@ -146,10 +146,15 @@ describe("fenced and exportFileName", () => {
   });
 
   it("makes a safe file name from any title", () => {
+    // The name carries the local date (Mac finding 3.11), so this uses local
+    // noon, which is the same day in every time zone the suite runs in.
+    const NOW = new Date(2026, 9, 12, 12, 0, 0);
     expect(exportFileName("Fix: the ../../etc/passwd bug!", NOW)).toBe(
       "Fix the etcpasswd bug 2026-10-12.md",
     );
     expect(exportFileName("-rf", NOW)).toBe("rf 2026-10-12.md");
     expect(exportFileName("", NOW)).toBe("conversation 2026-10-12.md");
+    // Late evening local time is still that day, not the UTC day after.
+    expect(exportFileName("x", new Date(2026, 9, 12, 23, 30))).toBe("x 2026-10-12.md");
   });
 });

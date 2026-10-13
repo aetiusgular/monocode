@@ -221,6 +221,12 @@ export function exportFileName(title: string, now = new Date()): string {
     .slice(0, 60)
     .trim()
     .replace(/^[-.]+/, "");
-  const day = now.toISOString().slice(0, 10);
+  // The local date, as the person reads it (Mac finding 3.11: the UTC date
+  // was a day ahead in the evening in California).
+  const day = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+  ].join("-");
   return `${base || "conversation"} ${day}.md`;
 }

@@ -2,7 +2,8 @@ import { expect, it, vi } from "vitest";
 vi.mock("@tauri-apps/plugin-dialog", () => ({ save: vi.fn(), message: vi.fn() }));
 import { exportConversation, exportConversationFromMenu } from "./exportConversation";
 
-const NOW = new Date("2026-10-12T06:00:00.000Z");
+// Local noon: the file name carries the local date (Mac finding 3.11).
+const NOW = new Date(2026, 9, 12, 12, 0, 0);
 const stored = {
   title: "Demo",
   harness: "claude" as const,
