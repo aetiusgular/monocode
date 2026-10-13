@@ -194,7 +194,7 @@ export function toolAccessCaveats(
       // branch of the handler.
       ...(access?.always?.includes(CODEX_COMMAND_TOOL)
         ? [
-            "Always on Commands lets Codex run commands in its sandbox without asking, from the next turn. A command that asks to leave the sandbox still asks.",
+            "Always on Commands lets Codex run commands in its sandbox without asking, from the next turn. The sandbox can read any file on this computer. A command that asks to leave the sandbox still asks. Always applies only while this chat has no network access.",
           ]
         : []),
       ...(access?.always?.includes(CODEX_FILE_CHANGE_TOOL)

@@ -338,8 +338,10 @@ describe("Tool access popover", () => {
       toolAccess: { "codex:command": "always" },
       onToolAccessChange: vi.fn(),
     });
+    // Security fix F4: the caveat says the sandbox reads any file and that
+    // Always needs a chat with no network access.
     expect(popover()!.textContent).toContain(
-      "Always on Commands lets Codex run commands in its sandbox without asking, from the next turn. A command that asks to leave the sandbox still asks.",
+      "Always on Commands lets Codex run commands in its sandbox without asking, from the next turn. The sandbox can read any file on this computer. A command that asks to leave the sandbox still asks. Always applies only while this chat has no network access.",
     );
     expect(popover()!.textContent).toContain("Plan turns stay read only.");
   });
