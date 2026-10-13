@@ -14,6 +14,10 @@ import {
 } from "../../core/child";
 import { asRecord, stringField } from "./codexProtocol";
 import { JsonRpcClient } from "../../core/jsonRpc";
+import {
+  DEFAULT_PROVIDER_ACCOUNT_ID,
+  providerAccounts,
+} from "../../../../features/providers/model/providerAccounts";
 
 const PROBE_ID = "monocode-codex-probe";
 const DISCOVERY_TIMEOUT_MS = 15_000;
@@ -34,7 +38,7 @@ let inflight: Promise<void> | null = null;
 
 export function refreshCodexCatalog(): Promise<void> {
   if (inflight) return inflight;
-  inflight = discoverCodexModels()
+  inflight = discoverCodexModelsForAccounts()
     .then((models) => {
       if (models.length > 0) setHarnessModels("codex", models);
     })
@@ -47,13 +51,55 @@ export function refreshCodexCatalog(): Promise<void> {
   return inflight;
 }
 
+/** The named Codex accounts, such as one model setup wrote for a local server. */
+function namedCodexAccounts(): string[] {
+  return providerAccounts("codex")
+    .map((account) => account.id)
+    .filter((id) => id !== DEFAULT_PROVIDER_ACCOUNT_ID);
+}
+
+/**
+ * Models from the default Codex home and from every named Codex account,
+ * default first, each listed once.
+ *
+ * Listing only the default home left a named account's models out: with no
+ * OpenAI sign-in there, the default home refuses, and a local account written
+ * by model setup listed nothing (Mac finding 5.3). Each home is probed on its
+ * own, in parallel; one that fails leaves the others' models. Throws only
+ * when every home failed.
+ */
+export async function discoverCodexModelsForAccounts(
+  accounts: readonly string[] = namedCodexAccounts(),
+  discover: (
+    workingDirectory?: string,
+    providerAccountId?: string,
+  ) => Promise<AgentModel[]> = discoverCodexModels,
+): Promise<AgentModel[]> {
+  const homes: (string | undefined)[] = [undefined, ...accounts];
+  const results = await Promise.allSettled(
+    homes.map((account) => discover(undefined, account)),
+  );
+  const lists = results.flatMap((result) =>
+    result.status === "fulfilled" ? [result.value] : [],
+  );
+  if (lists.length === 0) {
+    const first = results.find(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    throw first?.reason ?? new Error("Codex listed no models");
+  }
+  return uniqueByNative(lists.flat());
+}
+
 export async function discoverCodexModels(
   workingDirectory?: string,
+  providerAccountId?: string,
 ): Promise<AgentModel[]> {
   const cwd = workingDirectory ?? (await homeDir());
   return withCodexProbe(
     {
       cwd,
+      ...(providerAccountId ? { providerAccountId } : {}),
       timeoutMs: DISCOVERY_TIMEOUT_MS,
       timeoutMessage: "Codex model discovery timed out",
     },
