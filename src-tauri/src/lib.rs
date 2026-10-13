@@ -235,11 +235,19 @@ fn set_trackpad_zoom_enabled(
     trackpad_zoom::set_enabled(&window, enabled);
 }
 
-// Async so the window is built off the main thread. Building it from a sync
-// command deadlocks WebView2 on Windows and leaves the new window blank.
+// Async, so the IPC handler never builds the window itself: a sync command
+// deadlocks WebView2 on Windows. The build is then queued onto the main
+// thread, the way File > New Window runs it, because AppKit must not be
+// called from this worker thread (Mac finding 4.14: Move to New Window
+// aborted with "Rust cannot catch foreign exceptions").
 #[tauri::command]
 async fn open_new_window(app: tauri::AppHandle) -> Result<(), String> {
-    window::open_new_window(&app)
+    let handle = app.clone();
+    window::on_main_thread(
+        |job| app.run_on_main_thread(job).map_err(|err| err.to_string()),
+        move || window::open_new_window(&handle),
+    )
+    .await
 }
 
 fn should_request_quit(code: Option<i32>) -> bool {

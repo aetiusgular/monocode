@@ -68,6 +68,25 @@ struct QuitConfirm {
     in_flight: u32,
 }
 
+/// A job for the main thread, as `run_on_main_thread` takes it.
+pub type MainThreadJob = Box<dyn FnOnce() + Send + 'static>;
+
+/// Run `job` through `dispatch` (the app's `run_on_main_thread`) and wait for
+/// its result without blocking the caller's thread. A job that never runs, or
+/// panics, gives an error instead of a hang.
+pub async fn on_main_thread<T: Send + 'static>(
+    dispatch: impl FnOnce(MainThreadJob) -> Result<(), String>,
+    job: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let (tx, mut rx) = tauri::async_runtime::channel(1);
+    dispatch(Box::new(move || {
+        let _ = tx.try_send(job());
+    }))?;
+    rx.recv()
+        .await
+        .unwrap_or_else(|| Err("The window was not opened.".into()))
+}
+
 pub fn open_new_window(app: &AppHandle) -> Result<(), String> {
     open_session_window(app, true).map(|_| ())
 }
@@ -626,6 +645,58 @@ pub fn confirm_quit(app: AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tauri::async_runtime::block_on(future)
+    }
+
+    #[test]
+    fn the_window_build_runs_on_the_dispatched_thread_not_the_callers() {
+        let caller = std::thread::current().id();
+        let built_on = std::sync::Arc::new(Mutex::new(None));
+        let seen = built_on.clone();
+        let result = block_on(on_main_thread(
+            |job| {
+                // Stands in for the event loop: a different thread.
+                std::thread::spawn(job);
+                Ok(())
+            },
+            move || {
+                *seen.lock().unwrap() = Some(std::thread::current().id());
+                Ok("window-7")
+            },
+        ));
+        assert_eq!(result, Ok("window-7"));
+        let built_on = built_on.lock().unwrap().expect("the build ran");
+        assert_ne!(built_on, caller);
+    }
+
+    #[test]
+    fn a_failed_dispatch_or_a_dropped_job_is_an_error_not_a_hang() {
+        let refused: Result<(), String> = block_on(on_main_thread(
+            |_job| Err("event loop closed".into()),
+            || Ok(()),
+        ));
+        assert_eq!(refused, Err("event loop closed".into()));
+
+        let dropped: Result<(), String> = block_on(on_main_thread(
+            |job| {
+                drop(job);
+                Ok(())
+            },
+            || Ok(()),
+        ));
+        assert!(dropped.is_err());
+
+        let failed: Result<(), String> = block_on(on_main_thread(
+            |job| {
+                job();
+                Ok(())
+            },
+            || Err("missing main window config".into()),
+        ));
+        assert_eq!(failed, Err("missing main window config".into()));
+    }
 
     #[test]
     fn floating_mono_windows_are_excluded_from_workspace_lifecycle() {

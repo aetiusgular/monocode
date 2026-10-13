@@ -92,6 +92,15 @@ pub fn register_spellcheck_default() {
 }
 
 pub fn install(window: &WebviewWindow) {
+    // Every call below is AppKit, which throws off the main thread, and a
+    // throw through Rust aborts the app (Mac finding 4.14). A caller on a
+    // worker thread has the work queued instead.
+    if MainThreadMarker::new().is_none() {
+        let app = window.app_handle().clone();
+        let window = window.clone();
+        let _ = app.run_on_main_thread(move || install(&window));
+        return;
+    }
     // Opaque for the dock bounce so the first frames are a solid field,
     // not a frosted desktop. Glass turns on after the first UI paint.
     prepare_launch(window);
