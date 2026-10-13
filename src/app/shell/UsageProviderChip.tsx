@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { OUTBOUND_CALL_OFF_MESSAGE } from "../../features/settings/model/outboundCalls";
 import {
   clampUsedPercent,
   DAILY_WINDOW_MINUTES,
@@ -107,7 +108,10 @@ export function UsageProviderChip({
       !limits.session &&
       !limits.weekly &&
       !limits.monthly);
-  const disconnected = limits.status === "unavailable";
+  // Usage figures switched off reads as off, not as a lost sign-in (Mac
+  // finding 5.9).
+  const usageOff_s6 = usageSwitchedOff(limits);
+  const disconnected = limits.status === "unavailable" && !usageOff_s6;
   const windows = usageWindows(limits);
   const loginView = Boolean(
     onReconnect &&
@@ -242,6 +246,8 @@ export function UsageProviderChip({
         <HarnessIcon harness={iconHarness} className="size-3 shrink-0" />
         {loading ? (
           <span className="animate-pulse text-content/35">···</span>
+        ) : usageOff_s6 ? (
+          <span className="text-content/35">usage off</span>
         ) : disconnected ? (
           <span className="text-content/35">not connected</span>
         ) : windows.length === 0 ? (
@@ -1122,7 +1128,13 @@ function EmptyUsageState({
   );
 }
 
+/** The usage switch under Outbound calls is off, so nothing was fetched. */
+export function usageSwitchedOff(limits: ProviderRateLimits): boolean {
+  return limits.error === OUTBOUND_CALL_OFF_MESSAGE;
+}
+
 export function needsProviderLogin(limits: ProviderRateLimits): boolean {
+  if (usageSwitchedOff(limits)) return false;
   if (limits.status === "unavailable") return true;
   if (limits.status !== "error") return false;
   const text = limits.error?.toLowerCase() ?? "";
