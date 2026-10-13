@@ -279,7 +279,7 @@ fn is_tool_ref(value: &str) -> bool {
 /// Two to `MAX_ENABLE_TOOLS` pairs of `--enable <server>.<tool>`, all for one
 /// server. One pair is the single-tool shape above.
 fn is_enable_list(args: &[&str]) -> bool {
-    if args.len() < 4 || args.len() % 2 != 0 || args.len() > MAX_ENABLE_TOOLS * 2 {
+    if args.len() < 4 || !args.len().is_multiple_of(2) || args.len() > MAX_ENABLE_TOOLS * 2 {
         return false;
     }
     let server = args[1].split_once('.').map(|(server, _)| server);
