@@ -684,7 +684,15 @@ fn git_ignored_names(dir: &Path, names: &[&str]) -> Option<HashSet<String>> {
     if names.is_empty() {
         return Some(HashSet::new());
     }
+    // Runs on every folder listing: the repository's fsmonitor and hooks
+    // stay off (security review, F4).
     let mut child = git_cmd()
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            crate::git_guard::NO_HOOKS_ARG,
+        ])
         .arg("-C")
         .arg(dir)
         .args(["check-ignore", "--stdin", "-z"])

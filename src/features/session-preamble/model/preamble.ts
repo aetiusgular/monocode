@@ -130,7 +130,9 @@ export const MESSAGE_HEADINGS: Record<PreamblePartId, string> = {
   instructions: "My instructions",
   "project-notes": "My notes for this project",
   operator: "App access",
-  memory: "Project memory",
+  // Saved entries may come from an agent's proposal, so they are not given
+  // the user's voice (security review, F9).
+  memory: "Notes MonoCode saved for this project",
   previews: "Preview server",
 };
 
@@ -266,7 +268,20 @@ export function preambleBlock(
   text: string,
   kind: MessageBlockKind = "current",
 ): string {
-  return `${MESSAGE_NOTE_START}\n${MESSAGE_LEAD[kind]}\n\n${text}\n\n${MESSAGE_NOTE_END}`;
+  return `${MESSAGE_NOTE_START}\n${MESSAGE_LEAD[kind]}\n\n${withoutFence(text)}\n\n${MESSAGE_NOTE_END}`;
+}
+
+/**
+ * A body may hold saved memory an agent proposed. The fence lines inside it
+ * are replaced, so nothing in the body can close the note early and speak
+ * as the user after it (security review, F9).
+ */
+function withoutFence(text: string): string {
+  return text
+    .split(MESSAGE_NOTE_END)
+    .join("[end marker removed]")
+    .split(MESSAGE_NOTE_START)
+    .join("[start marker removed]");
 }
 
 /** Characters the note adds around its body, so the whole fits the budget. */

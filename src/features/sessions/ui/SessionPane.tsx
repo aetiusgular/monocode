@@ -144,6 +144,7 @@ import { useSuggestedPrompts as useSuggestedPrompts_l2 } from "../../suggested-p
 // [lane-3] imports
 import { VerifyCard as VerifyCard_l3 } from "../../verify/ui/VerifyCard";
 // [lane-4] imports
+import { sessionWasUsed as sessionWasUsed_l4 } from "../../../integrations/harness/core/helperPrompt";
 // [lane-5] imports
 
 export type SessionPaneProps = {
@@ -1005,6 +1006,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       onDismissSuggestedPrompts={suggestions_l2.dismiss}
       // [lane-3] composer-props
       // [lane-4] composer-props
+      sessionUsed_l4={sessionWasUsed_l4(session)}
       // [lane-5] composer-props
       privacySession_l5={session}
       onPrivacyPatch_l5={

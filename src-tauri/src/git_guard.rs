@@ -13,8 +13,12 @@
 //! config (local or worktree scope, includes followed) is switched off for that
 //! one call, and `core.fsmonitor` is off for every call. Drivers from the
 //! user's global or system config, such as git-lfs installed globally, are left
-//! alone. Writes (`add`, `commit`, `checkout` and the like) keep the filters,
-//! because a filter shapes what is stored, and run only on the user's click.
+//! alone. Writes the user clicks (`add`, `commit`, `checkout` and the like)
+//! keep the filters and hooks, because a filter shapes what is stored. Writes
+//! MonoCode makes on its own, such as the turn checkpoint, go through
+//! `guard_everything`, which holds them too. Reads and those writes also run
+//! no hook. A submodule's own config is not read, so reads leave dirty
+//! submodules alone.
 
 use std::path::Path;
 use std::process::Command;
@@ -82,7 +86,11 @@ pub(crate) struct RepoDrivers {
 /// only the repository's own scopes. `Err` when a name cannot be passed back
 /// to git safely as `-c <name>=`.
 pub(crate) fn parse_repo_drivers(raw: &[u8]) -> Result<RepoDrivers, String> {
-    let text = String::from_utf8_lossy(raw);
+    // Strict: a lossy decode turns a name that is not UTF-8 into another
+    // name, and the real driver would still run (security review, F2).
+    let text = std::str::from_utf8(raw).map_err(|_| {
+        "This repository's git config names a driver MonoCode cannot switch off safely.".to_string()
+    })?;
     let mut parts = text.split('\0');
     let mut drivers = RepoDrivers::default();
     while let Some(scope) = parts.next() {
@@ -168,21 +176,81 @@ fn repo_drivers(root: &Path) -> Result<RepoDrivers, String> {
     }
 }
 
+/// Where git looks for hooks when none should run.
+#[cfg(windows)]
+const NO_HOOKS: &str = "core.hooksPath=NUL";
+#[cfg(not(windows))]
+const NO_HOOKS: &str = "core.hooksPath=/dev/null";
+
+/// The `-c` value that keeps hooks off, for callers that build their own
+/// command.
+pub(crate) const NO_HOOKS_ARG: &str = NO_HOOKS;
+
+/// Subcommands that recurse into submodules, whose own config this guard
+/// does not read. They get `--ignore-submodules=dirty` (security review, F3).
+const SUBMODULE_READS: &[&str] = &["diff", "status"];
+
+/// How far a call is held.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// Reads are held; writes keep the repository's filters and hooks, for a
+    /// commit or a stage the user clicked.
+    Auto,
+    /// Everything is held, writes included: MonoCode's own snapshots, taken
+    /// after every turn with no click (security review, F1).
+    Everything,
+}
+
 /// Global options to put before the subcommand, and the subcommand's own
 /// arguments, for one call MonoCode makes in `root`. `Err` means the call must
 /// not run.
 pub(crate) fn guard(root: &Path, args: &[&str]) -> Result<(Vec<String>, Vec<String>), String> {
+    guard_with(root, args, Mode::Auto)
+}
+
+/// `guard` for calls MonoCode makes on its own that also write, such as the
+/// turn checkpoint's private index: no repository filter, driver or hook runs.
+/// The snapshot then holds the files as they are on disk, and a restore
+/// through the same guard writes them back as they were.
+pub(crate) fn guard_everything(
+    root: &Path,
+    args: &[&str],
+) -> Result<(Vec<String>, Vec<String>), String> {
+    guard_with(root, args, Mode::Everything)
+}
+
+fn guard_with(
+    root: &Path,
+    args: &[&str],
+    mode: Mode,
+) -> Result<(Vec<String>, Vec<String>), String> {
     let mut globals = vec!["-c".to_string(), "core.fsmonitor=false".to_string()];
     let mut rest: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
-    if is_write(args) || subcommand(args).is_none() {
+    if subcommand(args).is_none() || (mode == Mode::Auto && is_write(args)) {
         return Ok((globals, rest));
     }
     globals.extend(override_args(&repo_drivers(root)?));
-    globals.extend(["-c".to_string(), "log.showSignature=false".to_string()]);
+    globals.extend([
+        "-c".to_string(),
+        "log.showSignature=false".to_string(),
+        "-c".to_string(),
+        NO_HOOKS.to_string(),
+    ]);
     if let Some(sub) = subcommand(args) {
+        let mut inserted = Vec::new();
         if DIFFS.contains(&sub) && !args.contains(&"--no-ext-diff") {
-            if let Some(at) = rest.iter().position(|arg| arg == sub) {
-                rest.insert(at + 1, "--no-ext-diff".to_string());
+            inserted.push("--no-ext-diff".to_string());
+        }
+        if SUBMODULE_READS.contains(&sub)
+            && !args
+                .iter()
+                .any(|arg| arg.starts_with("--ignore-submodules"))
+        {
+            inserted.push("--ignore-submodules=dirty".to_string());
+        }
+        if let Some(at) = rest.iter().position(|arg| arg == sub) {
+            for (offset, arg) in inserted.into_iter().enumerate() {
+                rest.insert(at + 1 + offset, arg);
             }
         }
     }
@@ -362,9 +430,15 @@ mod tests {
     fn diff_gets_no_ext_diff_once() {
         let repo = repo("extdiff");
         let (_, rest) = guard(&repo.0, &["diff", "HEAD"]).unwrap();
-        assert_eq!(rest, ["diff", "--no-ext-diff", "HEAD"]);
+        assert_eq!(
+            rest,
+            ["diff", "--no-ext-diff", "--ignore-submodules=dirty", "HEAD"]
+        );
         let (_, rest) = guard(&repo.0, &["diff", "--no-ext-diff", "HEAD"]).unwrap();
-        assert_eq!(rest, ["diff", "--no-ext-diff", "HEAD"]);
+        assert_eq!(
+            rest,
+            ["diff", "--ignore-submodules=dirty", "--no-ext-diff", "HEAD"]
+        );
         let (_, rest) = guard(&repo.0, &["--literal-pathspecs", "show", "HEAD"]).unwrap();
         assert_eq!(
             rest,
@@ -399,5 +473,96 @@ mod tests {
             Some("status")
         );
         assert_eq!(subcommand(&["--version"]), None);
+    }
+
+    #[test]
+    fn a_driver_name_that_is_not_utf8_refuses_the_read() {
+        let raw = b"local\0filter.\xff.clean\nx\0";
+        assert!(parse_repo_drivers(raw).is_err());
+    }
+
+    #[test]
+    fn the_checkpoint_add_runs_no_filter_and_no_hook() {
+        let repo = repo("everything");
+        let (clean, _) = plant(&repo.0);
+        let hook_marker = repo.0.with_extension("hook-ran");
+        let hooks = repo.0.join(".git/hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let hook = hooks.join("reference-transaction");
+        std::fs::write(
+            &hook,
+            format!("#!/bin/sh\ntouch '{}'\n", hook_marker.display()),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let index = repo.0.with_extension("index");
+        for args in [
+            &["add", "-A", "--", "."][..],
+            &["update-ref", "refs/monocode/test", "HEAD"][..],
+        ] {
+            let (globals, rest) = guard_everything(&repo.0, args).unwrap();
+            let out = Command::new("git")
+                .args(&globals)
+                .arg("-C")
+                .arg(&repo.0)
+                .args(&rest)
+                .env("GIT_INDEX_FILE", &index)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        assert!(!clean.exists(), "the checkpoint's add ran the clean filter");
+        assert!(
+            !hook_marker.exists(),
+            "the checkpoint ran a repository hook"
+        );
+        // A user's own commit still gets the repository's hooks.
+        let (globals, _) = guard(&repo.0, &["commit", "-m", "x"]).unwrap();
+        assert!(!globals.iter().any(|arg| arg.starts_with("core.hooksPath")));
+        let _ = std::fs::remove_file(index);
+    }
+
+    #[test]
+    fn a_submodules_own_filter_does_not_run_on_a_read() {
+        let parent = repo("parent");
+        let sub = parent.0.join("s");
+        std::fs::create_dir_all(&sub).unwrap();
+        run(&sub, &["init", "-q"]);
+        std::fs::write(sub.join("a.txt"), "x\n").unwrap();
+        run(&sub, &["add", "a.txt"]);
+        run(&sub, &["commit", "-qm", "s"]);
+        // A gitlink, as an agent could make with a nested repository.
+        run(&parent.0, &["add", "s"]);
+        run(&parent.0, &["commit", "-qm", "add s"]);
+        let marker = parent.0.with_extension("sub-ran");
+        run(
+            &sub,
+            &[
+                "config",
+                "filter.sf.clean",
+                &format!("touch '{}'; cat", marker.display()),
+            ],
+        );
+        std::fs::create_dir_all(sub.join(".git/info")).unwrap();
+        std::fs::write(sub.join(".git/info/attributes"), "* filter=sf\n").unwrap();
+        // Same content, new time: git has to look again.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(sub.join("a.txt"), "x\n").unwrap();
+        for args in [
+            &["status", "--porcelain=v1", "-z"][..],
+            &["diff", "--numstat", "HEAD"][..],
+        ] {
+            let out = guarded(&parent.0, args);
+            assert!(out.status.success());
+        }
+        assert!(!marker.exists(), "a read ran a submodule's own filter");
     }
 }

@@ -409,6 +409,12 @@ type Props = {
   onDismissSuggestedPrompts?: () => void;
   // [lane-3] props
   // [lane-4] props
+  /**
+   * The chat was used: a prompt was sent or the harness holds a conversation.
+   * A blank chat's harness was never chosen for anything, so its Generate
+   * asks before a diff leaves (Mac finding 10.2, security review F6).
+   */
+  sessionUsed_l4?: boolean;
   // [lane-5] props
   /** The chat's provider, account and Codex permissions profile (lane 5). */
   privacySession_l5?: SessionProviderInput_l5 & PrivacyPanelSession_l5;
@@ -556,6 +562,7 @@ export function Composer({
   onDismissSuggestedPrompts,
   // [lane-3] destructure
   // [lane-4] destructure
+  sessionUsed_l4 = false,
   // [lane-5] destructure
   privacySession_l5,
   onPrivacyPatch_l5,
@@ -1967,14 +1974,17 @@ export function Composer({
   // [lane-3] body
   // [lane-4] body
   // F6: a commit before a branch switch is written by this session's model.
-  const helperRoute_l4 = helperRouteForSession_l4({
-    harness,
-    model,
-    modelSettings,
-    providerAccountId,
-    cwd,
-    ...(sessionId ? { id: sessionId } : {}),
-  });
+  // A blank chat passes a bare harness id, so Generate asks first.
+  const helperRoute_l4 = sessionUsed_l4
+    ? helperRouteForSession_l4({
+        harness,
+        model,
+        modelSettings,
+        providerAccountId,
+        cwd,
+        ...(sessionId ? { id: sessionId } : {}),
+      })
+    : harness;
   // [lane-5] body
   const browserServers_l5 = useBrowserServers_l5({
     harness,

@@ -601,16 +601,18 @@ fn resolve_edit_path(workspace: &Path, root: &Path, path: &str) -> Result<String
 fn git_command(root: &Path, args: &[&str]) -> Command {
     let mut command = Command::new("git");
     crate::hide_window_console(&mut command);
-    // A turn's diff runs after every turn with no click, so the repository's
-    // own filter and diff drivers are off for its reads (Mac finding 10.1).
+    // The checkpoint runs after every turn with no click, so the repository's
+    // own filters, diff drivers and hooks are off for every call, its private
+    // index writes included (Mac finding 10.1, security review F1).
     // When their names cannot be read or passed back safely, the call is
     // replaced by an option git refuses, so it fails rather than runs them.
-    let (globals, args_guarded) = crate::git_guard::guard(root, args).unwrap_or_else(|_| {
-        (
-            vec!["-c".into(), "core.fsmonitor=false".into()],
-            vec!["--monocode-refused-this-repository-config".into()],
-        )
-    });
+    let (globals, args_guarded) =
+        crate::git_guard::guard_everything(root, args).unwrap_or_else(|_| {
+            (
+                vec!["-c".into(), "core.fsmonitor=false".into()],
+                vec!["--monocode-refused-this-repository-config".into()],
+            )
+        });
     command
         .arg("--no-pager")
         .args(&globals)

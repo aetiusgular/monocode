@@ -178,13 +178,15 @@ it("waits for delivery and keeps a rejected message available to retry", async (
 
 it("follows the composer autocorrect setting", () => {
   render();
+  // Off by default since Mac finding 8.2.
+  expect(field().getAttribute("spellcheck")).toBe("false");
+  expect(field().getAttribute("autocorrect")).toBe("off");
+
+  act(() => saveComposerAutocorrect(true));
   expect(field().getAttribute("spellcheck")).toBe("true");
   expect(field().getAttribute("autocorrect")).toBe("on");
 
   act(() => saveComposerAutocorrect(false));
   expect(field().getAttribute("spellcheck")).toBe("false");
   expect(field().getAttribute("autocorrect")).toBe("off");
-
-  act(() => saveComposerAutocorrect(true));
-  expect(field().getAttribute("spellcheck")).toBe("true");
 });
