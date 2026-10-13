@@ -24,8 +24,7 @@ import { providerLocality } from "./providerLocality";
 const BUILT_IN_IDS = new Set(["openai", "ollama", "lmstudio", "oss"]);
 
 export type EditAdapterAvailability =
-  | { available: true }
-  | { available: false; reason: string };
+  { available: true } | { available: false; reason: string };
 
 /** Whether the adapter can run for a provider at all, and why not. */
 export function editAdapterAvailability(
@@ -78,9 +77,13 @@ const openRoute: OpenRoute = (sessionId, upstream, cwd) =>
   invoke<string>("edit_adapter_open", { sessionId, upstream, cwd });
 
 /**
- * The adapter route for a Codex session, when its provider is one you set up
- * on the Models page and the adapter is on for it. Off, unknown or failed
- * means Codex talks to the model server directly, as before.
+ * The adapter route for a Codex session, when the session runs on the named
+ * Codex account the Models page wrote for its provider and the adapter is on
+ * for it. A matching provider id alone is not enough: a wrapper script home
+ * or the default home can carry the same id (`ollama_local`) with its own
+ * base URL, and the override would replace it (Mac test 2.3, 7.9). Off,
+ * unknown, another home or failed means Codex talks to the model server
+ * directly, as before.
  */
 export async function codexEditAdapter(
   input: {
@@ -97,6 +100,8 @@ export async function codexEditAdapter(
     providerForAccount(input.providerAccountId)?.id;
   const entry = findModelProvider(id)?.entry;
   if (!entry || !editAdapterOn(entry, input.model)) return { key: "" };
+  if (!editAdapterAccountMatches(entry, input.providerAccountId))
+    return { key: "" };
   try {
     const baseUrl = await open(input.sessionId, entry.baseUrl, input.cwd);
     return { key: `${entry.id}\n${baseUrl}`, providerId: entry.id, baseUrl };
@@ -105,10 +110,20 @@ export async function codexEditAdapter(
   }
 }
 
+/** Whether the session runs on the account model setup wrote for `entry`. */
+export function editAdapterAccountMatches(
+  entry: Pick<ModelProviderEntry, "accountId">,
+  providerAccountId: string | undefined,
+): boolean {
+  return Boolean(entry.accountId) && entry.accountId === providerAccountId;
+}
+
 /** The thread `config` entry that points Codex at the adapter. */
 export function editAdapterConfig(
   adapter: CodexEditAdapter,
 ): Record<string, string> | undefined {
   if (!adapter.providerId || !adapter.baseUrl) return undefined;
-  return { [`model_providers.${adapter.providerId}.base_url`]: adapter.baseUrl };
+  return {
+    [`model_providers.${adapter.providerId}.base_url`]: adapter.baseUrl,
+  };
 }

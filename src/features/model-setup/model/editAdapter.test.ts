@@ -95,7 +95,13 @@ describe("stored switch", () => {
 });
 
 describe("codex session route", () => {
-  const input = { sessionId: "s1", cwd: "/Users/me/codex-scratch", modelProvider: "ollama_local", model: "qwen2.5:7b" };
+  const input = {
+    sessionId: "s1",
+    cwd: "/Users/me/codex-scratch",
+    modelProvider: "ollama_local",
+    model: "qwen2.5:7b",
+    providerAccountId: "acct-ollama",
+  };
 
   it("opens the route on the provider's server and the session folder", async () => {
     saveModelProvider(LOCAL);
@@ -118,7 +124,7 @@ describe("codex session route", () => {
   it("stays out of the way when off, unknown or hosted, without a call to the app", async () => {
     const open = vi.fn(async () => "unused");
     // The wrapper script case: no provider MonoCode knows.
-    expect(await codexEditAdapter(input, open)).toEqual({ key: "" });
+    expect(await codexEditAdapter({ ...input, providerAccountId: undefined }, open)).toEqual({ key: "" });
     saveModelProvider({ ...LOCAL, editAdapter: false });
     expect(await codexEditAdapter(input, open)).toEqual({ key: "" });
     saveModelProvider({ ...LOCAL, id: "openrouter", kind: "openrouter", baseUrl: "https://openrouter.ai/api/v1" });
