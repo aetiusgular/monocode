@@ -254,6 +254,13 @@ type Resume = {
 
 const INIT_TIMEOUT_MS = 8_000;
 /**
+ * How long a rewind waits for Claude Code to start cut back. It loads the
+ * whole conversation first, which takes longer than a plain start on a long
+ * chat. Kept under the menu's own limit (45 s) so a slow start fails here,
+ * where the conversation can be put back, rather than in the menu.
+ */
+export const REWIND_INIT_TIMEOUT_MS = 30_000;
+/**
  * How long a finished background task may take to wake Claude before the turn
  * is let go anyway. The follow-up turn normally starts within a second or two.
  */
@@ -565,7 +572,7 @@ export async function rewindClaudeLastTurn(
 
   let live: Live;
   try {
-    live = await ensureLive(input);
+    live = await ensureLive(input, REWIND_INIT_TIMEOUT_MS);
   } catch (error) {
     cancelledThreads.delete(threadId);
     await restore();
@@ -654,7 +661,10 @@ export function restoreClaudeTaskLists(
   });
 }
 
-async function ensureLive(input: HarnessSessionInput): Promise<Live> {
+async function ensureLive(
+  input: HarnessSessionInput,
+  initTimeoutMs: number = INIT_TIMEOUT_MS,
+): Promise<Live> {
   const settingsKey = settingsKeyFor(input);
   const planning = input.intent === "plan";
   const existing = liveByThread.get(input.sessionId);
@@ -840,7 +850,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       input.sessionId,
       buildControlRequest(nextControlId(live), { subtype: "initialize" }),
     );
-    await waitForInit(live, INIT_TIMEOUT_MS);
+    await waitForInit(live, initTimeoutMs);
     live.onEvent({
       type: "session.providerBound",
       providerSessionId: live.claudeSessionId,

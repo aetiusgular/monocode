@@ -7,11 +7,27 @@ import {
   type RestorePreview,
   type RestoreResult,
 } from "../../sessions/model/checkpoint";
+import { CHAT_REWIND_TIMEOUT_MS } from "../model/chatRewindRun";
 import type { RewindAction, RewindOptions } from "../model/rewind";
 import type { TurnRewind } from "../model/turnRewind";
 
 /** Files listed in the restore preview before it says how many it left out. */
 export const MAX_PREVIEW_FILES = 40;
+
+/**
+ * The longest the menu shows "working" for a chat rewind. The host bounds the
+ * rewind itself (CHAT_REWIND_TIMEOUT_MS) with a clearer message; this is the
+ * menu's own floor, so it ends in an error even if a host does not.
+ */
+export const MENU_CHAT_REWIND_LIMIT_MS = CHAT_REWIND_TIMEOUT_MS + 5_000;
+
+function bounded<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const limit = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([work, limit]).finally(() => clearTimeout(timer));
+}
 
 type Stage =
   | { kind: "menu" }
@@ -63,13 +79,20 @@ export function TurnRewindMenu({
     setOpen(true);
   };
 
+  // A second press while an action runs (a double click lands before the
+  // "working" stage renders) is ignored here; the host refuses it too.
+  const busy = useRef(false);
   const run = async (action: RewindAction, work: () => Promise<void>) => {
+    if (busy.current) return;
+    busy.current = true;
     setStage({ kind: "working", action });
     try {
       await work();
       close();
     } catch (error) {
       setStage({ kind: "error", message: messageOf(error) });
+    } finally {
+      busy.current = false;
     }
   };
 
@@ -187,7 +210,13 @@ export function TurnRewindMenu({
                 }, with the replies? The prompt goes back in the composer. Files stay as they are.`}
                 confirm="Rewind chat"
                 onConfirm={() =>
-                  void run("chat", () => rewind.onRewindChat(blockId))
+                  void run("chat", () =>
+                    bounded(
+                      rewind.onRewindChat(blockId),
+                      MENU_CHAT_REWIND_LIMIT_MS,
+                      "The agent did not answer the rewind in time. The chat is left as it was",
+                    ),
+                  )
                 }
                 onCancel={() => setStage({ kind: "menu" })}
               />

@@ -815,7 +815,8 @@ import {
 } from "./model/appLifecycle";
 // [lane-1] imports
 import { rewindOptions as rewindOptions_l1 } from "../features/rewind/model/rewind";
-import { applyChatRewind as applyChatRewind_l1 } from "../features/rewind/model/turnRewind";
+import { cutChatTranscript as cutChatTranscript_l1 } from "../features/rewind/model/turnRewind";
+import { runChatRewind as runChatRewind_l1 } from "../features/rewind/model/chatRewindRun";
 import { forkSessionAt as forkSessionAt_l1 } from "../features/rewind/model/forkSession";
 import { forkHarnessSession_l1 } from "../integrations/harness/core/registry";
 import { readHarnessSessionTurns_l1 } from "../integrations/harness/core/registry";
@@ -12714,34 +12715,59 @@ function Workspace({
         throw new Error(options.chat.reason ?? "This chat cannot be rewound");
       }
       const workCwd = sessionWorkCwd(current);
-      await rewindHarnessLastTurn({
-        harness: current.harness,
+      // The prompt's place as it was asked to be cut. If a prompt was added
+      // or removed by the time the harness answers (a late answer after the
+      // menu gave up), the cut is not made over the new turns.
+      const asked = `${options.turnStart}:${options.laterPrompts}`;
+      // One at a time per chat, refused rather than queued, and bounded so
+      // the menu always ends in a result or an error.
+      await runChatRewind_l1({
         sessionId,
-        cwd: workCwd,
-        model: current.model,
-        modelSettings: current.modelSettings,
-        providerAccountId: current.providerAccountId,
-        runtimeMode: current.runtimeMode,
-        ephemeral: current.ephemeral === true,
-        ...sessionToolsInput(current, workCwd),
-        ...(options.chat.providerTurnId
-          ? { providerTurnId: options.chat.providerTurnId }
-          : {}),
-        onEvent: (event) => enqueueHarnessEvent(sessionId, event),
+        forget: () =>
+          rewindHarnessLastTurn({
+            harness: current.harness,
+            sessionId,
+            cwd: workCwd,
+            model: current.model,
+            modelSettings: current.modelSettings,
+            providerAccountId: current.providerAccountId,
+            runtimeMode: current.runtimeMode,
+            ephemeral: current.ephemeral === true,
+            ...sessionToolsInput(current, workCwd),
+            ...(options.chat.providerTurnId
+              ? { providerTurnId: options.chat.providerTurnId }
+              : {}),
+            onEvent: (event) => enqueueHarnessEvent(sessionId, event),
+          }),
+        cut: () => {
+          flushHarnessEvents();
+          const latest = sessionsRef.current.find(
+            (session) => session.id === sessionId,
+          );
+          const now = latest ? rewindOptions_l1(latest, blockId) : null;
+          if (!now || `${now.turnStart}:${now.laterPrompts}` !== asked) {
+            throw new Error(
+              "The chat changed while the agent went back. Rewind again from the prompt you want",
+            );
+          }
+          // Through the ref as well as state: a harness event flush rebuilds
+          // state from the ref and would put the cut turns back otherwise.
+          cutChatTranscript_l1(
+            {
+              flushEvents: flushHarnessEvents,
+              current: () => sessionsRef.current,
+              replaceCurrent: (next) => {
+                sessionsRef.current = next;
+              },
+              setState: setSessions,
+            },
+            sessionId,
+            blockId,
+          );
+        },
       });
-      setSessions((prev) =>
-        prev.map((session) =>
-          session.id === sessionId
-            ? applyChatRewind_l1(
-                session,
-                // Recomputed on the latest state, in case it moved meanwhile.
-                rewindOptions_l1(session, blockId) ?? options,
-              )
-            : session,
-        ),
-      );
     },
-    [enqueueHarnessEvent],
+    [enqueueHarnessEvent, flushHarnessEvents],
   );
 
   /**

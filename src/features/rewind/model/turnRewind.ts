@@ -75,6 +75,63 @@ export function applyChatRewind(
   };
 }
 
+/**
+ * The chat list once `sessionId` is rewound to before the prompt `blockId`.
+ * Options are recomputed on the list given, in case the chat moved since the
+ * harness was asked. A chat whose prompt is already gone is left as it is, so
+ * applying this to both the app's ref and React's state, which may lag it,
+ * cuts once and fills the composer once (the same `nonce` on both).
+ */
+export function rewindChatInSessions(
+  sessions: readonly Session[],
+  sessionId: string,
+  blockId: string,
+  nonce: string,
+): Session[] {
+  return sessions.map((session) => {
+    if (session.id !== sessionId) return session;
+    const options = rewindOptions(session, blockId);
+    if (!options) return session;
+    return applyChatRewind(session, options, nonce);
+  });
+}
+
+/**
+ * Where the app keeps its chats: a ref that harness event flushes read and
+ * rebuild state from, and React's state, which a render copies into the ref.
+ */
+export type ChatSessionStore = {
+  /** Applies every harness event still queued, from the ref. */
+  flushEvents: () => void;
+  current: () => readonly Session[];
+  replaceCurrent: (next: Session[]) => void;
+  setState: (update: (prev: Session[]) => Session[]) => void;
+};
+
+/**
+ * Cuts the transcript once the harness has forgotten (#34), in a way a
+ * harness event flush cannot undo.
+ *
+ * A flush rebuilds the chat list from the ref and replaces React's state with
+ * it. Claude Code restarts to forget, and the restart queues events
+ * (`session.providerBound`, `session.started`). A cut made only through a
+ * React updater is lost when that flush lands before React renders: the flush
+ * sets the list it built from the uncut ref, after the updater. So the queued
+ * events are applied first, then the cut is written to the ref and to state.
+ */
+export function cutChatTranscript(
+  store: ChatSessionStore,
+  sessionId: string,
+  blockId: string,
+  nonce: string = crypto.randomUUID(),
+): void {
+  store.flushEvents();
+  const update = (list: readonly Session[]) =>
+    rewindChatInSessions(list, sessionId, blockId, nonce);
+  store.replaceCurrent(update(store.current()));
+  store.setState((prev) => update(prev));
+}
+
 const taken = new Set<string>();
 
 /**
