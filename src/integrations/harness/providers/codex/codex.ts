@@ -666,14 +666,14 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     existing.controlsAgents === controlsAgents &&
     existing.ephemeral === ephemeral &&
     existing.codexStore === codexStore &&
-    existing.gatewayKey === gatewayKey &&
+    existing.gatewayKey === gatewayKey
     // [lane-1] reuse
     // [lane-2] reuse
     // [lane-3] reuse
     // [lane-4] reuse
     // [lane-5] reuse
-    existing.identityKey_l5 === identityKey_l5 &&
-    existing.editAdapterKey_l5 === editAdapter_l5.key
+    && existing.identityKey_l5 === identityKey_l5
+    && existing.editAdapterKey_l5 === editAdapter_l5.key
   ) {
     if (existing.mcpRequested === mcpRequested) {
       existing.onEvent = input.onEvent;
@@ -750,8 +750,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     {
       onNotification: (method, params) => {
         const live = liveRef.current;
-        if (live)
-          noteCodexNotification_l5(live, input.sessionId, method, params);
+        if (live) noteCodexNotification_l5(live, input.sessionId, method, params);
         if (!live || live.muteUpdates) return;
         if (live.notificationQueue) {
           const turnGeneration = live.turnGeneration;
