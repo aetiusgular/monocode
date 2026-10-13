@@ -51,6 +51,31 @@ export const CHARS_PER_TOKEN = 4;
 export const UNKNOWN_WINDOW = 16_384;
 
 /**
+ * The smallest context window every model of a harness has, for a model
+ * whose own window MonoCode does not know. Claude Code's built-in catalog
+ * lists no window per model, and its Context setting offers 200k or 1M, so a
+ * Claude Code session has at least 200,000 tokens. A harness not listed here
+ * can run a small local model, so it keeps `UNKNOWN_WINDOW`.
+ */
+export const HARNESS_MIN_WINDOW: Readonly<Record<string, number>> = {
+  claude: 200_000,
+};
+
+/**
+ * The window to budget a session's preamble for: the model's own when known
+ * (your setting under Settings, Models, then the harness catalog), else the
+ * harness's smallest, else the small local one.
+ */
+export function preambleWindow(
+  harness: string | undefined,
+  modelWindow: number | undefined,
+): number {
+  if (modelWindow && Number.isFinite(modelWindow) && modelWindow > 0)
+    return modelWindow;
+  return (harness && HARNESS_MIN_WINDOW[harness]) || UNKNOWN_WINDOW;
+}
+
+/**
  * The budget in characters for a model with this context window. An unknown
  * window is budgeted as the smallest one in use, so a local model is never
  * flooded because its window was not set.
@@ -92,16 +117,45 @@ export type BuiltPreamble = {
   hash: string;
 };
 
-function section(part: PreamblePart, text: string): string {
-  return `<${part.id}>\n${text}\n</${part.id}>`;
+/**
+ * How the parts are printed. "tagged" wraps each part in its id as a tag and
+ * is what the native channel and the receipts' hash use. "plain" prints a
+ * first-person heading per part, for the message channel, where the text
+ * sits in the user's own message and must not look like harness markup.
+ */
+export type PreambleStyle = "tagged" | "plain";
+
+/** Headings for the message channel, in the user's voice. */
+export const MESSAGE_HEADINGS: Record<PreamblePartId, string> = {
+  instructions: "My instructions",
+  "project-notes": "My notes for this project",
+  operator: "App access",
+  memory: "Project memory",
+  previews: "Preview server",
+};
+
+/** The operator part arrives wrapped in `<monocode_app>`; plain drops the tag. */
+const WRAPPED = /^<([a-z_]+)>\n([\s\S]*)\n<\/\1>$/;
+
+function section(
+  part: PreamblePart,
+  text: string,
+  style: PreambleStyle,
+): string {
+  if (style === "tagged") return `<${part.id}>\n${text}\n</${part.id}>`;
+  const body = text.trim().match(WRAPPED)?.[2] ?? text;
+  return `${MESSAGE_HEADINGS[part.id]}:\n${body}`;
 }
 
 function render(
   parts: Map<PreamblePartId, { part: PreamblePart; text: string }>,
+  style: PreambleStyle,
 ): string {
   return PRINT_ORDER.flatMap((id) => {
     const entry = parts.get(id);
-    return entry && entry.text.trim() ? [section(entry.part, entry.text)] : [];
+    return entry && entry.text.trim()
+      ? [section(entry.part, entry.text, style)]
+      : [];
   }).join("\n\n");
 }
 
@@ -123,6 +177,7 @@ export function preambleHash(text: string): string {
 export function buildPreamble(
   parts: readonly PreamblePart[],
   budget: number,
+  style: PreambleStyle = "tagged",
 ): BuiltPreamble {
   const kept = new Map<PreamblePartId, { part: PreamblePart; text: string }>();
   for (const part of parts) {
@@ -130,7 +185,7 @@ export function buildPreamble(
     if (text.trim()) kept.set(part.id, { part, text });
   }
   const omitted: PreambleOmission[] = [];
-  const fits = () => render(kept).length <= budget;
+  const fits = () => render(kept, style).length <= budget;
   for (const id of CUT_ORDER) {
     if (fits()) break;
     const entry = kept.get(id);
@@ -166,7 +221,7 @@ export function buildPreamble(
       ...(entry.part.lines ? { lines: entry.part.lines.length } : {}),
     });
   }
-  const text = render(kept);
+  const text = render(kept, style);
   return {
     text,
     chars: text.length,
@@ -178,14 +233,45 @@ export function buildPreamble(
   };
 }
 
-export const PREAMBLE_TAG = "monocode_session_context";
+/**
+ * Why the message channel carries the text this turn. "changed": the user
+ * edited it after this conversation got an earlier version. "current": the
+ * conversation has no version it can be sure of (a harness with no native
+ * channel, a failed launch file, a compaction, a new provider session, or
+ * "Send instructions again").
+ */
+export type MessageBlockKind = "changed" | "current";
+
+export const MESSAGE_NOTE_START =
+  "[Note from MonoCode, the app I run this chat in. It adds this on my behalf.]";
+export const MESSAGE_NOTE_END = "[End of note.]";
+
+const MESSAGE_LEAD: Record<MessageBlockKind, string> = {
+  changed:
+    "I changed my instructions for this chat in MonoCode. What follows replaces what I gave you earlier in this chat. Where the two differ, follow this version.",
+  current:
+    "These are my current instructions for this chat, set in MonoCode. They replace any earlier version you were given.",
+};
 
 /**
- * The message channel: a marked block the agent reads as MonoCode's, not the
- * user's. Every harness can take it.
+ * The message channel: a plain note in the user's voice, put in the user's
+ * message by the user's app. Finding 2.2: a block in made-up tags that said
+ * "the user did not type it" read as a prompt injection to Claude Sonnet 5,
+ * which kept the earlier instructions. So this has no tags that look like
+ * system or harness markup, says in the first person what changed, and is
+ * fenced from the user's own text by a first and a last line.
+ * `text` is the body built in the "plain" style.
  */
-export function preambleBlock(text: string): string {
-  return `<${PREAMBLE_TAG}>\nMonoCode adds this for the session; the user did not type it in this message. It holds the user's standing instructions and what MonoCode knows about this project. Follow it below the user's current request, and do not quote it back.\n\n${text}\n</${PREAMBLE_TAG}>`;
+export function preambleBlock(
+  text: string,
+  kind: MessageBlockKind = "current",
+): string {
+  return `${MESSAGE_NOTE_START}\n${MESSAGE_LEAD[kind]}\n\n${text}\n\n${MESSAGE_NOTE_END}`;
+}
+
+/** Characters the note adds around its body, so the whole fits the budget. */
+export function preambleBlockOverhead(kind: MessageBlockKind): number {
+  return preambleBlock("", kind).length;
 }
 
 /**

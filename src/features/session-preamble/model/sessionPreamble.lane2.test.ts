@@ -140,7 +140,9 @@ describe("F2: channel by capability", () => {
       project,
       commandFirst: false,
     });
-    expect(prepared.messageBlock).toContain("<monocode_session_context>");
+    expect(prepared.messageBlock).toContain(
+      "[Note from MonoCode, the app I run this chat in.",
+    );
     expect(prepared.developerInstructions).toBeUndefined();
     expect(prepared.preambleFile).toBeUndefined();
   });

@@ -117,7 +117,7 @@ describe("F2: building the preamble", () => {
 describe("F2: the message channel", () => {
   it("goes ahead of the message, after a slash command", () => {
     const block = preambleBlock("<instructions>\nx\n</instructions>");
-    expect(block).toContain("<monocode_session_context>");
+    expect(block).toContain("[Note from MonoCode, the app I run this chat in.");
     expect(withPreambleBlock("hello", block, false)).toBe(`${block}\n\nhello`);
     expect(withPreambleBlock("/compact", block, true)).toBe(
       `/compact\n\n${block}`,

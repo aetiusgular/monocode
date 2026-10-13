@@ -24,10 +24,17 @@ import {
   buildPreamble,
   nativePreambleText,
   preambleBlock,
+  preambleBlockOverhead,
   preambleBudget,
+  preambleWindow,
   type PreamblePart,
 } from "./preamble";
-import { forgetPreamble, preambleDue, recordPreamble } from "./receipts";
+import {
+  forgetPreamble,
+  preambleChanged,
+  preambleDue,
+  recordPreamble,
+} from "./receipts";
 
 /**
  * F2 for a regular session's turn: gather the parts, fit them to the model's
@@ -38,8 +45,9 @@ import { forgetPreamble, preambleDue, recordPreamble } from "./receipts";
  *   adapter applies it only when a new conversation starts, because Claude
  *   Code keeps the first system prompt on `--resume` and Codex ignores new
  *   developer instructions on a loaded thread.
- * - A marked block in the message, for every other harness and for every
- *   change after a conversation has started. A receipt per provider session
+ * - A plain note in the user's voice ahead of the message (`preambleBlock`),
+ *   for every other harness and for every change after a conversation has
+ *   started. Finding 2.2: it uses no system-like tags. A receipt per provider session
  *   means the text goes once, and again only when it changes, the provider
  *   session changes, or a compaction is seen.
  *
@@ -152,7 +160,9 @@ export async function prepareSessionPreamble(
   const { session } = request;
   noteCompactions(session.id, session.blocks);
   const parts = await gatherPreambleParts(request);
-  const budget = preambleBudget(modelBudgetWindow(session.model));
+  const budget = preambleBudget(
+    preambleWindow(session.harness, modelBudgetWindow(session.model)),
+  );
   const built = buildPreamble(parts, budget);
   const report = {
     chars: built.chars,
@@ -194,8 +204,35 @@ export async function prepareSessionPreamble(
   const byMessage = firstTurn
     ? !native
     : preambleDue(session.id, session.providerSessionId, built.hash);
+  // The message channel prints the parts as plain text in a note, fitted to
+  // the budget with the note's own lines counted. The receipt keeps the hash
+  // of the full text, so a change is seen the same way on every channel.
+  let messageBlock = "";
+  let sent = report;
+  if (byMessage) {
+    const kind = preambleChanged(
+      session.id,
+      session.providerSessionId,
+      built.hash,
+    )
+      ? "changed"
+      : "current";
+    const plain = buildPreamble(
+      parts,
+      Math.max(0, budget - preambleBlockOverhead(kind)),
+      "plain",
+    );
+    messageBlock = plain.text ? preambleBlock(plain.text, kind) : "";
+    sent = {
+      ...report,
+      chars: messageBlock.length,
+      included: plain.included,
+      omitted: plain.omitted,
+      overBudget: messageBlock.length > budget,
+    };
+  }
   reportPreamble(session.id, {
-    ...report,
+    ...sent,
     channel: byMessage
       ? "message"
       : firstTurn && native
@@ -203,7 +240,7 @@ export async function prepareSessionPreamble(
         : "unchanged",
   });
   return {
-    messageBlock: byMessage ? preambleBlock(built.text) : "",
+    messageBlock,
     ...(preambleFile ? { preambleFile } : {}),
     ...(developerInstructions ? { developerInstructions } : {}),
     commit: (provider) => recordPreamble(session.id, provider, built.hash),

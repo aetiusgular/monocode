@@ -115,3 +115,21 @@ export function forgetPreamble(sessionId: string): void {
 export function hasPreambleReceipt(sessionId: string): boolean {
   return sessionId in load();
 }
+
+/**
+ * Whether this provider session was already given another version of the
+ * text: the user changed it mid-conversation. False when there is no
+ * receipt, the receipt belongs to another provider session, or the text is
+ * the same.
+ */
+export function preambleChanged(
+  sessionId: string,
+  providerSessionId: string | undefined,
+  hash: string,
+): boolean {
+  const receipt = load()[sessionId];
+  if (!receipt || !providerSessionId) return false;
+  const sameSession =
+    receipt.provider == null || receipt.provider === providerSessionId;
+  return sameSession && receipt.hash !== hash;
+}
