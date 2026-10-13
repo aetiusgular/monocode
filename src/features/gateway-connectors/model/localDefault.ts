@@ -2,6 +2,12 @@ import { harnessCan } from "../../../integrations/harness/core/capabilities";
 import { sessionProviderLocality } from "../../model-setup/model/sessionProvider";
 import { modelTraits } from "../../model-traits/model/modelTraits";
 import type { Block, Session } from "../../sessions/model/session";
+import {
+  isRelayedCloudModel,
+  localityAccount,
+  reportedRouteLocality,
+} from "../../server-locality/model/reportedRoute";
+import { knownHarnessModelRoute } from "../../server-locality/model/sessionServers";
 
 /**
  * Gateway connectors on a local model (Mac test 1.3, the user's decision of
@@ -26,20 +32,37 @@ export type LocalDefaultSession = Pick<Session, "harness" | "model"> &
   Partial<
     Pick<
       Session,
-      "modelProvider" | "providerAccountId" | "gatewayOn" | "blocks"
+      | "modelProvider"
+      | "providerAccountId"
+      | "gatewayOn"
+      | "blocks"
+      | "cwd"
+      | "worktreeCwd"
     >
   >;
 
 /**
  * Whether a chat's model route is local, or small enough to count as local:
- * the chat's provider (or its Codex account's) on loopback, or, when that is
- * not known, a context window under 32k from Settings, Models or the catalog.
+ * the chat's provider (or its Codex account's) on loopback; when neither is
+ * set, the route the chat's own Codex reported from its home (a wrapper
+ * script home); when that is not known either, a context window under 32k
+ * from Settings, Models or the catalog. An Ollama cloud model (`-cloud`) is
+ * hosted.
  */
 export function localModelRoute(session: LocalDefaultSession): boolean {
   if (!harnessCan(session.harness, "modelProvider")) return false;
+  if (isRelayedCloudModel(session.model)) return false;
   const locality = sessionProviderLocality(session);
   if (locality === "local") return true;
   if (locality === "hosted") return false;
+  const reported = knownHarnessModelRoute(
+    session.harness,
+    localityAccount(session),
+    session.worktreeCwd || session.cwd || "",
+  );
+  const reportedLocality = reported ? reportedRouteLocality(reported) : null;
+  if (reportedLocality === "local") return true;
+  if (reportedLocality === "hosted") return false;
   const window = modelTraits(session.model).contextWindow;
   return window !== undefined && window < SMALL_CONTEXT_WINDOW;
 }
