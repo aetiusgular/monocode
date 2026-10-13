@@ -83,6 +83,14 @@ export type HarnessCapabilities = {
   research: boolean;
   /** Per-chat plugin switches. */
   pluginSwitches: boolean;
+  /**
+   * MonoCode puts the text of each `@path` file in the prompt, because the
+   * harness does not read `@path` itself (Mac finding 3.13). Claude Code
+   * resolves `@path` on its own; Codex 0.161.0 sends the bare text, so a
+   * model answered for a file it never saw. On only where that was seen: the
+   * other harnesses are unverified and keep sending the mention as written.
+   */
+  inlineFileMentions: boolean;
 };
 
 /** What a harness with no record gets: every baseline, no native upgrade. */
@@ -108,6 +116,7 @@ export const BASELINE: HarnessCapabilities = {
   skillSwitches: true,
   research: false,
   pluginSwitches: false,
+  inlineFileMentions: false,
 };
 
 const CAPABILITIES: Record<HarnessId, HarnessCapabilities> = {
@@ -164,6 +173,7 @@ const CAPABILITIES: Record<HarnessId, HarnessCapabilities> = {
     extraDirs: true,
     connectorSwitches: true,
     research: true,
+    inlineFileMentions: true,
   },
   cursor: { ...BASELINE, textPrompt: true },
   grok: { ...BASELINE, steer: false, compact: true, textPrompt: true },

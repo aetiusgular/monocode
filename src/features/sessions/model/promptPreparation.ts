@@ -1,4 +1,5 @@
 import { applyFileMentionsToTurn } from "../../files/model/fileMentions";
+import { inlineFileMentionsForTurn } from "../../files/model/inlineFileMentions";
 import { applyNotesToTurn } from "../../notes";
 import {
   applySkillsToTurn,
@@ -17,5 +18,7 @@ export async function preparePrompt(
     return nativeCommandPrompt(context.harness, text);
   const withFiles = await applyFileMentionsToTurn(text, context.cwd);
   const withNotes = await applyNotesToTurn(withFiles);
-  return applySkillsToTurn(withNotes, context);
+  const withSkills = await applySkillsToTurn(withNotes, context);
+  // A harness that does not read `@path` itself gets the file text (3.13).
+  return inlineFileMentionsForTurn(withSkills, text, context);
 }
