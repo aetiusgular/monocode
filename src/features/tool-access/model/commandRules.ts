@@ -5,7 +5,9 @@
  * A rule is kept in the chat's tool access under the key `Bash(<rule>)`, in
  * Claude Code's rule syntax:
  * - `npm test *` (or the older `npm test:*`): the command is `npm test` or
- *   starts with `npm test ` followed by more words.
+ *   starts with `npm test ` followed by more words. Each flag among those
+ *   words must be on a short list of safe flags for that prefix, and words
+ *   after `--` may not be flags (see `prefixPolicy`).
  * - anything else: that exact command, nothing more.
  *
  * Matching is literal and conservative. A command that chains, pipes or
@@ -140,6 +142,435 @@ export function isCommandRuleKey(key: unknown): key is string {
   return commandRuleFromKey(key) !== null;
 }
 
+/**
+ * The words of a command as the shell would pass them, quotes removed. Null
+ * when the shell could change the words before the program sees them: a
+ * `$` expansion (outside single quotes), a glob or brace pattern outside
+ * quotes (a file named `--output=x` would become a flag), a comment, or an
+ * unclosed quote. Such a command never matches a prefix rule.
+ */
+export function shellWords(command: string): string[] | null {
+  const words: string[] = [];
+  let word = "";
+  let inWord = false;
+  let i = 0;
+  const text = command.trim();
+  while (i < text.length) {
+    const c = text[i];
+    if (c === " " || c === "\t") {
+      if (inWord) words.push(word);
+      word = "";
+      inWord = false;
+      i++;
+      continue;
+    }
+    if (c === "'") {
+      const end = text.indexOf("'", i + 1);
+      if (end < 0) return null;
+      word += text.slice(i + 1, end);
+      inWord = true;
+      i = end + 1;
+      continue;
+    }
+    if (c === '"') {
+      i++;
+      let closed = false;
+      while (i < text.length) {
+        const d = text[i];
+        if (d === '"') {
+          closed = true;
+          i++;
+          break;
+        }
+        if (d === "$" || d === "`") return null;
+        if (d === "\\" && i + 1 < text.length) {
+          const next = text[i + 1];
+          if (next === "\n" || next === "\r") return null;
+          word += '$`"\\'.includes(next) ? next : d + next;
+          i += 2;
+          continue;
+        }
+        word += d;
+        i++;
+      }
+      if (!closed) return null;
+      inWord = true;
+      continue;
+    }
+    if (c === "\\") {
+      const next = text[i + 1];
+      if (next === undefined || next === "\n" || next === "\r") return null;
+      word += next;
+      inWord = true;
+      i += 2;
+      continue;
+    }
+    if ("$*?[]{}`".includes(c)) return null;
+    if (c === "#" && !inWord) return null;
+    word += c;
+    inWord = true;
+    i++;
+  }
+  if (inWord) words.push(word);
+  return words;
+}
+
+/**
+ * Flags that run a program, write a file, load config or change where a
+ * tool looks for code. They never pass a prefix rule, wherever they appear.
+ */
+const REFUSED_FLAGS = new Set([
+  // git
+  "--config-env",
+  "--open-files-in-pager",
+  "--output",
+  "--ext-diff",
+  "--textconv",
+  "--exec",
+  "--upload-pack",
+  "--exec-path",
+  // cargo
+  "--config",
+  // npm, pnpm, yarn
+  "--script-shell",
+  "--prefix",
+  "--userconfig",
+  "--globalconfig",
+  "--node-options",
+  // npx
+  "--package",
+  "--call",
+]);
+/**
+ * Short flags refused alone or with a value glued on (`-O'sh -c id'`), by
+ * tool. Git's own `-c` goes before the subcommand, so it never follows a
+ * git prefix; `git grep -c` is the count flag.
+ */
+const REFUSED_SHORT: Record<string, RegExp> = {
+  git: /^-O/,
+  cargo: /^-Z/,
+  npx: /^-[pc]/,
+};
+
+/** What may follow a prefix MonoCode keeps a rule for. */
+type PrefixPolicy = {
+  /** Flags allowed after the prefix, by name (the part before `=`). */
+  flags: ReadonlySet<string>;
+  /** Short flags that may carry a value glued on, by their two letters. */
+  shortWithValue?: ReadonlySet<string>;
+  /** `git log -5`. */
+  countFlag?: boolean;
+  /**
+   * Words that are not flags: allowed anywhere, never, or only once one of
+   * the listed flags came first (`git branch --list x`).
+   */
+  positional: "any" | "none" | { after: ReadonlySet<string> };
+};
+
+const set = (...items: string[]) => new Set(items);
+
+/** Git subcommands that read the repository and run no hook or alias. */
+const GIT: Record<string, PrefixPolicy> = {
+  status: {
+    flags: set(
+      "-s",
+      "--short",
+      "-b",
+      "--branch",
+      "--porcelain",
+      "--long",
+      "-v",
+      "--ignored",
+    ),
+    positional: "any",
+  },
+  diff: {
+    flags: set(
+      "--stat",
+      "--name-only",
+      "--name-status",
+      "--cached",
+      "--staged",
+      "--shortstat",
+      "--numstat",
+      "-w",
+      "--ignore-all-space",
+      "--no-color",
+      "--no-ext-diff",
+      "--no-textconv",
+      "-p",
+      "--patch",
+      "--minimal",
+      "--word-diff",
+      "--unified",
+    ),
+    positional: "any",
+  },
+  log: {
+    flags: set(
+      "--oneline",
+      "-n",
+      "--max-count",
+      "--stat",
+      "--graph",
+      "--decorate",
+      "--all",
+      "-p",
+      "--patch",
+      "--name-only",
+      "--name-status",
+      "--format",
+      "--pretty",
+      "--abbrev-commit",
+      "--no-merges",
+      "--reverse",
+      "--since",
+      "--until",
+      "--author",
+      "--follow",
+      "--no-color",
+      "--no-ext-diff",
+    ),
+    countFlag: true,
+    positional: "any",
+  },
+  show: {
+    flags: set(
+      "--stat",
+      "--name-only",
+      "--name-status",
+      "--oneline",
+      "-p",
+      "--patch",
+      "--format",
+      "--pretty",
+      "--no-patch",
+      "-s",
+      "--no-color",
+      "--abbrev-commit",
+      "--no-ext-diff",
+    ),
+    positional: "any",
+  },
+  grep: {
+    flags: set(
+      "-n",
+      "-i",
+      "-l",
+      "-w",
+      "-e",
+      "-E",
+      "-F",
+      "-c",
+      "--count",
+      "--name-only",
+      "-h",
+      "-H",
+      "--line-number",
+      "--ignore-case",
+    ),
+    positional: "any",
+  },
+  branch: {
+    flags: set(
+      "-a",
+      "--all",
+      "-r",
+      "--remotes",
+      "-v",
+      "-vv",
+      "--list",
+      "-l",
+      "--show-current",
+      "--merged",
+      "--no-merged",
+      "--contains",
+      "--no-color",
+    ),
+    // `git branch x` makes a branch; `git branch --list x` only lists.
+    positional: { after: set("--list", "-l") },
+  },
+  blame: {
+    flags: set(
+      "-L",
+      "-w",
+      "-M",
+      "-C",
+      "-e",
+      "-s",
+      "--porcelain",
+      "--line-porcelain",
+      "-l",
+      "--show-email",
+    ),
+    positional: "any",
+  },
+  "ls-files": {
+    flags: set(
+      "-m",
+      "-o",
+      "-d",
+      "--cached",
+      "--modified",
+      "--others",
+      "--deleted",
+      "--exclude-standard",
+      "-s",
+      "--stage",
+      "-z",
+      "--full-name",
+    ),
+    positional: "any",
+  },
+  "rev-parse": {
+    flags: set(
+      "--show-toplevel",
+      "--abbrev-ref",
+      "--short",
+      "--verify",
+      "--git-dir",
+      "--is-inside-work-tree",
+      "--show-prefix",
+      "--symbolic-full-name",
+      "-q",
+      "--quiet",
+    ),
+    positional: "any",
+  },
+};
+
+/** `npm test`, `pnpm lint`, `yarn run build x`: the script's own words follow. */
+const PACKAGE_SCRIPT: PrefixPolicy = {
+  flags: set("--silent", "-s", "--if-present"),
+  positional: "any",
+};
+const PACKAGE_MANAGERS = set("npm", "pnpm", "yarn");
+const PACKAGE_SUBCOMMANDS = set("test", "lint", "build");
+
+const CARGO_BUILD: PrefixPolicy = {
+  flags: set(
+    "--release",
+    "-q",
+    "--quiet",
+    "--workspace",
+    "--lib",
+    "--bins",
+    "--tests",
+    "--all-targets",
+    "--no-fail-fast",
+    "--offline",
+    "--locked",
+    "-v",
+  ),
+  positional: "any",
+};
+const CARGO: Record<string, PrefixPolicy> = {
+  test: CARGO_BUILD,
+  build: CARGO_BUILD,
+  check: CARGO_BUILD,
+  clippy: CARGO_BUILD,
+  fmt: { flags: set("--check", "--all", "-q", "--quiet"), positional: "none" },
+};
+
+const PYTEST: PrefixPolicy = {
+  flags: set(
+    "-q",
+    "--quiet",
+    "-v",
+    "-vv",
+    "--verbose",
+    "-x",
+    "--exitfirst",
+    "-s",
+    "-k",
+    "-m",
+    "--lf",
+    "--ff",
+    "--tb",
+    "--maxfail",
+    "-l",
+    "--no-header",
+  ),
+  positional: "any",
+};
+
+/** A script name: no flag, no path, nothing the shell would read. */
+const SCRIPT_NAME = /^[A-Za-z0-9][A-Za-z0-9_.:-]*$/;
+
+/**
+ * What may follow a prefix, or null when MonoCode keeps no prefix rule for
+ * it. An allowlist: a git subcommand that reads the repository, a package
+ * manager's test, lint, build or one named script, a cargo build step, or
+ * pytest.
+ */
+function prefixPolicy(words: readonly string[]): PrefixPolicy | null {
+  const [tool, sub, third] = words;
+  if (words.length === 2 && tool === "git") {
+    return Object.prototype.hasOwnProperty.call(GIT, sub) ? GIT[sub] : null;
+  }
+  if (PACKAGE_MANAGERS.has(tool)) {
+    if (words.length === 2 && PACKAGE_SUBCOMMANDS.has(sub))
+      return PACKAGE_SCRIPT;
+    if (words.length === 3 && sub === "run" && SCRIPT_NAME.test(third)) {
+      return PACKAGE_SCRIPT;
+    }
+    return null;
+  }
+  if (words.length === 2 && tool === "cargo") {
+    return Object.prototype.hasOwnProperty.call(CARGO, sub) ? CARGO[sub] : null;
+  }
+  if (words.length === 1 && tool === "pytest") return PYTEST;
+  if (
+    words.length === 3 &&
+    /^python(3(\.\d+)?)?$/.test(tool) &&
+    sub === "-m" &&
+    third === "pytest"
+  ) {
+    return PYTEST;
+  }
+  return null;
+}
+
+/** Whether the words after a prefix stay inside what its policy allows. */
+function restAllowed(
+  tool: string,
+  policy: PrefixPolicy,
+  rest: readonly string[],
+): boolean {
+  const refusedShort = Object.prototype.hasOwnProperty.call(REFUSED_SHORT, tool)
+    ? REFUSED_SHORT[tool]
+    : null;
+  let afterSeparator = false;
+  const seen = new Set<string>();
+  for (const word of rest) {
+    if (afterSeparator) {
+      // Words after `--` go to the program the tool runs: no flags there.
+      if (word.startsWith("-")) return false;
+      continue;
+    }
+    if (word === "--") {
+      afterSeparator = true;
+      continue;
+    }
+    if (word.startsWith("-")) {
+      const name = word.startsWith("--") ? word.split("=")[0] : word;
+      if (REFUSED_FLAGS.has(name) || refusedShort?.test(word)) return false;
+      if (policy.countFlag && /^-\d+$/.test(word)) continue;
+      if (!policy.flags.has(name)) return false;
+      seen.add(name);
+      continue;
+    }
+    if (policy.positional === "none") return false;
+    if (
+      policy.positional !== "any" &&
+      ![...policy.positional.after].some((flag) => seen.has(flag))
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /** Whether a command is covered by a rule. */
 export function commandMatchesRule(
   command: unknown,
@@ -147,21 +578,20 @@ export function commandMatchesRule(
 ): boolean {
   if (typeof command !== "string" || CONTROL.test(command)) return false;
   if (rule.kind === "exact") return command.trim() === rule.command;
-  const text = squash(command);
-  if (!text || isCompoundCommand(command)) return false;
-  return text === rule.prefix || text.startsWith(`${rule.prefix} `);
+  if (isCompoundCommand(command)) return false;
+  const prefix = rule.prefix.split(" ");
+  const policy = prefixPolicy(prefix);
+  if (!policy) return false;
+  const words = shellWords(command);
+  if (!words || words.length < prefix.length) return false;
+  if (prefix.some((word, i) => words[i] !== word)) return false;
+  return restAllowed(prefix[0], policy, words.slice(prefix.length));
 }
 
-/** Tools whose first word alone says too little: their subcommand counts. */
-const MULTI_WORD = new Set(["npm", "pnpm", "yarn", "git", "cargo", "npx"]);
-/** A script runner whose next word is the script: `npm run build`. */
-const RUNS_SCRIPT = new Set(["run", "run-script", "exec"]);
-
 /**
- * A rule for a command when Claude Code suggested none. Conservative: a
- * prefix only for a known multi-word tool with a plain subcommand
- * (`npm test`, `git status`, `cargo build`, `npm run build`,
- * `python -m pytest`). Anything else, and any command that chains, gets an
+ * A rule for a command when Claude Code suggested none. A prefix only where
+ * MonoCode keeps one (see `prefixPolicy`) and only when that prefix covers
+ * this very command; anything else, and any command that chains, gets an
  * exact rule for that command only.
  */
 export function deriveCommandRule(command: unknown): CommandRule | null {
@@ -171,27 +601,16 @@ export function deriveCommandRule(command: unknown): CommandRule | null {
   );
   if (!exact || exact.kind !== "exact") return null;
   if (isCompoundCommand(command)) return exact;
-  const words = squash(exact.command).split(" ");
-  const word = (i: number) => words[i] ?? "";
-  const plain = (w: string) => /^[A-Za-z0-9][A-Za-z0-9_.:@/-]*$/.test(w);
-  const tool = word(0);
-  let prefix: string[] | null = null;
-  if (MULTI_WORD.has(tool) && plain(word(1))) {
-    prefix =
-      RUNS_SCRIPT.has(word(1)) && tool !== "git"
-        ? plain(word(2))
-          ? words.slice(0, 3)
-          : null
-        : words.slice(0, 2);
-  } else if (
-    /^python(3(\.\d+)?)?$/.test(tool) &&
-    word(1) === "-m" &&
-    plain(word(2))
-  ) {
-    prefix = words.slice(0, 3);
+  const words = shellWords(command);
+  if (!words) return exact;
+  for (const length of [3, 2, 1]) {
+    if (words.length < length) continue;
+    const head = words.slice(0, length);
+    if (!prefixPolicy(head)) continue;
+    const rule = parseCommandRule(`${head.join(" ")} *`);
+    return rule && commandMatchesRule(command, rule) ? rule : exact;
   }
-  if (!prefix) return exact;
-  return parseCommandRule(`${prefix.join(" ")} *`) ?? exact;
+  return exact;
 }
 
 /**

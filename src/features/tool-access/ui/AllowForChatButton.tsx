@@ -32,6 +32,14 @@ const CODEX_COMMAND_TITLE =
 export function allowForChatPlan(approval: NonNullable<Block["approval"]>): {
   keep: NonNullable<Block["approval"]>["tool"] | null;
   title: string;
+  /**
+   * The command prefix the button itself names ("Allow `git grep` in this
+   * chat"), so the rule is visible without the tooltip. Absent for any
+   * other plan.
+   */
+  prefix?: string;
+  /** True when the rule is this exact command only. */
+  exact?: boolean;
 } | null {
   const tool = approval.tool;
   if (!tool || approval.network) return null;
@@ -45,6 +53,7 @@ export function allowForChatPlan(approval: NonNullable<Block["approval"]>): {
     return {
       keep: approval.chatRule,
       title: `Allow ${what} in this chat, also after a restart. Any other command still asks.`,
+      ...(rule.kind === "prefix" ? { prefix: rule.prefix } : { exact: true }),
     };
   }
   if (tool.key === CODEX_COMMAND_TOOL) {
@@ -88,7 +97,15 @@ export function AllowForChatButton({
         onApproval(approval.requestId, "allow", FOR_CHAT_OPTIONS);
       }}
     >
-      Allow for this chat
+      {plan.prefix ? (
+        <>
+          Allow <code className="font-mono">{plan.prefix}</code> in this chat
+        </>
+      ) : plan.exact ? (
+        "Allow this exact command in this chat"
+      ) : (
+        "Allow for this chat"
+      )}
     </button>
   );
 }

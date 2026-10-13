@@ -71,7 +71,9 @@ describe("command rules (11.T2.2)", () => {
   it("matches a prefix on whole words only", () => {
     const rule = prefix("npm test");
     expect(commandMatchesRule("npm test", rule)).toBe(true);
-    expect(commandMatchesRule("npm test -- --watch", rule)).toBe(true);
+    // Security fix F1: flags after `--` go to the test runner and ask.
+    expect(commandMatchesRule("npm test -- --watch", rule)).toBe(false);
+    expect(commandMatchesRule("npm test -- src", rule)).toBe(true);
     expect(commandMatchesRule("  npm   test  src", rule)).toBe(true);
     expect(commandMatchesRule("npm install", rule)).toBe(false);
     expect(commandMatchesRule("npm testing", rule)).toBe(false);
@@ -109,13 +111,24 @@ describe("command rules (11.T2.2)", () => {
   });
 
   it("derives a conservative rule when Claude Code suggests none", () => {
-    expect(deriveCommandRule("npm test -- --watch")).toEqual({
+    expect(deriveCommandRule("npm test -- src")).toEqual({
       kind: "prefix",
       prefix: "npm test",
     });
-    expect(deriveCommandRule("npm run build --prod")).toEqual({
+    // Security fix F1: a prefix that would not cover the command itself is
+    // not kept; the command gets an exact rule.
+    expect(deriveCommandRule("npm test -- --watch")).toEqual({
+      kind: "exact",
+      command: "npm test -- --watch",
+    });
+    expect(deriveCommandRule("npm run build --silent")).toEqual({
       kind: "prefix",
       prefix: "npm run build",
+    });
+    // Security fix F1: an unknown flag gets an exact rule.
+    expect(deriveCommandRule("npm run build --prod")).toEqual({
+      kind: "exact",
+      command: "npm run build --prod",
     });
     expect(deriveCommandRule("git status")).toEqual({
       kind: "prefix",

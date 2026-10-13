@@ -174,7 +174,8 @@ describe("Claude Code command rules for one chat", () => {
 
   it("answers a matching command by rule; anything else still asks", async () => {
     const { events, turn } = await startTurn({ always: ["Bash(npm test *)"] });
-    askBash("r1", "npm test -- --watch=false");
+    // Security fix F1: words after `--` pass only when none is a flag.
+    askBash("r1", "npm test -- src/a.test.ts");
     expect(await answer("r1")).toMatchObject({ behavior: "allow" });
     expect(cards(events)).toHaveLength(0);
     // `npm install` is not covered.

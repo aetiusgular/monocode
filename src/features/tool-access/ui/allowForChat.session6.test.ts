@@ -69,7 +69,9 @@ describe("Allow for this chat on a command card (11.T2.2)", () => {
       createElement(AllowForChatButton, { approval: BASH_CARD, onApproval }),
       rules,
     );
-    expect(button()?.textContent).toBe("Allow for this chat");
+    // Security fix F1: the button names the rule it keeps.
+    expect(button()?.textContent).toBe("Allow npm test in this chat");
+    expect(button()?.querySelector("code")?.textContent).toBe("npm test");
     expect(button()?.title).toBe(
       'Allow commands that start with "npm test" in this chat, also after a restart. Any other command still asks.',
     );
