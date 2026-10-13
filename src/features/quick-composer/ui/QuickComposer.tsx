@@ -55,6 +55,10 @@ import { QuickModelSelector } from "./QuickModelSelector";
 import { QuickPermissionIcon, QuickPermissions } from "./QuickPermissions";
 import { useQuickPickerMotion } from "./useQuickPickerMotion";
 import { VoiceInputButton } from "../../voice-input/ui/VoiceInputButton";
+import {
+  refreshVoiceStatus,
+  voiceSupported,
+} from "../../voice-input/model/voiceStatus";
 import { OPERATOR_COMMAND } from "../../sessions/model/operatorCommand";
 import { ORCHESTRATOR_COMMAND } from "../../sessions/model/orchestratorCommand";
 import { PLAN_COMMAND } from "../../sessions/model/plan";
@@ -75,6 +79,7 @@ import {
   filterQuickProjects,
   initialQuickChoice,
   initialQuickProject,
+  installedQuickChoice,
   loadQuickProjects,
   QUICK_COMPOSER_CATALOG_EVENT,
   QUICK_COMPOSER_CATALOG_REQUEST_EVENT,
@@ -178,6 +183,8 @@ export function QuickComposer({ onShown }: { onShown: () => void }) {
   const [availableHarnesses, setAvailableHarnesses] = useState<
     HarnessId[] | null
   >(null);
+  // Read by the show listener, which is registered once.
+  const availableRef = useRef<HarnessId[] | null>(null);
   const [cwd, setCwd] = useState(() => initialQuickProject(projects));
   const [choice, setChoice] = useState(initialQuickChoice);
   const [workspaceChoice, setWorkspaceChoice] = useState<QuickWorkspace>({
@@ -236,7 +243,10 @@ export function QuickComposer({ onShown }: { onShown: () => void }) {
     void listen(QUICK_COMPOSER_SHOWN_EVENT, () => {
       onShown();
       const nextProjects = loadQuickProjects();
-      const nextChoice = initialQuickChoice();
+      const nextChoice = initialQuickChoice(availableRef.current);
+      // The panel is built ahead of time, so whisper-cli or the model may
+      // have been installed since it first asked. Ask again on every show.
+      if (voiceSupported()) void refreshVoiceStatus();
       setProjects(nextProjects);
       setProjectAppearance(loadQuickProjectAppearance());
 
@@ -269,7 +279,11 @@ export function QuickComposer({ onShown }: { onShown: () => void }) {
     let unlisten: (() => void) | undefined;
     void listen(QUICK_COMPOSER_CATALOG_EVENT, (event) => {
       const available = applyQuickCatalog(event.payload);
-      if (available) setAvailableHarnesses(available);
+      if (!available) return;
+      availableRef.current = available;
+      setAvailableHarnesses(available);
+      // Never sit on a provider whose CLI was not found.
+      setChoice((current) => installedQuickChoice(current, available));
     }).then((stop) => {
       if (disposed) {
         stop();

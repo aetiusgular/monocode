@@ -15,6 +15,9 @@ import {
 import {
   defaultSessionChoice,
   hasLiveCatalog,
+  isPickerProviderVisible,
+  loadRecentModelChoices,
+  preferredModelId,
   modelsFor,
   resolveModel,
   setHarnessModels,
@@ -273,9 +276,33 @@ export function initialQuickProject(projects: string[]): string | null {
   return projects[0] ?? null;
 }
 
-/** Use the Providers default, not a separate last-used quick-composer model. */
-export function initialQuickChoice(): QuickChoice {
-  return defaultSessionChoice();
+/**
+ * Use the Providers default, not a separate last-used quick-composer model.
+ * The panel is its own webview and never probes the CLIs, so `available` is
+ * the installed list a workspace window sent. Once it is known, a harness
+ * whose CLI was not found is never the default: the most recent installed
+ * choice wins, else the first installed provider in picker order.
+ */
+export function initialQuickChoice(
+  available?: readonly HarnessId[] | null,
+): QuickChoice {
+  const base = defaultSessionChoice();
+  if (!available) return base;
+  return installedQuickChoice(base, available);
+}
+
+/** `choice` when its harness is installed, else an installed fallback. */
+export function installedQuickChoice(
+  choice: QuickChoice,
+  available: readonly HarnessId[],
+): QuickChoice {
+  const usable = (id: HarnessId) =>
+    available.includes(id) && isPickerProviderVisible(id);
+  if (usable(choice.harness)) return choice;
+  const recent = loadRecentModelChoices().find((item) => usable(item.harness));
+  if (recent) return { harness: recent.harness, model: recent.model };
+  const first = HARNESSES.find(usable);
+  return first ? { harness: first, model: preferredModelId(first) } : choice;
 }
 
 /** Keep the requested provider/model intact while its live catalog loads. */
