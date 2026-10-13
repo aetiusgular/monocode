@@ -211,6 +211,95 @@ pub(crate) fn list_in(root: &Path, cwd: &str) -> Result<Vec<ClaudeSessionRow>, S
     Ok(rows)
 }
 
+/// Bytes read from the end of a transcript to find its last entry.
+const TAIL_BYTES: u64 = 4 * 1024 * 1024;
+
+/// The uuid of the last message or tool result on the main chain of one
+/// Claude Code conversation, read from the end of its transcript file. A
+/// prompt sent after a `--resume` follows that entry, so it is where a chat
+/// rewind cuts back to (1.6). None when there is no such file, the entry is
+/// not in the last 4 MB, or a compaction came after it.
+#[tauri::command]
+pub async fn claude_session_last_entry(
+    app: AppHandle,
+    cwd: String,
+    session_id: String,
+    account_id: Option<String>,
+) -> Result<Option<String>, String> {
+    check_cwd(&cwd)?;
+    if !is_session_id(&session_id) {
+        return Err("Invalid Claude Code session id".into());
+    }
+    let root = config_dir(&app, account_id.as_deref())?.join("projects");
+    tauri::async_runtime::spawn_blocking(move || Ok(last_entry_in(&root, &cwd, &session_id)))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+pub(crate) fn last_entry_in(root: &Path, cwd: &str, session_id: &str) -> Option<String> {
+    if !is_session_id(session_id) {
+        return None;
+    }
+    let name = format!("{session_id}.jsonl");
+    for dir in project_dirs(root, cwd) {
+        let path = dir.join(&name);
+        let Ok(meta) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.file_type().is_file() {
+            continue;
+        }
+        return read_tail(&path, meta.len()).and_then(|tail| last_entry_from(&tail));
+    }
+    None
+}
+
+fn read_tail(path: &Path, len: u64) -> Option<String> {
+    use std::io::{Seek, SeekFrom};
+    let mut file = fs::File::open(path).ok()?;
+    let start = len.saturating_sub(TAIL_BYTES);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::new();
+    file.take(TAIL_BYTES).read_to_end(&mut bytes).ok()?;
+    // A line cut by the start of the window is dropped.
+    if start > 0 {
+        let first = bytes.iter().position(|byte| *byte == b'\n')?;
+        bytes.drain(..=first);
+    }
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Same rule as the live stream: user and assistant entries off the side
+/// chains count, and a compaction forgets the entries before it.
+pub(crate) fn last_entry_from(tail: &str) -> Option<String> {
+    let mut last: Option<String> = None;
+    for raw in tail.lines() {
+        let Ok(line) = serde_json::from_str::<Value>(raw) else {
+            continue;
+        };
+        let kind = line.get("type").and_then(Value::as_str);
+        if kind == Some("system")
+            && line.get("subtype").and_then(Value::as_str) == Some("compact_boundary")
+        {
+            last = None;
+            continue;
+        }
+        if kind != Some("user") && kind != Some("assistant") {
+            continue;
+        }
+        if line.get("isSidechain").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        let Some(uuid) = line.get("uuid").and_then(Value::as_str) else {
+            continue;
+        };
+        if is_session_id(uuid) {
+            last = Some(uuid.to_string());
+        }
+    }
+    last
+}
+
 fn read_head(path: &Path) -> Option<String> {
     let file = fs::File::open(path).ok()?;
     let mut bytes = Vec::new();
@@ -556,5 +645,84 @@ mod tests {
         let rows = list_in(&root, cwd).unwrap();
         assert_eq!(rows[0].title, "first");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    fn entry(kind: &str, uuid: &str, sidechain: bool) -> String {
+        serde_json::json!({
+            "type": kind,
+            "uuid": uuid,
+            "isSidechain": sidechain,
+            "message": { "role": kind, "content": "x" },
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn finds_the_last_main_chain_entry() {
+        let root = scratch();
+        let cwd = "/Users/tony/my proj";
+        let dir = root.join(project_folder_name(cwd));
+        write(
+            &dir.join("sess-1.jsonl"),
+            &[
+                entry("user", "u-1", false),
+                entry("assistant", "a-1", false),
+                entry("assistant", "side-1", true),
+                serde_json::json!({"type": "summary", "summary": "s"}).to_string(),
+                "not json".to_string(),
+            ],
+        );
+        assert_eq!(last_entry_in(&root, cwd, "sess-1").as_deref(), Some("a-1"));
+        assert_eq!(last_entry_in(&root, cwd, "missing"), None);
+        assert_eq!(last_entry_in(&root, cwd, "../sess-1"), None);
+        assert_eq!(last_entry_in(&root, "/other", "sess-1"), None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_compaction_forgets_the_entries_before_it() {
+        let tail = [
+            entry("assistant", "a-1", false),
+            serde_json::json!({"type": "system", "subtype": "compact_boundary"}).to_string(),
+        ]
+        .join("\n");
+        assert_eq!(last_entry_from(&tail), None);
+        let after = format!("{tail}\n{}", entry("assistant", "a-2", false));
+        assert_eq!(last_entry_from(&after).as_deref(), Some("a-2"));
+    }
+
+    #[test]
+    fn refuses_a_uuid_that_is_not_an_id() {
+        assert_eq!(last_entry_from(&entry("user", "-c x", false)), None);
+        assert_eq!(last_entry_from(&entry("user", "a b", false)), None);
+    }
+
+    #[test]
+    fn reads_only_the_tail_of_a_long_transcript() {
+        let root = scratch();
+        let cwd = "/p";
+        let dir = root.join(project_folder_name(cwd));
+        let big = "x".repeat(TAIL_BYTES as usize);
+        write(
+            &dir.join("s.jsonl"),
+            &[entry("user", &big, false), entry("assistant", "a-9", false)],
+        );
+        assert_eq!(last_entry_in(&root, cwd, "s").as_deref(), Some("a-9"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_a_transcript_reached_through_a_symlink() {
+        let root = scratch();
+        let cwd = "/p";
+        let dir = root.join(project_folder_name(cwd));
+        let outside = scratch();
+        write(&outside.join("leak.jsonl"), &[entry("user", "u-1", false)]);
+        fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink(outside.join("leak.jsonl"), dir.join("s.jsonl")).unwrap();
+        assert_eq!(last_entry_in(&root, cwd, "s"), None);
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
     }
 }

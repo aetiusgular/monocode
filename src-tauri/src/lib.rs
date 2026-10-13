@@ -661,6 +661,7 @@ pub fn run() {
             checkpoint::session_checkpoint_restore_preview,
             checkpoint::session_checkpoint_restore_turn,
             claude_sessions::claude_sessions_list,
+            claude_sessions::claude_session_last_entry,
             // [lane-2] commands
             project_context::project_context_read,
             project_context::project_context_save,

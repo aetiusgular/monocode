@@ -82,6 +82,7 @@ import {
   type ClaudeControlRequest,
 } from "./claudeProtocol";
 import { existingDirs } from "../../core/existingDirs";
+import { readClaudeLastEntry } from "./claudeLastEntry";
 import { toolRules, type ToolRules } from "../../core/toolRules";
 import { noteReportedMcpServers } from "../../../../features/session-tools/model/reportedMcpServers";
 import { keepToolResultImages } from "../../../../features/tool-images/data/toolImageStore";
@@ -748,6 +749,29 @@ async function ensureLive(
     claudeSessionId
   ) {
     lastEntryByThread.delete(input.sessionId);
+  }
+  // A conversation resumed after an app restart has streamed nothing in this
+  // run, so its next prompt had no place to be cut back to and could not be
+  // rewound (1.6). Its transcript's last entry is that place. Not for a cut
+  // or a fork: a cut sets its own entry, and a fork's copy gets new ids.
+  if (
+    canResume &&
+    !resumeAt &&
+    !lastEntryByThread.has(input.sessionId) &&
+    forkByThread_l1.get(input.sessionId) !== claudeSessionId
+  ) {
+    const uuid = await readClaudeLastEntry({
+      cwd: input.cwd,
+      sessionId: claudeSessionId,
+      providerAccountId: input.providerAccountId,
+    });
+    if (uuid && !lastEntryByThread.has(input.sessionId)) {
+      lastEntryByThread.set(input.sessionId, {
+        providerSessionId: claudeSessionId,
+        uuid,
+        claimed: false,
+      });
+    }
   }
 
   const live: Live = {
