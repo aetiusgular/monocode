@@ -27,6 +27,31 @@ function firstRangeRect(range: Range): DOMRect | null {
   return rect.width > 0 || rect.height > 0 ? rect : null;
 }
 
+/**
+ * The part of a selection that lies in one reply. A triple-click selects a
+ * whole paragraph and WebKit ends that range at the start of whatever comes
+ * after it, often outside the reply, so the two ends named different places
+ * and no menu appeared (Mac 2.8). When everything past the reply holds no
+ * text, the range is cut back to the reply's end.
+ */
+export function rangeWithinOneResponse(range: Range, root: HTMLElement): Range {
+  const start = range.startContainer;
+  const element = start instanceof Element ? start : start.parentElement;
+  const response = element?.closest<HTMLElement>(
+    `[${SELECTABLE_AGENT_RESPONSE_ATTR}]`,
+  );
+  if (!response || !root.contains(response)) return range;
+  if (response.contains(range.endContainer)) return range;
+  const doc = response.ownerDocument;
+  const tail = doc.createRange();
+  tail.setStart(response, response.childNodes.length);
+  tail.setEnd(range.endContainer, range.endOffset);
+  if (tail.toString().trim() !== "") return range;
+  const inner = range.cloneRange();
+  inner.setEnd(response, response.childNodes.length);
+  return inner;
+}
+
 export function useTranscriptSelection(
   root: HTMLElement | null,
   enabled: boolean,
@@ -59,13 +84,14 @@ export function useTranscriptSelection(
         setSelection(null);
         return;
       }
+      const range = rangeWithinOneResponse(nativeSelection.getRangeAt(0), root);
       const text = validateTranscriptSelection({
-        text: nativeSelection.toString(),
-        collapsed: nativeSelection.isCollapsed,
-        anchorResponseId: responseIdForNode(nativeSelection.anchorNode, root),
-        focusResponseId: responseIdForNode(nativeSelection.focusNode, root),
+        text: range.toString(),
+        collapsed: range.collapsed,
+        anchorResponseId: responseIdForNode(range.startContainer, root),
+        focusResponseId: responseIdForNode(range.endContainer, root),
       });
-      const rect = text ? firstRangeRect(nativeSelection.getRangeAt(0)) : null;
+      const rect = text ? firstRangeRect(range) : null;
       setSelection(text && rect ? { text, rect } : null);
     };
     const scheduleReport = () => {

@@ -171,6 +171,7 @@ import type { TurnRewind as TurnRewind_l1 } from "../../rewind/model/turnRewind"
 import { TurnRewindMenu as TurnRewindMenu_l1 } from "../../rewind/ui/TurnRewindMenu";
 // [lane-2] imports
 import { rememberText as rememberText_l2 } from "../../project-memory/model/remember";
+import { rememberedNotice as rememberedNotice_s6 } from "../../project-memory/model/remember";
 // [lane-3] imports
 import {
   useRowOpen as useRowOpen_s6,
@@ -459,7 +460,10 @@ function AgentTranscriptComponent({
   }
   const { selection, dismissSelection } = useTranscriptSelection(
     scrollerEl,
-    onAddToChat !== undefined || onSaveSelectionNote !== undefined,
+    onAddToChat !== undefined ||
+      onSaveSelectionNote !== undefined ||
+      // "Remember this" alone also needs the menu (Mac 2.8).
+      !(agentName || !cwd || cwd === "~" || !harness),
   );
   const transcriptLayout = useTranscriptLayout();
   const promptAnchor = useTranscriptAnchor() && !bottomAligned;
@@ -1073,6 +1077,26 @@ function AgentTranscriptComponent({
 
   // [lane-1] body
   // [lane-2] body
+  const [rememberNotice_s6, setRememberNotice_s6] = useState<string | null>(
+    null,
+  );
+  const rememberNoticeTimer_s6 = useRef<number | null>(null);
+  const showRememberNotice_s6 = useCallback((text: string) => {
+    setRememberNotice_s6(text);
+    if (rememberNoticeTimer_s6.current != null)
+      window.clearTimeout(rememberNoticeTimer_s6.current);
+    rememberNoticeTimer_s6.current = window.setTimeout(() => {
+      rememberNoticeTimer_s6.current = null;
+      setRememberNotice_s6(null);
+    }, 2500);
+  }, []);
+  useEffect(
+    () => () => {
+      if (rememberNoticeTimer_s6.current != null)
+        window.clearTimeout(rememberNoticeTimer_s6.current);
+    },
+    [],
+  );
   // #36: "Remember this" on a selection or a reply. Monos keep their own
   // memory, so their transcripts do not offer it.
   const onRemember_l2 = useMemo(
@@ -1080,9 +1104,15 @@ function AgentTranscriptComponent({
       agentName || !cwd || cwd === "~" || !harness
         ? undefined
         : async (text: string) => {
-            await rememberText_l2(cwd, text, { harness, model });
+            const result = await rememberText_l2(cwd, text, {
+              harness,
+              model,
+            });
+            // Confirm in the transcript, as Save as note does (Mac 2.8).
+            playCue("copy");
+            showRememberNotice_s6(rememberedNotice_s6(cwd, result));
           },
-    [agentName, cwd, harness, model],
+    [agentName, cwd, harness, model, showRememberNotice_s6],
   );
   // [lane-3] body
   const transcriptDetail_l3 = useTranscriptDetail_l3();
@@ -1712,6 +1742,23 @@ function AgentTranscriptComponent({
           onDismiss={dismissSelection}
         />
       ) : null}
+      {rememberNotice_s6 ? (
+        <RememberNotice_s6 text={rememberNotice_s6} />
+      ) : null}
+    </div>
+  );
+}
+
+/** The short confirmation after "Remember this" (Mac 2.8). */
+export function RememberNotice_s6({ text }: { text: string }) {
+  return (
+    <div
+      role="status"
+      className="pointer-events-none sticky bottom-3 z-10 flex h-0 items-end justify-center font-sans text-[12px] text-content/70"
+    >
+      <span className="inline-block rounded-md border border-content/10 bg-background-base px-2.5 py-1.5">
+        {text}
+      </span>
     </div>
   );
 }

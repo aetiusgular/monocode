@@ -5,6 +5,7 @@ import {
   type LocalitySession,
 } from "../../server-locality/model/locality";
 import { addProjectMemory, type MemoryAddResult } from "./projectMemory";
+import { projectName } from "../../../shared/lib/paths";
 
 /**
  * #36 "Remember this": the user saves a selection or a reply to the
@@ -29,4 +30,15 @@ export async function rememberText(
   return addProjectMemory(project, fact, {
     local: isLocal(await sessionLocalityNow(session)),
   });
+}
+
+/** The line the transcript shows once "Remember this" has saved (Mac 2.8). */
+export function rememberedNotice(
+  project: string,
+  result: Pick<MemoryAddResult, "added">,
+): string {
+  const name = projectName(project);
+  return result.added
+    ? `Remembered for ${name}.`
+    : `Already remembered for ${name}.`;
 }
