@@ -221,6 +221,12 @@ type Live = {
   nextControlId: number;
   toolsByIndex: Map<number, InFlightTool>;
   toolsById: Map<string, InFlightTool>;
+  /**
+   * Calls this turn that MonoCode refused (a Never rule, a declined card, a
+   * plan turn). They did not run, so their error result is not a failure of
+   * the call itself (Mac 1.11).
+   */
+  deniedToolUses: Set<string>;
   agentTasks: Map<string, LiveAgentTask>;
   /**
    * Every task Claude still runs for this session, by id: subagents, shells it
@@ -835,6 +841,7 @@ async function ensureLive(
     nextControlId: 1,
     toolsByIndex: new Map(),
     toolsById: new Map(),
+    deniedToolUses: new Set(),
     agentTasks: new Map(),
     backgroundTasks: new Map(),
     backgroundRows: new Map(),
@@ -955,6 +962,7 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
   live.pendingAssistantBoundary = false;
   live.toolsByIndex.clear();
   live.toolsById.clear();
+  live.deniedToolUses.clear();
   live.agentTasks.clear();
   live.backgroundTasks.clear();
   live.backgroundRows.clear();
@@ -1317,7 +1325,12 @@ function handleUser(
       callId: tool.id,
       title: tool.title,
       kind: toolKindFromName(tool.name),
-      status: result.isError ? "failed" : "completed",
+      // A refused call did not run: it reads as cancelled, not failed.
+      status: result.isError
+        ? live.deniedToolUses.has(tool.id)
+          ? "cancelled"
+          : "failed"
+        : "completed",
       detail: result.text || undefined,
       preview: previewFromTool(tool.name, tool.input, result.text),
     });
@@ -1398,13 +1411,26 @@ function handleResult(live: Live, rec: Record<string, unknown>): void {
   syncBackgroundWait(live);
 }
 
+/** A control response, noting a refused call so its result reads as refused. */
+function replyTo(
+  live: Live,
+  control: ClaudeControlRequest,
+  requestId: string,
+  response: Record<string, unknown>,
+): Record<string, unknown> {
+  if (response.behavior === "deny" && control.toolUseId) {
+    live.deniedToolUses.add(control.toolUseId);
+  }
+  return buildControlResponse(requestId, response);
+}
+
 async function handleControlRequest(
   sessionId: string,
   live: Live,
   control: ClaudeControlRequest,
 ): Promise<void> {
   if (control.subtype !== "can_use_tool" && control.subtype !== "permission") {
-    await writeJson(sessionId, buildControlResponse(control.requestId, {}));
+    await writeJson(sessionId, replyTo(live, control, control.requestId, {}));
     return;
   }
 
@@ -1414,7 +1440,9 @@ async function handleControlRequest(
   if (live.cancelled || live.muteUpdates) {
     await writeJson(
       sessionId,
-      buildControlResponse(
+      replyTo(
+        live,
+        control,
         control.requestId,
         toClaudePermissionResult("deny", input),
       ),
@@ -1456,7 +1484,7 @@ async function handleControlRequest(
           };
     await writeJson(
       sessionId,
-      buildControlResponse(control.requestId, response),
+      replyTo(live, control, control.requestId, response),
     );
     return;
   }
@@ -1466,7 +1494,7 @@ async function handleControlRequest(
     if (plan) live.onEvent({ type: "plan", text: plan });
     await writeJson(
       sessionId,
-      buildControlResponse(control.requestId, {
+      replyTo(live, control, control.requestId, {
         behavior: "deny",
         message:
           "The client captured your proposed plan. Stop here and wait for the user's feedback or implementation request in a later turn.",
@@ -1482,7 +1510,7 @@ async function handleControlRequest(
   if (live.toolRules.never.has(toolName)) {
     await writeJson(
       sessionId,
-      buildControlResponse(control.requestId, {
+      replyTo(live, control, control.requestId, {
         behavior: "deny",
         message: claudeBlockedToolMessage(toolName),
       }),
@@ -1495,7 +1523,9 @@ async function handleControlRequest(
     const decision = kind === "read" || kind === "search" ? "allow" : "deny";
     await writeJson(
       sessionId,
-      buildControlResponse(
+      replyTo(
+        live,
+        control,
         control.requestId,
         toClaudePermissionResult(decision, input),
       ),
@@ -1517,7 +1547,7 @@ async function handleControlRequest(
     if (blocked) {
       await writeJson(
         sessionId,
-        buildControlResponse(control.requestId, {
+        replyTo(live, control, control.requestId, {
           behavior: "deny",
           message: site.fetch
             ? blockedFetchMessage_l5(blocked)
@@ -1532,7 +1562,9 @@ async function handleControlRequest(
     ) {
       await writeJson(
         sessionId,
-        buildControlResponse(
+        replyTo(
+          live,
+          control,
           control.requestId,
           toClaudePermissionResult("allow", input),
         ),
@@ -1565,7 +1597,9 @@ async function handleControlRequest(
   ) {
     await writeJson(
       sessionId,
-      buildControlResponse(
+      replyTo(
+        live,
+        control,
         control.requestId,
         toClaudePermissionResult("allow", input),
       ),
@@ -1576,7 +1610,9 @@ async function handleControlRequest(
   if (live.runtimeMode === "full-access") {
     await writeJson(
       sessionId,
-      buildControlResponse(
+      replyTo(
+        live,
+        control,
         control.requestId,
         toClaudePermissionResult("allow", input),
       ),
@@ -1629,7 +1665,9 @@ async function handleControlRequest(
   if (decision === "cancelled") return;
   await writeJson(
     sessionId,
-    buildControlResponse(
+    replyTo(
+      live,
+      control,
       control.requestId,
       // Declined because the user blocked the tool while the card was up:
       // say so, the same as a call the rule refuses outright.
@@ -2213,7 +2251,13 @@ function settleBackgroundRow(
   live.onEvent({
     type: "tool.updated",
     callId,
-    status: status === "completed" ? "completed" : "failed",
+    // A task the user stopped did not fail: it reads as cancelled (Mac 1.11).
+    status:
+      status === "completed"
+        ? "completed"
+        : status === "killed" || status === "stopped"
+          ? "cancelled"
+          : "failed",
     ...(detail ? { detail } : {}),
   });
 }

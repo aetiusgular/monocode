@@ -52,6 +52,9 @@ function failedCommand(turn: readonly Block[]): Block | undefined {
     const tool = block.tool;
     if (!tool || !COMMAND_KINDS.has(tool.kind ?? "")) continue;
     // Only the latest command counts: a later success means it was fixed.
+    // A call that never ran (refused on its card, or stopped: the harness
+    // marks those cancelled) is not a command to fix (Mac 1.11).
+    if (block.approval?.decided === "deny") return undefined;
     return FAILED.has((tool.status ?? "").toLowerCase()) ? block : undefined;
   }
   return undefined;

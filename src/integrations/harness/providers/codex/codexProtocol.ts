@@ -1734,7 +1734,8 @@ function buildDiffPreview(
 
 function mapItemStatus(status: string | undefined, completed: boolean): string {
   if (status === "completed" || status === "failed" || status === "declined") {
-    return status === "declined" ? "failed" : status;
+    // A declined call never ran: it reads as cancelled, not failed (Mac 1.11).
+    return status === "declined" ? "cancelled" : status;
   }
   if (status === "inProgress") return "in_progress";
   return completed ? "completed" : "in_progress";
