@@ -1296,6 +1296,18 @@ export function previewFromTool(
   );
 }
 
+/** Bash's `input.command`, the raw command, as a tool event field. */
+export function bashCommandField(
+  name: string,
+  input: Record<string, unknown>,
+): { command?: string } {
+  if (name !== "Bash") return {};
+  const command = input.command;
+  return typeof command === "string" && command.trim()
+    ? { command: command.trim() }
+    : {};
+}
+
 export function summarizeToolRequest(
   toolName: string,
   input: Record<string, unknown>,

@@ -61,6 +61,7 @@ import {
   parseToolProgress,
   taskListFromTodos,
   previewFromTool,
+  bashCommandField,
   resolveClaudeApiModelId,
   runtimeModeToPermission,
   sessionIdFromMessage,
@@ -1107,6 +1108,7 @@ function handleStreamEvent(live: Live, rec: Record<string, unknown>): void {
         ? { agentModel: stringField(tool.input, "model") }
         : {}),
       status: isAgentToolName(tool.name) ? "in_progress" : "pending",
+      ...bashCommandField(tool.name, tool.input),
       preview: previewFromTool(tool.name, tool.input),
     });
     emitTaskListIfNeeded(live, tool.name, tool.input);
@@ -1133,6 +1135,7 @@ function handleStreamEvent(live: Live, rec: Record<string, unknown>): void {
         : {}),
       status: "pending",
       detail: summarizeToolRequest(tool.name, parsed),
+      ...bashCommandField(tool.name, parsed),
       preview: previewFromTool(tool.name, parsed),
     });
     emitTaskListIfNeeded(live, tool.name, parsed);
@@ -1205,6 +1208,7 @@ function handleAssistant(live: Live, rec: Record<string, unknown>): void {
         ? { agentModel: stringField(tool.input, "model") }
         : {}),
       status: isAgentToolName(tool.name) ? "in_progress" : "pending",
+      ...bashCommandField(tool.name, tool.input),
       preview: previewFromTool(tool.name, tool.input),
     });
     if (use.name === "ExitPlanMode") {

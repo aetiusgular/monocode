@@ -1077,7 +1077,8 @@ function mapToolItem(
   if (!callId) return null;
 
   if (itemType === "commandExecution") {
-    const command = codexCommandText(item) ?? "Shell";
+    const rawCommand = codexCommandText(item);
+    const command = rawCommand ?? "Shell";
     const status = mapItemStatus(stringField(item, "status"), completed);
     const output =
       stringField(item, "aggregatedOutput") ?? stringField(item, "output");
@@ -1090,6 +1091,7 @@ function mapToolItem(
         title: presentation.title,
         kind: "execute",
         status,
+        ...(rawCommand ? { command: rawCommand } : {}),
         preview: presentation.preview,
       };
     }
@@ -1100,6 +1102,7 @@ function mapToolItem(
       kind: "execute",
       status,
       ...(output ? { detail: output } : {}),
+      ...(rawCommand ? { command: rawCommand } : {}),
       preview: presentation.preview,
     };
   }

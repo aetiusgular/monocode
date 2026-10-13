@@ -62,6 +62,8 @@ export type HarnessEvent =
       status?: string;
       /** Work the agent left running when it yielded. */
       background?: boolean;
+      /** The raw shell command, when the harness gives one. Untrusted text. */
+      command?: string;
       preview?: ToolPreview;
       /** Every path affected when one structured edit changes multiple files. */
       paths?: string[];
@@ -79,6 +81,8 @@ export type HarnessEvent =
        * the call has printed so far. Without it, `detail` replaces the last.
        */
       append?: boolean;
+      /** The raw shell command, when the harness gives one. Untrusted text. */
+      command?: string;
       preview?: ToolPreview;
       /** Every path affected when one structured edit changes multiple files. */
       paths?: string[];

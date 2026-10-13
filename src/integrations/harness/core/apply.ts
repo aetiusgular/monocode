@@ -80,6 +80,7 @@ export function applyHarnessEvent(
         streaming: true,
         agentModel: event.agentModel,
         ...(event.background ? { background: true } : {}),
+        ...(event.command ? { command: event.command } : {}),
       });
     case "tool.updated":
       return upsertTool(session, {
@@ -93,6 +94,7 @@ export function applyHarnessEvent(
         paths: event.paths,
         streaming: event.status !== "completed" && event.status !== "failed",
         agentModel: event.agentModel,
+        ...(event.command ? { command: event.command } : {}),
       });
     case "tool.images": {
       const blocks = attachToolImages(
@@ -1013,6 +1015,7 @@ function upsertTool(
     streaming: boolean;
     agentModel?: string;
     background?: boolean;
+    command?: string;
   },
 ): Session {
   const index = findToolIndex(session, patch);
@@ -1042,6 +1045,7 @@ function upsertTool(
         ...(preview ? { preview } : {}),
         ...(patch.paths ? { paths: patch.paths } : {}),
         ...(patch.background ? { background: true } : {}),
+        ...(patch.command ? { command: patch.command } : {}),
       },
     });
   }
@@ -1064,6 +1068,7 @@ function upsertTool(
   const kind = patch.kind ?? prev.tool?.kind;
   const status = patch.status ?? prev.tool?.status;
   const paths = patch.paths ?? prev.tool?.paths;
+  const command = patch.command ?? prev.tool?.command;
   const agentName = prev.agentRun?.steps.length ? prev.agentRun.name : label;
   if (
     prev.text === label &&
@@ -1073,6 +1078,7 @@ function upsertTool(
     prev.tool?.status === status &&
     prev.tool?.detail === detail &&
     prev.tool?.paths === paths &&
+    prev.tool?.command === command &&
     (!patch.agentModel || prev.agentRun?.model === patch.agentModel) &&
     (!prev.agentRun || prev.agentRun.name === agentName) &&
     samePreview(prev.tool?.preview, preview)
@@ -1103,6 +1109,7 @@ function upsertTool(
       ...(preview ? { preview } : {}),
       ...(paths ? { paths } : {}),
       ...(prev.tool?.background ? { background: true } : {}),
+      ...(command ? { command } : {}),
     },
   };
   return { ...session, blocks };

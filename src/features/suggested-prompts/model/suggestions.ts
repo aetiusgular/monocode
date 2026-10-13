@@ -33,12 +33,15 @@ function lastTurn(blocks: readonly Block[]): readonly Block[] {
 }
 
 /**
- * The command a failed shell call ran, as one short line. It is the agent's
- * text, so it is cut and quoted, and only ever lands in the user's own
- * composer, where they read it before sending.
+ * The command a failed shell call ran, as one short line: the raw command
+ * when the harness gave it, else the row's label. It is the agent's text, so
+ * it is cut and quoted, and only ever lands in the user's own composer,
+ * where they read it before sending.
  */
-function commandLine(block: Block): string {
-  const raw = (block.tool?.title ?? "").replace(/\s+/g, " ").trim();
+export function commandLine(block: Block): string {
+  const raw = (block.tool?.command || block.tool?.title || "")
+    .replace(/\s+/g, " ")
+    .trim();
   if (!raw) return "";
   return raw.length > COMMAND_MAX ? `${raw.slice(0, COMMAND_MAX - 1)}…` : raw;
 }

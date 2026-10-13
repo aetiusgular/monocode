@@ -357,6 +357,12 @@ export type Block = {
     paths?: string[];
     /** Left running by the agent when it yielded; the turn waits on it. */
     background?: boolean;
+    /**
+     * The shell command as the harness sent it (Claude Code Bash
+     * `input.command`, Codex `command`). The agent's text: never run, only
+     * shown or quoted into the user's own composer.
+     */
+    command?: string;
   };
   /**
    * Images this tool call returned, kept as files for the transcript. On a
