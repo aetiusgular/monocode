@@ -35,6 +35,7 @@ import {
   type UserLink,
 } from "../model/linkPreview";
 import {
+  linkPreviewAllowedFor,
   outboundCallAllowed,
   useOutboundCallAllowed,
 } from "../../settings/model/outboundCalls";
@@ -43,14 +44,18 @@ export function UserLinkPreview({
   link,
   cwd,
   compact = false,
+  message,
 }: {
   link: UserLink;
   cwd?: string;
   compact?: boolean;
+  /** The user message the link is in: only one sent with previews on fetches. */
+  message?: { linkPreviews?: boolean; sentAt?: number; startedAt?: number };
 }) {
   // Off in Settings: no fetch and no gh call. The link stays a plain link.
   const previewsAllowed = useOutboundCallAllowed("link-previews");
-  if (!previewsAllowed) return <PlainUserLink link={link} />;
+  if (!linkPreviewAllowedFor(message ?? {}, previewsAllowed))
+    return <PlainUserLink link={link} />;
   if (link.githubWorkItem) {
     const workItem = link.githubWorkItem;
     return (

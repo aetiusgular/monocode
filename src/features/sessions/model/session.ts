@@ -330,6 +330,11 @@ export type Block = {
   durationMs?: number;
   /** Epoch ms when this message joined a turn that was already running. */
   sentAt?: number;
+  /**
+   * A user message: whether Link previews was on when it was sent. Only then
+   * is its link's preview fetched, even after the switch is turned on (5.9).
+   */
+  linkPreviews?: boolean;
   /** Stable model label for this turn. Present on newly created user blocks. */
   turnModel?: TurnModel;
   /** Provider turn boundary used to replace this user message, when known. */

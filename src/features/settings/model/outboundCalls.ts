@@ -119,11 +119,49 @@ export function outboundCallAllowed(id: OutboundCallId): boolean {
   return loadOutboundCalls()[id];
 }
 
+/** When Link previews was last turned on from off, epoch ms. */
+export const LINK_PREVIEWS_ON_SINCE_KEY = "monocode.linkPreviewsOnSince";
+
+/** 0 when the switch was never turned off and on again. */
+export function linkPreviewsOnSince(): number {
+  try {
+    const value = Number(localStorage.getItem(LINK_PREVIEWS_ON_SINCE_KEY));
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Whether a user message may show a fetched link preview (5.9). Only a
+ * message sent while previews were on: the flag stamped at send time, or for
+ * a message saved before the flag existed, a send time after the switch was
+ * last turned on. Turning the switch on never fetches for older messages.
+ */
+export function linkPreviewAllowedFor(
+  message: { linkPreviews?: boolean; sentAt?: number; startedAt?: number },
+  allowedNow: boolean = outboundCallAllowed("link-previews"),
+  onSince: number = linkPreviewsOnSince(),
+): boolean {
+  if (!allowedNow) return false;
+  if (typeof message.linkPreviews === "boolean") return message.linkPreviews;
+  if (!onSince) return true;
+  const at = message.sentAt ?? message.startedAt;
+  return at != null && at >= onSince;
+}
+
 export function setOutboundCallAllowed(
   id: OutboundCallId,
   allowed: boolean,
 ): void {
   if (!isOutboundCallId(id) || typeof allowed !== "boolean") return;
+  if (id === "link-previews" && allowed && !loadOutboundCalls()[id]) {
+    try {
+      localStorage.setItem(LINK_PREVIEWS_ON_SINCE_KEY, String(Date.now()));
+    } catch {
+      // Private mode or quota: stamped messages still decide on their own.
+    }
+  }
   const next = { ...loadOutboundCalls(), [id]: allowed };
   cache = sanitizeOutboundCalls(next);
   try {

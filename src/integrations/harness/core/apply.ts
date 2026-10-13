@@ -23,6 +23,7 @@ import { resolveModel } from "../../../features/sessions/model/models";
 import type { HarnessEvent } from "./types";
 import { usageLimitFromError } from "../../../features/sessions/model/usageLimit";
 import { attachToolImages } from "../../../features/tool-images/model/toolImages";
+import { outboundCallAllowed } from "../../../features/settings/model/outboundCalls";
 
 /** Apply one delivery batch without copying the transcript for every token. */
 export function applyHarnessEvents(
@@ -537,6 +538,7 @@ export function appendUser(
       role: "user",
       text,
       startedAt: Date.now(),
+      linkPreviews: outboundCallAllowed("link-previews"),
       ...turnModelFields(session),
       ...(attachments.length > 0 ? { attachments } : {}),
       ...userTurnFields(extra),
@@ -561,6 +563,7 @@ export function appendSteerUser(
         role: "user",
         text,
         sentAt: Date.now(),
+        linkPreviews: outboundCallAllowed("link-previews"),
         ...turnModelFields(session),
         ...(attachments.length > 0 ? { attachments } : {}),
         ...userTurnFields(extra),

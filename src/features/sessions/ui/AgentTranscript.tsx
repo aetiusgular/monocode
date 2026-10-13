@@ -2794,7 +2794,12 @@ function UserMessageBlock({
                   data-selectable-agent-response={block.id}
                 >
                   {messageLink.beforeText}
-                  <UserLinkPreview link={messageLink.link} cwd={cwd} compact />
+                  <UserLinkPreview
+                    link={messageLink.link}
+                    cwd={cwd}
+                    compact
+                    message={block}
+                  />
                   {messageLink.afterText}
                 </div>
               ) : displayText ? (
