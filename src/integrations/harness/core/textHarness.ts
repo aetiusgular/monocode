@@ -1,4 +1,8 @@
-import type { HarnessId } from "../../../features/sessions/model/session";
+import { ask } from "@tauri-apps/plugin-dialog";
+import {
+  HARNESS_TITLE,
+  type HarnessId,
+} from "../../../features/sessions/model/session";
 import { isHarnessAvailable } from "./availability";
 import type { PrContent } from "../../../features/source-control/model/gitText";
 import {
@@ -42,7 +46,7 @@ export function pickTextHarness(preferred?: HelperTarget): HarnessId {
 }
 
 export const UNOWNED_REFUSED =
-  "Not sent. No open chat works in this folder, and you chose to keep the changes on this computer.";
+  "Not sent. No chat you have used works in this folder, and you chose to keep the changes on this computer.";
 
 /**
  * F6 covers a checkout an open chat owns. With none, the helper falls back to
@@ -51,21 +55,26 @@ export const UNOWNED_REFUSED =
  * finding F3; corner case 7). Ask once per project and harness. The answer is
  * kept beside code review's, under its own key, so neither covers the other.
  */
-export function confirmUnownedHelper(
+export async function confirmUnownedHelper(
   harness: HarnessId,
   cwd: string,
   what: string,
-): boolean {
+): Promise<boolean> {
   const key = `helper:${harness}:${cwd}`;
   if (reviewConsented(key)) return true;
+  // A native dialog: whether `window.confirm` shows anything in the macOS
+  // webview was never seen (Mac test 10.2). Any failure counts as no.
   let ok = false;
   try {
-    ok =
-      typeof window !== "undefined" &&
-      typeof window.confirm === "function" &&
-      window.confirm(
-        `No open chat works in this folder, so ${what} would be written by ${harness}, which is hosted or not known to be local. Your changes would leave this computer. Send them? A yes is kept for this project and ${harness}.`,
-      );
+    ok = await ask(
+      `No chat you have used works in this folder, so ${what} would be written by ${HARNESS_TITLE[harness] ?? harness}, which is hosted or not known to be local. Your changes would leave this computer.\n\nA yes is kept for this project and this harness.`,
+      {
+        title: "Send the changes?",
+        kind: "warning",
+        okLabel: "Send them",
+        cancelLabel: "Keep them here",
+      },
+    );
   } catch {
     ok = false;
   }
@@ -90,10 +99,10 @@ export function generateCommitMessage(
     return helperCommitMessage(preferred, cwd, signal, paths);
   }
   const harness = pickTextHarness(preferred);
-  if (!confirmUnownedHelper(harness, cwd, "a commit message")) {
-    return Promise.reject(new Error(UNOWNED_REFUSED));
-  }
-  return generateHarnessCommitMessage(harness, cwd, signal, paths);
+  return confirmUnownedHelper(harness, cwd, "a commit message").then((ok) => {
+    if (!ok) throw new Error(UNOWNED_REFUSED);
+    return generateHarnessCommitMessage(harness, cwd, signal, paths);
+  });
 }
 
 export function generatePrContent(
@@ -103,8 +112,7 @@ export function generatePrContent(
   if (isHelperRoute(preferred)) return helperPrContent(preferred, cwd);
   const harness = pickTextHarness(preferred);
   // Declined: the caller falls back to the commit range, as with no model.
-  if (!confirmUnownedHelper(harness, cwd, "the PR text")) {
-    return Promise.resolve(null);
-  }
-  return generateHarnessPrContent(harness, cwd);
+  return confirmUnownedHelper(harness, cwd, "the PR text").then((ok) =>
+    ok ? generateHarnessPrContent(harness, cwd) : null,
+  );
 }

@@ -33,6 +33,7 @@ import {
   helperPrContent,
   helperRouteForCheckout,
   helperRouteForSession,
+  sessionWasUsed,
   helperTimeoutMs,
   helperTitle,
   HelperUnavailableError,
@@ -187,6 +188,8 @@ describe("routes", () => {
       model: "claude:opus-5-5",
       modelSettings: {},
       cwd: "/repo",
+      // A chat owns its checkout only once it was used (Mac finding 10.2).
+      blocks: [{ id: "u1", role: "user" as const, text: "hi" }],
     },
     {
       id: "b",
@@ -196,8 +199,29 @@ describe("routes", () => {
       cwd: "/repo",
       worktreeCwd: "/repo-wt",
       providerAccountId: "local-home",
+      providerSessionId: "thread-b",
     },
   ];
+
+  it("a blank chat never owns the checkout, active or not (Mac finding 10.2)", () => {
+    const blank = {
+      id: "blank",
+      harness: "claude" as const,
+      model: "claude:sonnet-5",
+      modelSettings: {},
+      cwd: "/fresh",
+      blocks: [],
+    };
+    expect(helperRouteForCheckout([blank], "/fresh", blank)).toBeUndefined();
+    expect(helperRouteForCheckout([blank], "/fresh", null)).toBeUndefined();
+    // A blank active chat gives way to a used one in the same folder.
+    const used = { ...blank, id: "used", harness: "codex" as const, providerSessionId: "t" };
+    expect(helperRouteForCheckout([blank, used], "/fresh", blank)?.sessionId).toBe("used");
+    // An assistant block alone (a notice) is not a use.
+    const notice = { ...blank, blocks: [{ id: "n", role: "assistant" as const, text: "note" }] };
+    expect(sessionWasUsed(notice)).toBe(false);
+    expect(sessionWasUsed({ blocks: [{ id: "u", role: "user", text: "x" }] })).toBe(true);
+  });
 
   it("picks the session that owns the checkout, not the active tab", () => {
     const route = helperRouteForCheckout(sessions, "/repo-wt", sessions[0]);

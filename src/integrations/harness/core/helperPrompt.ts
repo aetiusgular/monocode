@@ -132,12 +132,26 @@ export function helperRouteForSession(session: RouteSession): HelperRoute {
 
 type CheckoutSession = RouteSession &
   Pick<Session, "id" | "cwd"> &
-  Partial<Pick<Session, "worktreeCwd" | "workspaceMode">>;
+  Partial<Pick<Session, "worktreeCwd" | "workspaceMode" | "blocks" | "providerSessionId">>;
 
 /**
- * The session that owns a checkout: the active one if it works there, else
- * the first open session whose working folder is that checkout. Undefined
- * when no open session works there.
+ * Whether a chat was used: it holds a prompt the user sent, or the harness
+ * has a conversation for it. Opening a project opens a blank chat there, and
+ * the user never chose that chat's harness for anything, so a blank chat does
+ * not own the checkout (Mac finding 10.2, corner case 7).
+ */
+export function sessionWasUsed(
+  session: Pick<Partial<Session>, "blocks" | "providerSessionId">,
+): boolean {
+  if (session.providerSessionId) return true;
+  return (session.blocks ?? []).some((block) => block.role === "user");
+}
+
+/**
+ * The session that owns a checkout: the active one if it works there and was
+ * used, else the first used open session whose working folder is that
+ * checkout. Undefined when no used session works there, so the caller asks
+ * before a diff leaves (F3).
  */
 export function helperRouteForCheckout(
   sessions: readonly CheckoutSession[],
@@ -153,8 +167,9 @@ export function helperRouteForCheckout(
       return false;
     }
   };
-  if (active && works(active)) return helperRouteForSession(active);
-  const owner = sessions.find(works);
+  const owns = (session: CheckoutSession) => works(session) && sessionWasUsed(session);
+  if (active && owns(active)) return helperRouteForSession(active);
+  const owner = sessions.find(owns);
   return owner ? helperRouteForSession(owner) : undefined;
 }
 
