@@ -94,6 +94,7 @@ export function ToolAccessPopover({
             <ToolAccessControl
               label={row.label}
               value={row.choice}
+              allowOnly={row.allowOnly}
               onChange={(choice) =>
                 onChange(setToolChoice(toolAccess, row.key, choice))
               }

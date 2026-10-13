@@ -22,19 +22,25 @@ export function ToolAccessControl({
   label,
   value,
   onChange,
+  allowOnly = false,
 }: {
   /** The tool's name, for the group's accessible name. */
   label: string;
   value: ToolChoice;
   onChange: (value: ToolChoice) => void;
+  /** Offer Always and Ask only, for a rule that covers one command. */
+  allowOnly?: boolean;
 }) {
+  const choices = allowOnly
+    ? CHOICES.filter((choice) => choice.value !== "never")
+    : CHOICES;
   return (
     <div
       role="radiogroup"
       aria-label={`${label} access`}
-      className="inline-grid shrink-0 grid-cols-3 gap-0.5 rounded-md border border-content/10 p-0.5 text-[11px]"
+      className={`inline-grid shrink-0 ${allowOnly ? "grid-cols-2" : "grid-cols-3"} gap-0.5 rounded-md border border-content/10 p-0.5 text-[11px]`}
     >
-      {CHOICES.map((choice) => (
+      {choices.map((choice) => (
         <button
           key={choice.value}
           type="button"

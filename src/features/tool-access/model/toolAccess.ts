@@ -1,5 +1,10 @@
 import type { HarnessToolAccess } from "../../../integrations/harness/core/types";
 import {
+  commandRuleFromKey,
+  commandRuleLabel,
+  isCommandRuleKey,
+} from "./commandRules";
+import {
   harnessSupportsToolAccess,
   type ApprovalTool,
   type HarnessId,
@@ -31,8 +36,17 @@ export function isToolKey(key: unknown): key is string {
     typeof key === "string" &&
     key.length <= MAX_TOOL_KEY_LENGTH &&
     key !== "__proto__" &&
-    TOOL_KEY.test(key)
+    (TOOL_KEY.test(key) || isCommandRuleKey(key))
   );
+}
+
+/**
+ * A rule a key can hold. A command rule (`Bash(npm test *)`, see
+ * `commandRules.ts`) only ever allows: blocking one command form would be
+ * easy to get round, and "Never" stays a rule for a whole tool.
+ */
+function ruleFits(key: string, rule: ToolAccessRule): boolean {
+  return rule === "always" || !isCommandRuleKey(key);
 }
 
 function own(access: ToolAccess | undefined, key: string): unknown {
@@ -62,6 +76,7 @@ export function sanitizeToolAccess(value: unknown): ToolAccess | undefined {
     if (rule !== "always" && rule !== "never") continue;
     const key = rawKey.trim();
     if (!isToolKey(key) || own(rules, key) !== undefined) continue;
+    if (!ruleFits(key, rule)) continue;
     rules[key] = rule;
     count += 1;
   }
@@ -85,17 +100,23 @@ export function setToolChoice(
     const { [key]: _dropped, ...rest } = current;
     return rest;
   }
-  if (!isToolKey(key)) return current;
+  if (!isToolKey(key) || !ruleFits(key, choice)) return current;
   if (before === "ask" && Object.keys(current).length >= MAX_TOOL_RULES) {
     return current;
   }
   return { ...current, [key]: choice };
 }
 
+/** True when a key holds an allow rule for one command, not a whole tool. */
+export function isCommandRuleToolKey(key: string): boolean {
+  return isCommandRuleKey(key);
+}
+
 /** True when the harness answers approval requests for this key by rule. */
 export function toolKeyApplies(harness: HarnessId, key: string): boolean {
   if (!isToolKey(key)) return false;
-  if (harness === "claude") return CLAUDE_TOOL_NAME.test(key);
+  if (harness === "claude")
+    return CLAUDE_TOOL_NAME.test(key) || isCommandRuleKey(key);
   // Codex names no tool on an MCP confirmation, so no rule can answer one.
   if (harness === "codex") {
     return key === CODEX_COMMAND_TOOL || key === CODEX_FILE_CHANGE_TOOL;
@@ -139,6 +160,8 @@ export function mcpTool(key: string): { server: string; tool: string } | null {
 export function toolLabel(key: string): string {
   if (key === CODEX_COMMAND_TOOL) return "Commands";
   if (key === CODEX_FILE_CHANGE_TOOL) return "File edits";
+  const command = commandRuleFromKey(key);
+  if (command) return `Bash: ${commandRuleLabel(command)}`;
   const mcp = mcpTool(key);
   return mcp ? `${mcp.server}: ${mcp.tool}` : key;
 }

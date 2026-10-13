@@ -65,6 +65,12 @@ export type ClaudeControlRequest = {
   toolName?: string;
   input?: Record<string, unknown>;
   toolUseId?: string;
+  /**
+   * Claude Code's own "don't ask again" proposals on a `can_use_tool`
+   * request, as sent (`permission_suggestions`). Untrusted: read only
+   * through `suggestedCommandRule`.
+   */
+  permissionSuggestions?: unknown;
 };
 
 export type ClaudeMappedLine = {
@@ -602,6 +608,9 @@ export function parseControlRequest(
       stringField(nested, "tool_use_id") ??
       stringField(nested, "toolUseID") ??
       stringField(rec, "tool_use_id"),
+    ...(Array.isArray(nested?.permission_suggestions)
+      ? { permissionSuggestions: nested.permission_suggestions }
+      : {}),
   };
 }
 

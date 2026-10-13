@@ -368,6 +368,8 @@ export type Block = {
     decided?: "allow" | "deny" | "cancelled";
     /** What the request is for, where the harness names it; see `ToolAccess`. */
     tool?: ApprovalTool;
+    /** What "Allow for this chat" keeps instead of `tool`. Live only. */
+    chatRule?: ApprovalTool;
     /**
      * The host and protocol a network approval asks for, and the standing
      * host rules the harness proposed. Untrusted: render as plain text only.

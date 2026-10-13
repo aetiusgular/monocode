@@ -125,6 +125,11 @@ export type HarnessEvent =
        */
       tool?: ApprovalTool;
       /**
+       * The narrower rule "Allow for this chat" keeps instead of `tool`, where
+       * there is one: on Claude Code, a rule for this command's prefix.
+       */
+      chatRule?: ApprovalTool;
+      /**
        * The network destination a sandboxed command asks to reach, when the
        * request is for network access. Untrusted harness text: show as plain
        * text only. `amendments` are the standing host rules the harness

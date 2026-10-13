@@ -8,6 +8,7 @@ import {
 import {
   CODEX_COMMAND_TOOL,
   CODEX_FILE_CHANGE_TOOL,
+  isCommandRuleToolKey,
   mcpTool,
   sanitizeToolAccess,
   toolChoice,
@@ -43,6 +44,8 @@ export type ToolAccessRow = {
    * provider. Listed so it can be seen and cleared.
    */
   inactive?: boolean;
+  /** A rule for one command: it can be Always or Ask, never Never. */
+  allowOnly?: boolean;
 };
 
 /** The harness a key was made for, when that is not the session's. */
@@ -111,8 +114,13 @@ export function toolAccessRows(
     .map((key) => ({
       key,
       label: toolLabel(key),
-      detail: mcpTool(key) ? "MCP tool" : "Tool",
+      detail: isCommandRuleToolKey(key)
+        ? "Commands it covers run without asking"
+        : mcpTool(key)
+          ? "MCP tool"
+          : "Tool",
       choice: toolChoice(rules, key),
+      ...(isCommandRuleToolKey(key) ? { allowOnly: true } : {}),
     }))
     .sort((a, b) => a.label.localeCompare(b.label));
   const inactive = Object.keys(rules)

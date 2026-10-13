@@ -6,6 +6,7 @@ import type {
 import { nativeModelId } from "../../../../features/sessions/model/models";
 import { sameProviderAccountId } from "../../../../features/providers/model/providerAccounts";
 import type {
+  ApprovalTool,
   RuntimeMode,
   TaskListItem,
   TaskListMeta,
@@ -92,6 +93,14 @@ import {
   type UserQuestionReply,
 } from "../../../../features/sessions/model/userQuestion";
 import { approvalTool } from "../../../../features/tool-access/model/toolAccess";
+import {
+  COMMAND_RULE_TOOL,
+  commandRuleForRequest,
+  commandRuleKey,
+  isCompoundCommand,
+  deriveCommandRule,
+  matchingCommandRule,
+} from "../../../../features/tool-access/model/commandRules";
 import { claudePluginOverrides } from "../../../../features/claude-plugins/model/chatPlugins";
 import type {
   ApprovalDecision,
@@ -1458,7 +1467,11 @@ async function handleControlRequest(
   // else goes on to the mode and the card.
   if (
     !site &&
-    live.toolRules.always.has(toolName) &&
+    (live.toolRules.always.has(toolName) ||
+      // "Allow for this chat" on a command card keeps a rule for that
+      // command's prefix only (Claude Code's own "don't ask again for").
+      (toolName === COMMAND_RULE_TOOL &&
+        matchingCommandRule(live.toolRules.always, input.command) !== null)) &&
     (await claudeRuleHeldToFolders_l5(live, toolName, input))
   ) {
     await writeJson(
@@ -1486,6 +1499,11 @@ async function handleControlRequest(
   const pending = waitApproval(live, uiId, control.requestId, toolName, input);
   // Only a request that names its tool can be remembered by a rule.
   const tool = approvalTool(control.toolName);
+  const chatRule = claudeCommandChatRule(
+    toolName,
+    input,
+    control.permissionSuggestions,
+  );
   live.onEvent({
     type: "approval.requested",
     requestId: uiId,
@@ -1494,6 +1512,7 @@ async function handleControlRequest(
     callId: control.toolUseId,
     preview: previewFromTool(toolName, input),
     ...(tool ? { tool } : {}),
+    ...(chatRule ? { chatRule } : {}),
     ...(site
       ? { site: { ...site, chatKey: sessionId, projectKey: live.cwd } }
       : {}),
@@ -1512,6 +1531,26 @@ async function handleControlRequest(
         : toClaudePermissionResult(decision, input),
     ),
   );
+}
+
+/**
+ * The rule "Allow for this chat" keeps for a Bash card: Claude Code's own
+ * suggestion (`npm test *`), or one derived from the command. A command that
+ * chains, pipes or redirects gets an exact rule for that text only, whatever
+ * Claude Code suggested for one of its parts.
+ */
+function claudeCommandChatRule(
+  toolName: string,
+  input: Record<string, unknown>,
+  suggestions: unknown,
+): ApprovalTool | undefined {
+  if (toolName !== COMMAND_RULE_TOOL) return undefined;
+  const command = input.command;
+  const rule =
+    typeof command === "string" && isCompoundCommand(command)
+      ? deriveCommandRule(command)
+      : commandRuleForRequest(command, suggestions);
+  return rule ? approvalTool(commandRuleKey(rule)) : undefined;
 }
 
 function applyKnownToolInput(

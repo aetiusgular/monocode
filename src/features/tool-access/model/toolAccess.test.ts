@@ -351,7 +351,7 @@ describe("toolAccessCaveats", () => {
     ]);
     expect(
       toolAccessCaveats("codex", { always: [CODEX_COMMAND_TOOL] })[1],
-    ).toContain("requests for more access are not skipped");
+    ).toContain("A command that asks to leave the sandbox still asks");
   });
 
   it("speaks up on Claude Code only for the rules that are set", () => {
