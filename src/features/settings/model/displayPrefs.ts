@@ -9,7 +9,9 @@ const RAIL_MONOS_PINNED_KEY = "monocode.railMonosPinned";
 
 export const SHOW_REMAINING_USAGE_DEFAULT = false;
 export const MASK_EMAILS_DEFAULT = true;
-export const COMPOSER_AUTOCORRECT_DEFAULT = true;
+// Off: macOS text substitution changed typed code and commands (smart quotes,
+// a double space to a period, capitals), Mac finding 8.2.
+export const COMPOSER_AUTOCORRECT_DEFAULT = false;
 export const TABS_ACROSS_PROJECTS_DEFAULT = true;
 export const RAIL_MONOS_PINNED_DEFAULT = false;
 

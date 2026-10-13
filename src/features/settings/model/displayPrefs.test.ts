@@ -35,7 +35,8 @@ const prefs = [
   {
     name: "composer autocorrect",
     key: "monocode.composerAutocorrect",
-    defaultValue: true,
+    // Off by default since Mac finding 8.2.
+    defaultValue: false,
     load: loadComposerAutocorrect,
     save: saveComposerAutocorrect,
     subscribe: subscribeComposerAutocorrect,
