@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import {
   isPreviewLive,
   previewForSession,
@@ -16,6 +16,7 @@ import {
 } from "../model/privacyView";
 import { PrivacySection, PrivateBadge } from "./PrivacySection";
 import {
+  HARNESS_REPORT_TTL_MS,
   harnessReportsVersion,
   requestHarnessReport,
   subscribeHarnessReports,
@@ -48,9 +49,17 @@ export function usePrivacyView(session: PrivacyPanelSession) {
   const installed = useInstalledConnectors();
   const account = localityAccount(session);
   const workCwd = sessionWorkCwd(session);
+  // A report counts for a minute (R8): read it again before it goes stale,
+  // and look again when it does, so an old report never shows as Private.
+  const [ageTick, setAgeTick] = useState(0);
   useEffect(() => {
     if (harnessIsHosted(session.harness)) return;
     void requestHarnessReport(session.harness, account, workCwd);
+    const timer = setInterval(() => {
+      setAgeTick((tick) => tick + 1);
+      void requestHarnessReport(session.harness, account, workCwd);
+    }, HARNESS_REPORT_TTL_MS / 2);
+    return () => clearInterval(timer);
   }, [session.harness, account, workCwd]);
   // Blocks change on every streamed token; only the network log reads them,
   // so the rest is keyed on the fields that decide the routes.
@@ -85,12 +94,23 @@ export function usePrivacyView(session: PrivacyPanelSession) {
       {
         gatewayServers,
         outboundOn: (id) => outbound[id] !== false,
-        ...(previewCommand ? { previewServer: { command: previewCommand } } : {}),
+        ...(previewCommand
+          ? { previewServer: { command: previewCommand } }
+          : {}),
       },
     );
     // providers: the model route reads the provider list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeKey, providers, outbound, previewCommand, reports, marks, installed]);
+  }, [
+    routeKey,
+    providers,
+    outbound,
+    previewCommand,
+    reports,
+    marks,
+    installed,
+    ageTick,
+  ]);
   const log = useMemo(() => networkLog(session.blocks), [session.blocks]);
   return useMemo(() => ({ ...routes, networkLog: log }), [routes, log]);
 }

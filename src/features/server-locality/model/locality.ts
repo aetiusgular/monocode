@@ -226,17 +226,26 @@ export async function sessionLocalityNow(
   const cwd = session.worktreeCwd || session.cwd || "";
   await requestHarnessReport(session.harness, account, cwd);
   const locality = sessionIsLocal(session, servers);
+  if (locality === "local" && localityReportStale(session)) return "unknown";
+  return locality;
+}
+
+/**
+ * True when a local verdict for this session would rest on what its harness
+ * reported more than a minute ago, or never: a home edited to a hosted
+ * provider since then would still read as local. The sync views use it to
+ * show such a session as not known to be local until the next report
+ * (security fix R8).
+ */
+export function localityReportStale(session: LocalitySession): boolean {
+  if (harnessIsHosted(session.harness) || !canProbeHarness(session.harness))
+    return false;
+  const account = localityAccount(session);
+  const cwd = session.worktreeCwd || session.cwd || "";
   // The configured route counts only when the chat or its account picked
   // no provider (`modelRoutePart`).
   const route = !(session.modelProvider || providerForAccount(account)?.id);
-  if (
-    locality === "local" &&
-    canProbeHarness(session.harness) &&
-    !harnessReportFresh(session.harness, account, cwd, { route })
-  ) {
-    return "unknown";
-  }
-  return locality;
+  return !harnessReportFresh(session.harness, account, cwd, { route });
 }
 
 /** Whether a locality counts as local. "unknown" never does. */

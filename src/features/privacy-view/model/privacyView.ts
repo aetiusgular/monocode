@@ -9,6 +9,7 @@ import {
 import {
   isLocal,
   localityAccount,
+  localityReportStale,
   modelRoutePart,
   sessionIsLocal,
   sessionLocalityParts,
@@ -254,8 +255,11 @@ export function privacyView(
     sessionDestinations.find((item) => item.locality === "hosted") ??
     sessionDestinations.find((item) => !isLocal(item.locality));
   // The same rule memory and the other gates use: model route, harness home
-  // and every enabled tool local (sessionIsLocal).
-  const isPrivate = isLocal(sessionIsLocal(session)) && !away;
+  // and every enabled tool local (sessionIsLocal), read from a report no
+  // older than a minute (sessionLocalityNow, security fix R8).
+  const local = isLocal(sessionIsLocal(session));
+  const stale = local && localityReportStale(session);
+  const isPrivate = local && !stale && !away;
   let notPrivateBecause: string | undefined;
   if (!isPrivate) {
     const part = away
@@ -265,7 +269,9 @@ export function privacyView(
       ? `${away.kind === "model" ? "its model" : away.label} ${away.locality === "hosted" ? "is hosted" : "is not known to be local"}`
       : part
         ? `${part.kind === "model" ? "its model" : part.label} ${part.locality === "hosted" ? "is hosted" : "is not known to be local"}`
-        : "Its model, home or tools are not all known to be local";
+        : stale
+          ? "What its harness reported about its model and tools is more than a minute old"
+          : "Its model, home or tools are not all known to be local";
   }
   const sandbox = sandboxView(session);
   return {
