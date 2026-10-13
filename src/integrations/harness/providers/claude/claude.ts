@@ -95,6 +95,7 @@ import {
   type UserQuestionReply,
 } from "../../../../features/sessions/model/userQuestion";
 import { approvalTool } from "../../../../features/tool-access/model/toolAccess";
+import { commandRuleGate } from "../../../../features/tool-access/model/commandRuleGate";
 import {
   COMMAND_RULE_TOOL,
   commandRuleForRequest,
@@ -1503,13 +1504,22 @@ async function handleControlRequest(
   // read-only whatever the chat's rules say. For a tool that writes a file,
   // it answers only when the file sits inside the chat's folders; anything
   // else goes on to the mode and the card.
+  // "Allow for this chat" on a command card keeps a rule for that command's
+  // prefix only (Claude Code's own "don't ask again for"). Before it answers,
+  // the project is checked for what the rule's words would run that the user
+  // never saw: a command the repository's git config names, for one.
+  const commandRuleKey_s6 =
+    !site &&
+    toolName === COMMAND_RULE_TOOL &&
+    !live.toolRules.always.has(toolName)
+      ? matchingCommandRule(live.toolRules.always, input.command)
+      : null;
+  const commandGate_s6 = commandRuleKey_s6
+    ? await commandRuleGate(commandRuleKey_s6, live.cwd)
+    : null;
   if (
     !site &&
-    (live.toolRules.always.has(toolName) ||
-      // "Allow for this chat" on a command card keeps a rule for that
-      // command's prefix only (Claude Code's own "don't ask again for").
-      (toolName === COMMAND_RULE_TOOL &&
-        matchingCommandRule(live.toolRules.always, input.command) !== null)) &&
+    (live.toolRules.always.has(toolName) || commandGate_s6?.allow === true) &&
     (await claudeRuleHeldToFolders_l5(live, toolName, input))
   ) {
     await writeJson(

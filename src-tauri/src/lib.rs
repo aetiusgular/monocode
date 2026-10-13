@@ -680,6 +680,7 @@ pub fn run() {
             preview::preview_fetch_script,
             // [lane-4] commands
             fs::git_review_patch,
+            git_guard::git_repo_names_commands,
             // [lane-5] commands
             model_setup::model_setup_detect,
             model_setup::model_setup_write_codex_home,

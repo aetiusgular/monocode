@@ -150,9 +150,21 @@ pub(crate) fn override_args(drivers: &RepoDrivers) -> Vec<String> {
     args
 }
 
-fn repo_drivers(root: &Path) -> Result<RepoDrivers, String> {
+/// A `git` command for MonoCode's own config reads: no prompt, no optional
+/// lock, and messages in English whatever the user's locale.
+pub(crate) fn plain_git() -> Command {
     let mut command = Command::new("git");
     crate::hide_window_console(&mut command);
+    command
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
+        .env("LANGUAGE", "");
+    command
+}
+
+fn repo_drivers(root: &Path) -> Result<RepoDrivers, String> {
+    let mut command = plain_git();
     let output = command
         .args(["-c", "core.fsmonitor=false", "-C"])
         .arg(root)
@@ -164,8 +176,6 @@ fn repo_drivers(root: &Path) -> Result<RepoDrivers, String> {
             "--get-regexp",
             r"^(filter|diff)\.",
         ])
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .map_err(|error| error.to_string())?;
     // Exit 1 means no key matched.
@@ -174,6 +184,146 @@ fn repo_drivers(root: &Path) -> Result<RepoDrivers, String> {
         Some(1) => Ok(RepoDrivers::default()),
         _ => Err("git could not read this repository's config.".into()),
     }
+}
+
+/// Whether a config value reads as a boolean, which names no command.
+fn is_boolean(value: Option<&str>) -> bool {
+    match value {
+        None => true,
+        Some(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "" | "true" | "false" | "yes" | "no" | "on" | "off" | "1" | "0"
+        ),
+    }
+}
+
+/// Whether one config entry names a command that a read-only git subcommand
+/// (`status`, `diff`, `log`, `show`, `grep`, `blame`, `branch`, `ls-files`,
+/// `rev-parse`) could run. `key` as git prints it: section and variable in
+/// lower case, a subsection as written.
+fn entry_names_command(key: &str, value: Option<&str>) -> bool {
+    let Some((section, rest)) = key.split_once('.') else {
+        return false;
+    };
+    // The variable is after the last dot; a subsection may hold dots.
+    let (subsection, variable) = match rest.rsplit_once('.') {
+        Some((sub, var)) => (Some(sub), var),
+        None => (None, rest),
+    };
+    match (section, subsection, variable) {
+        ("filter", Some(_), "clean" | "smudge" | "process") => true,
+        ("diff", None, "external") => true,
+        ("diff", Some(_), "textconv" | "command") => true,
+        ("core", None, "fsmonitor") => !is_boolean(value),
+        (
+            "core",
+            None,
+            "pager" | "sshcommand" | "editor" | "askpass" | "gitproxy" | "hookspath",
+        ) => true,
+        ("pager", _, _) => !is_boolean(value),
+        ("alias", _, _) => true,
+        ("gpg", _, "program") => true,
+        _ => false,
+    }
+}
+
+/// Whether `git config -z --show-scope --get-regexp` output holds an entry
+/// from the repository's own scopes (local, worktree, includes followed) that
+/// names a command. `Err` when the output cannot be read, which callers treat
+/// as a yes.
+pub(crate) fn config_names_commands(raw: &[u8]) -> Result<bool, String> {
+    let text = std::str::from_utf8(raw)
+        .map_err(|_| "This repository's git config could not be read.".to_string())?;
+    let mut parts = text.split('\0');
+    while let Some(scope) = parts.next() {
+        let Some(entry) = parts.next() else { break };
+        if !matches!(scope, "local" | "worktree") {
+            continue;
+        }
+        let (key, value) = match entry.split_once('\n') {
+            Some((key, value)) => (key, Some(value)),
+            None => (entry, None),
+        };
+        if entry_names_command(key, value) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Hooks git runs on a read: `git status` and `git diff` may write the index
+/// on their own, which runs `post-index-change`.
+const READ_HOOKS: &[&str] = &["post-index-change"];
+
+/// Whether a read-only git command run in `cwd` could run a command the
+/// repository itself names: a filter or diff driver, `core.fsmonitor`, a
+/// pager, an alias, a gpg program, a hooks path, or a hook git runs when it
+/// refreshes the index. `Err` when git could not answer, which callers treat
+/// as a yes.
+pub(crate) fn repo_names_commands(cwd: &Path) -> Result<bool, String> {
+    let output = plain_git()
+        .args(["-c", "core.fsmonitor=false", "-C"])
+        .arg(cwd)
+        .args([
+            "config",
+            "-z",
+            "--includes",
+            "--show-scope",
+            "--get-regexp",
+            r"^(filter|diff|core|pager|alias|gpg)\.",
+        ])
+        .output()
+        .map_err(|error| error.to_string())?;
+    match output.status.code() {
+        Some(0) => {
+            if config_names_commands(&output.stdout)? {
+                return Ok(true);
+            }
+        }
+        Some(1) => {}
+        _ => return Err("git could not read this repository's config.".into()),
+    }
+    for hook in READ_HOOKS {
+        let output = plain_git()
+            .args(["-c", "core.fsmonitor=false", "-C"])
+            .arg(cwd)
+            .args(["rev-parse", "--git-path"])
+            .arg(format!("hooks/{hook}"))
+            .output()
+            .map_err(|error| error.to_string())?;
+        if !output.status.success() {
+            // Not inside a repository: git reads no repository config there.
+            continue;
+        }
+        let path = String::from_utf8(output.stdout)
+            .map_err(|_| "git printed a hooks path that is not text.".to_string())?;
+        let path = Path::new(path.trim_end_matches(['\n', '\r']));
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            cwd.join(path)
+        };
+        if std::fs::symlink_metadata(&path).is_ok() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Whether the repository at `cwd` names a command a read-only git command
+/// would run, so a git rule must not answer for it without the card. Read
+/// only: runs `git config` and `git rev-parse`, nothing the repository names.
+#[tauri::command]
+pub async fn git_repo_names_commands(cwd: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = Path::new(&cwd);
+        if !path.is_absolute() || !path.is_dir() {
+            return Err("The chat's folder is not a folder.".to_string());
+        }
+        repo_names_commands(path)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// Where git looks for hooks when none should run.
@@ -564,5 +714,137 @@ mod tests {
             assert!(out.status.success());
         }
         assert!(!marker.exists(), "a read ran a submodule's own filter");
+    }
+
+    fn plain_repo(name: &str) -> Repo {
+        let dir = std::env::temp_dir().join(format!(
+            "monocode-git-names-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        run(&dir, &["init", "-q"]);
+        Repo(dir)
+    }
+
+    #[test]
+    fn a_repository_with_no_commands_in_its_config_passes() {
+        // A repository with no commits, as the user often has.
+        let repo = plain_repo("clean");
+        assert_eq!(repo_names_commands(&repo.0), Ok(false));
+        for (key, value) in [
+            ("core.fsmonitor", "false"),
+            ("pager.log", "false"),
+            ("diff.algorithm", "patience"),
+            ("diff.md.binary", "true"),
+            ("filter.lfs.required", "true"),
+        ] {
+            run(&repo.0, &["config", key, value]);
+        }
+        assert_eq!(repo_names_commands(&repo.0), Ok(false));
+    }
+
+    #[test]
+    fn each_command_the_repository_names_is_found() {
+        for (key, value) in [
+            ("core.fsmonitor", "touch /tmp/x"),
+            ("core.pager", "less"),
+            ("pager.log", "sh -c id"),
+            ("diff.external", "sh -c id"),
+            ("diff.md.textconv", "sh -c id"),
+            ("diff.md.command", "sh -c id"),
+            ("filter.f.clean", "sh -c id"),
+            ("filter.f.smudge", "sh -c id"),
+            ("filter.f.process", "sh -c id"),
+            ("core.sshCommand", "sh -c id"),
+            ("core.hooksPath", "hooks"),
+            ("alias.lg", "!sh -c id"),
+            ("gpg.program", "sh"),
+            ("gpg.ssh.program", "sh"),
+        ] {
+            let repo = plain_repo("named");
+            run(&repo.0, &["config", key, value]);
+            assert_eq!(repo_names_commands(&repo.0), Ok(true), "{key}");
+        }
+    }
+
+    #[test]
+    fn a_command_in_an_included_file_is_found() {
+        let repo = plain_repo("include");
+        let extra = repo.0.join("extra.cfg");
+        std::fs::write(&extra, "[diff]\n\texternal = sh -c id\n").unwrap();
+        run(
+            &repo.0,
+            &["config", "include.path", extra.to_str().unwrap()],
+        );
+        assert_eq!(repo_names_commands(&repo.0), Ok(true));
+    }
+
+    #[test]
+    fn a_read_hook_is_found_from_a_subfolder() {
+        let repo = plain_repo("hook");
+        let sub = repo.0.join("sub dir");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(repo_names_commands(&sub), Ok(false));
+        std::fs::create_dir_all(repo.0.join(".git/hooks")).unwrap();
+        std::fs::write(
+            repo.0.join(".git/hooks/post-index-change"),
+            "#!/bin/sh\nid\n",
+        )
+        .unwrap();
+        assert_eq!(repo_names_commands(&sub), Ok(true));
+    }
+
+    #[test]
+    fn a_folder_that_is_not_a_repository_names_nothing() {
+        let dir = std::env::temp_dir().join(format!(
+            "monocode-git-names-none-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let guard = Repo(dir.clone());
+        // Only meaningful when the temp folder is not itself in a repository.
+        let inside = plain_git()
+            .args(["-C"])
+            .arg(&dir)
+            .args(["rev-parse", "--git-dir"])
+            .output()
+            .unwrap();
+        if !inside.status.success() {
+            assert_eq!(repo_names_commands(&guard.0), Ok(false));
+        }
+    }
+
+    #[test]
+    fn only_the_repositorys_own_scopes_count() {
+        let raw =
+            b"global\0alias.lg\nlog --oneline\0system\0core.pager\nless\0local\0core.bare\nfalse\0";
+        assert_eq!(config_names_commands(raw), Ok(false));
+        let raw = b"global\0alias.lg\nx\0worktree\0alias.st\nstatus\0";
+        assert_eq!(config_names_commands(raw), Ok(true));
+        // A valueless boolean entry has no newline.
+        assert_eq!(config_names_commands(b"local\0pager.log\0"), Ok(false));
+        assert!(config_names_commands(b"local\0alias.\xff\nx\0").is_err());
+    }
+
+    #[test]
+    fn plain_git_reads_in_english() {
+        let command = plain_git();
+        let envs: Vec<_> = command.get_envs().collect();
+        assert!(envs.contains(&(
+            std::ffi::OsStr::new("LC_ALL"),
+            Some(std::ffi::OsStr::new("C"))
+        )));
+        assert!(envs.contains(&(
+            std::ffi::OsStr::new("LANGUAGE"),
+            Some(std::ffi::OsStr::new(""))
+        )));
     }
 }
