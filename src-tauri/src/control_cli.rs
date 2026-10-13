@@ -330,7 +330,30 @@ pub fn help() -> String {
 }
 
 pub fn app_help() -> String {
-    APP_USAGE.replace("{exe}", &exe_name())
+    let usage = APP_USAGE.replace("{exe}", &exe_name());
+    // The group list goes right under the usage line: the whole text is
+    // about 12,000 characters and a harness that cuts long output dropped
+    // the groups near the end, preview among them (Mac test 6.10).
+    let groups = format!(
+        "Action groups: {}. Run app help GROUP for one group's actions and fields.\n",
+        app_groups().join(", ")
+    );
+    match usage.find("\n\n") {
+        Some(at) => format!("{}\n\n{}{}", &usage[..at], groups, &usage[at + 2..]),
+        None => format!("{usage}\n{groups}"),
+    }
+}
+
+/// Every action group, in the order of `APP_ACTIONS`.
+fn app_groups() -> Vec<&'static str> {
+    let mut groups: Vec<&'static str> = Vec::new();
+    for action in APP_ACTIONS {
+        let group = action.split('.').next().unwrap_or(action);
+        if !groups.contains(&group) {
+            groups.push(group);
+        }
+    }
+    groups
 }
 
 fn exe_name() -> String {
@@ -758,6 +781,37 @@ mod tests {
         let restart = app_action_help("preview.restart").unwrap();
         assert!(restart.contains("never"));
         assert!(text.len() < 1_500, "{}", text.len());
+    }
+
+    // Mac test 6.10: `app --help` read as having no preview group, so an
+    // agent in the preview's chat refused to call preview.status.
+    #[test]
+    fn app_help_lists_every_group_near_the_top() {
+        let text = app_help();
+        let line = text
+            .lines()
+            .find(|line| line.starts_with("Action groups:"))
+            .expect("no group line");
+        for group in [
+            "models",
+            "sessions",
+            "notes",
+            "memory",
+            "habits",
+            "automations",
+            "preview",
+            "chat",
+        ] {
+            assert!(line.contains(group), "group line omits {group}");
+        }
+        for action in APP_ACTIONS {
+            let group = action.split('.').next().unwrap();
+            assert!(line.contains(group), "group line omits {group}");
+        }
+        // Inside the first kilobyte, so output cut short still shows it.
+        assert!(text.find("preview").unwrap() < 1_000);
+        assert!(text.starts_with("MonoCode app access"));
+        assert!(text.contains("preview.restart"));
     }
 
     #[test]
