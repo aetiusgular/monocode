@@ -42,6 +42,8 @@ export function withGatewayRows(
     installed: InstalledState;
     disabled: readonly string[];
     defaultOff: readonly string[];
+    /** When set, only these gateway connectors are on (a local model). */
+    onlyOn?: readonly string[];
   },
 ): { rows: ConnectorRow[]; gatewayNames: Set<string> } {
   if (!harnessTakesGatewayConnectors(input.harness)) {
@@ -53,6 +55,7 @@ export function withGatewayRows(
     launchableConnectors(input.installed).map((c) => c.sessionName),
   );
   const off = new Set(input.disabled);
+  const onlyOn = input.onlyOn ? new Set(input.onlyOn) : null;
   const dockerDown =
     input.installed.dockerState === "not-running"
       ? "Docker Desktop is not running"
@@ -72,7 +75,10 @@ export function withGatewayRows(
         ]
           .filter(Boolean)
           .join(" · "),
-        enabled: startable && !off.has(connector.sessionName),
+        enabled:
+          startable &&
+          !off.has(connector.sessionName) &&
+          (!onlyOn || onlyOn.has(connector.sessionName)),
         ...(startable ? {} : { configDisabled: true }),
       };
     });

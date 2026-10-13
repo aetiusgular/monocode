@@ -56,6 +56,11 @@ import {
   useExplicitlyOnClaudeAi,
 } from "../../gateway-connectors/model/sessionGateway";
 import { knownReportedMcpServerNames } from "../model/reportedMcpServers";
+import {
+  LOCAL_DEFAULT_NOTE,
+  withGatewayOn,
+  type LocalDefaultSession,
+} from "../../gateway-connectors/model/localDefault";
 
 type RowGroup = { title: string; rows: ConnectorRow[]; prefix?: string };
 
@@ -130,6 +135,8 @@ export function ConnectorsPopover({
   onChange,
   onManage,
   onDismiss,
+  localDefault,
+  onGatewayOnChange,
 }: {
   anchor: PopoverAnchor;
   harness: HarnessId;
@@ -153,6 +160,13 @@ export function ConnectorsPopover({
    */
   onManage: () => void;
   onDismiss: (reason: PopoverDismissReason) => void;
+  /**
+   * The chat, for its gateway connectors that start off on a local model.
+   * Without it, or without `onGatewayOnChange`, they follow `disabled`.
+   */
+  localDefault?: Partial<LocalDefaultSession>;
+  /** Saves the gateway connectors switched on for such a chat. */
+  onGatewayOnChange?: (on: string[]) => void;
 }) {
   const reports = canListHarnessMcpServers(harness);
   const target = `${harness}\n${providerAccountId ?? ""}\n${cwd}`;
@@ -242,11 +256,18 @@ export function ConnectorsPopover({
     if (takesGateway) void refreshInstalled();
   }, [takesGateway]);
   const explicitlyOn = useExplicitlyOnClaudeAi(sessionId);
-  const defaultOff = gatewaySessionInput(
-    { id: sessionId, harness, disabledMcpServers: disabled },
+  const gatewayInput = gatewaySessionInput(
+    {
+      ...(onGatewayOnChange ? localDefault : {}),
+      id: sessionId,
+      harness,
+      disabledMcpServers: disabled,
+    },
     cwd,
     installed,
-  ).defaultOff;
+  );
+  const defaultOff = gatewayInput.defaultOff;
+  const onlyOn = gatewayInput.onlyOn;
   // `explicitlyOn` is read inside `gatewaySessionInput`; naming it here
   // re-renders the rows when a chat switches a claude.ai copy back on.
   void explicitlyOn;
@@ -255,8 +276,20 @@ export function ConnectorsPopover({
     installed,
     disabled,
     defaultOff,
+    ...(onlyOn ? { onlyOn } : {}),
   });
   const onToggle = (name: string, on: boolean) => {
+    // A gateway connector in a chat whose connectors start off: the chat
+    // keeps the ones switched on. It is also taken off the off list, so the
+    // two never disagree.
+    if (onlyOn && onGatewayOnChange && gatewayNames.has(name)) {
+      onGatewayOnChange(withGatewayOn(onlyOn, name, on));
+      if (on) {
+        const next = setMcpServerEnabled(disabled, name, true);
+        if (next !== disabled) onChange(next);
+      }
+      return;
+    }
     const duplicate = sessionId
       ? claudeAiDuplicateToggle({
           name,
@@ -363,6 +396,14 @@ export function ConnectorsPopover({
           {askingClaude
             ? "Checking claude.ai connectors and plugins…"
             : "Could not list claude.ai connectors and plugins."}
+        </p>
+      ) : null}
+      {onlyOn && gatewayNames.size > 0 ? (
+        <p
+          data-local-default
+          className="px-2 pb-0.5 pt-1 text-[11px] leading-4 text-content/45"
+        >
+          {LOCAL_DEFAULT_NOTE}
         </p>
       ) : null}
       {connectorChangePending(disabled, atTurnStart) ? (

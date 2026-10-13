@@ -131,6 +131,8 @@ import { AddFolderMenuItem } from "../../session-tools/ui/AddFolderMenuItem";
 import { ConnectorsBadge } from "../../session-tools/ui/ConnectorsBadge";
 import { ConnectorsMenuItem } from "../../session-tools/ui/ConnectorsMenuItem";
 import { ConnectorsPopover } from "../../session-tools/ui/ConnectorsPopover";
+import { gatewayOffByDefault as gatewayOffByDefault_s6 } from "../../gateway-connectors/model/sessionGateway";
+import { useInstalledConnectors as useInstalledConnectors_s6 } from "../../gateway-connectors/model/installed";
 import { ExtraDirChips } from "../../session-tools/ui/ExtraDirChips";
 import { ResearchChip } from "../../research-mode/ui/ResearchChip";
 import { ResearchMenuItem } from "../../research-mode/ui/ResearchMenuItem";
@@ -425,6 +427,7 @@ type Props = {
   onPrivacyPatch_l5?: (patch: {
     modelProvider?: string;
     permissionsProfile?: string;
+    gatewayOn?: string[];
   }) => void;
 };
 
@@ -789,6 +792,22 @@ export function Composer({
     !!onDisabledMcpServersChange &&
     harnessSupportsConnectorSwitches(harness);
   const connectorsAtTurnStart = useTurnStartSnapshot(disabledMcpServers, busy);
+  // Gateway connectors a local model starts with switched off (Mac 1.3).
+  const installedConnectors_s6 = useInstalledConnectors_s6();
+  const connectorsOffCount =
+    disabledMcpServers.length +
+    (connectorsSupported && privacySession_l5 && onPrivacyPatch_l5
+      ? gatewayOffByDefault_s6(
+          {
+            ...privacySession_l5,
+            id: sessionId,
+            harness,
+            disabledMcpServers,
+          },
+          executionCwd,
+          installedConnectors_s6,
+        ).length
+      : 0);
   const toolAccessSupported =
     !remote && !!onToolAccessChange && harnessSupportsToolAccess(harness);
   const skillSwitchesSupported =
@@ -2522,7 +2541,7 @@ export function Composer({
                   ) : null}
                   {connectorsSupported ? (
                     <ConnectorsMenuItem
-                      offCount={disabledMcpServers.length}
+                      offCount={connectorsOffCount}
                       onOpen={() => {
                         setPlusOpen(false);
                         setConnectorsOpen(true);
@@ -2757,6 +2776,12 @@ export function Composer({
                   disabled={disabledMcpServers}
                   atTurnStart={connectorsAtTurnStart}
                   onChange={(names) => onDisabledMcpServersChange?.(names)}
+                  localDefault={privacySession_l5}
+                  onGatewayOnChange={
+                    onPrivacyPatch_l5
+                      ? (gatewayOn) => onPrivacyPatch_l5({ gatewayOn })
+                      : undefined
+                  }
                   onManage={() => {
                     setConnectorsOpen(false);
                     window.dispatchEvent(
@@ -2873,9 +2898,9 @@ export function Composer({
                 disabledPlugins={disabledPlugins}
               />
             ) : null}
-            {!compact && connectorsSupported && disabledMcpServers.length ? (
+            {!compact && connectorsSupported && connectorsOffCount ? (
               <ConnectorsBadge
-                offCount={disabledMcpServers.length}
+                offCount={connectorsOffCount}
                 pending={connectorChangePending(
                   disabledMcpServers,
                   connectorsAtTurnStart,

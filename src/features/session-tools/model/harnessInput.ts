@@ -20,6 +20,7 @@ import {
 import { harnessDisabledMcpServers } from "./connectors";
 import { harnessExtraDirs } from "./extraDirs";
 import { sanitizeModelProvider } from "../../model-setup/model/modelProvider";
+import { sanitizeGatewayOn } from "../../gateway-connectors/model/localDefault";
 // [lane-1] imports
 // [lane-2] imports
 // [lane-3] imports
@@ -44,8 +45,10 @@ type SessionTools = Pick<
   | "permissionsProfile"
 > &
   // The chat, for its claude.ai connectors switched back on over a Docker
-  // gateway copy.
-  Partial<Pick<Session, "id">>;
+  // gateway copy, and for the gateway connectors a local model starts with.
+  Partial<
+    Pick<Session, "id" | "model" | "providerAccountId" | "gatewayOn" | "blocks">
+  >;
 
 /**
  * A session's composer tools in the shape a harness turn takes. Every call
@@ -150,6 +153,8 @@ export type SessionToolsPatch = {
   disabledPlugins?: string[];
   /** A provider id; an empty string returns the chat to the default. */
   modelProvider?: string;
+  /** Gateway connectors switched on under the local default; see `Session.gatewayOn`. */
+  gatewayOn?: string[];
   // [lane-1] tools-patch
   // [lane-2] tools-patch
   // [lane-3] tools-patch
@@ -167,6 +172,7 @@ export function withSessionToolsPatch<
     | "disabledSkills"
     | "disabledPlugins"
     | "modelProvider"
+    | "gatewayOn"
     // [lane-1] tools-apply-pick
     // [lane-2] tools-apply-pick
     // [lane-3] tools-apply-pick
@@ -202,6 +208,9 @@ export function withSessionToolsPatch<
       ...next,
       modelProvider: sanitizeModelProvider(patch.modelProvider),
     };
+  }
+  if (patch.gatewayOn !== undefined) {
+    next = { ...next, gatewayOn: sanitizeGatewayOn(patch.gatewayOn) ?? [] };
   }
   // [lane-1] tools-apply-body
   // [lane-2] tools-apply-body

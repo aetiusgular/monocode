@@ -42,6 +42,7 @@ import {
   type ToolAccess,
 } from "../../sessions/model/session";
 import { sanitizeDisabledMcpServers } from "../../session-tools/model/connectors";
+import { sanitizeGatewayOn } from "../../gateway-connectors/model/localDefault";
 import { sanitizeExtraDirs } from "../../session-tools/model/extraDirs";
 import { sanitizeToolAccess } from "../../tool-access/model/toolAccess";
 import { sanitizeDisabledSkills } from "../../chat-skills/model/chatSkills";
@@ -69,6 +70,7 @@ export type WorkspaceSessionStub = {
   disabledSkills?: string[];
   disabledPlugins?: string[];
   modelProvider?: string;
+  gatewayOn?: string[];
   // [lane-1] stub-fields
   // [lane-2] stub-fields
   // [lane-3] stub-fields
@@ -407,6 +409,7 @@ function sessionStub(session: Session): WorkspaceSessionStub | null {
       ? { disabledPlugins: session.disabledPlugins }
       : {}),
     ...(session.modelProvider ? { modelProvider: session.modelProvider } : {}),
+    ...(session.gatewayOn ? { gatewayOn: [...session.gatewayOn] } : {}),
     // [lane-1] stub-from-session
     // [lane-2] stub-from-session
     // [lane-3] stub-from-session
@@ -452,6 +455,7 @@ function sessionFromStub(stub: WorkspaceSessionStub): Session {
     ...(stub.disabledSkills ? { disabledSkills: stub.disabledSkills } : {}),
     ...(stub.disabledPlugins ? { disabledPlugins: stub.disabledPlugins } : {}),
     ...(stub.modelProvider ? { modelProvider: stub.modelProvider } : {}),
+    ...(stub.gatewayOn ? { gatewayOn: stub.gatewayOn } : {}),
     // [lane-1] session-from-stub
     // [lane-2] session-from-stub
     // [lane-3] session-from-stub
@@ -488,6 +492,7 @@ function sanitizeStub(raw: unknown): WorkspaceSessionStub | null {
   const disabledSkills = sanitizeDisabledSkills(value.disabledSkills);
   const disabledPlugins = sanitizeDisabledPlugins(value.disabledPlugins);
   const modelProvider = sanitizeModelProvider(value.modelProvider);
+  const gatewayOn = sanitizeGatewayOn(value.gatewayOn);
   // [lane-1] sanitize-stub-body
   // [lane-2] sanitize-stub-body
   // [lane-3] sanitize-stub-body
@@ -528,6 +533,7 @@ function sanitizeStub(raw: unknown): WorkspaceSessionStub | null {
     ...(disabledSkills ? { disabledSkills } : {}),
     ...(disabledPlugins ? { disabledPlugins } : {}),
     ...(modelProvider ? { modelProvider } : {}),
+    ...(gatewayOn ? { gatewayOn } : {}),
     // [lane-1] sanitize-stub
     // [lane-2] sanitize-stub
     // [lane-3] sanitize-stub

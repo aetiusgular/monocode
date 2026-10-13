@@ -816,6 +816,7 @@ import {
 } from "./model/appLifecycle";
 import { withEmptyTurnNotice as withEmptyTurnNotice_s6 } from "../features/sessions/model/emptyTurn";
 import { providerLocality as providerLocality_s6 } from "../features/model-setup/model/providerLocality";
+import { gatewayOnAtFirstTurn as gatewayOnAtFirstTurn_s6 } from "../features/gateway-connectors/model/localDefault";
 // [lane-1] imports
 import { rewindOptions as rewindOptions_l1 } from "../features/rewind/model/rewind";
 import { cutChatTranscript as cutChatTranscript_l1 } from "../features/rewind/model/turnRewind";
@@ -7563,6 +7564,10 @@ function Workspace({
               handoffCard:
                 rawCommand || options?.ciRepair ? s.handoffCard : undefined,
             };
+            // A Codex chat on a local model keeps its gateway connectors off
+            // from its first message on (Mac 1.3); saved with the chat.
+            const gatewayOn_s6 = gatewayOnAtFirstTurn_s6(next);
+            if (gatewayOn_s6) next = { ...next, gatewayOn: gatewayOn_s6 };
             if (editedResend) {
               next = { ...editedResend.replace(next), resendingEdited: false };
             }

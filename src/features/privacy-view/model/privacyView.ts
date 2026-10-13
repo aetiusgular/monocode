@@ -38,6 +38,7 @@ export type PrivacySession = Pick<
       | "extraDirs"
       | "disabledMcpServers"
       | "disabledSkills"
+      | "gatewayOn"
     >
   >;
 

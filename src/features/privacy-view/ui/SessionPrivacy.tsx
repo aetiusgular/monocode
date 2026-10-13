@@ -40,6 +40,9 @@ export function usePrivacyView(session: PrivacyPanelSession) {
     session.permissionsProfile,
     session.extraDirs,
     session.disabledMcpServers,
+    session.gatewayOn,
+    // A chat's gateway connectors can start off until its first message.
+    session.blocks.length === 0,
   ]);
   const routes = useMemo(() => {
     let gatewayServers: ReturnType<typeof gatewaySessionInput>["servers"] = [];

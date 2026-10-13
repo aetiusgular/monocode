@@ -10,6 +10,7 @@ import { recoverCursorSubagents } from "../../../integrations/harness/providers/
 import { persistableAttachment } from "../model/attachments";
 import type { ContextUsage } from "../model/contextUsage";
 import { sanitizeDisabledMcpServers } from "../../session-tools/model/connectors";
+import { sanitizeGatewayOn } from "../../gateway-connectors/model/localDefault";
 import { sanitizeExtraDirs } from "../../session-tools/model/extraDirs";
 import { sanitizeDisabledSkills } from "../../chat-skills/model/chatSkills";
 import { sanitizeResearchRequest } from "../../research-mode/model/researchPrompt";
@@ -359,6 +360,7 @@ function persistedSessionTools(
   const disabledSkills = sanitizeDisabledSkills(source?.disabledSkills);
   const disabledPlugins = sanitizeDisabledPlugins(source?.disabledPlugins);
   const modelProvider = sanitizeModelProvider(source?.modelProvider);
+  const gatewayOn = sanitizeGatewayOn(source?.gatewayOn);
   // [lane-1] persisted-tools-body
   // [lane-2] persisted-tools-body
   // [lane-3] persisted-tools-body
@@ -371,7 +373,8 @@ function persistedSessionTools(
     !toolAccess &&
     !disabledSkills &&
     !disabledPlugins &&
-    !modelProvider
+    !modelProvider &&
+    !gatewayOn
     // [lane-1] persisted-tools-check
     // [lane-2] persisted-tools-check
     // [lane-3] persisted-tools-check
@@ -388,6 +391,7 @@ function persistedSessionTools(
     ...(disabledSkills ? { disabledSkills } : {}),
     ...(disabledPlugins ? { disabledPlugins } : {}),
     ...(modelProvider ? { modelProvider } : {}),
+    ...(gatewayOn ? { gatewayOn } : {}),
     // [lane-1] persisted-tools-return
     // [lane-2] persisted-tools-return
     // [lane-3] persisted-tools-return

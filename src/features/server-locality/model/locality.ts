@@ -23,6 +23,8 @@ export type LocalitySession = Pick<Session, "harness"> &
       | "providerAccountId"
       | "disabledMcpServers"
       | "disabledSkills"
+      | "gatewayOn"
+      | "blocks"
     >
   >;
 
@@ -97,6 +99,15 @@ export function sessionLocalityParts(
         ...(session.id ? { id: session.id } : {}),
         harness: session.harness,
         disabledMcpServers: session.disabledMcpServers ?? [],
+        ...(session.model ? { model: session.model } : {}),
+        ...(session.modelProvider
+          ? { modelProvider: session.modelProvider }
+          : {}),
+        ...(session.providerAccountId
+          ? { providerAccountId: session.providerAccountId }
+          : {}),
+        ...(session.gatewayOn ? { gatewayOn: session.gatewayOn } : {}),
+        ...(session.blocks ? { blocks: session.blocks } : {}),
       },
       cwd,
     ).servers.map((server) => ({

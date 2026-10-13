@@ -10,6 +10,7 @@ import {
   type InstalledConnector,
   type InstalledState,
 } from "./installed";
+import { gatewayOnList, type LocalDefaultSession } from "./localDefault";
 
 const CLAUDE_AI_PREFIX = "claude.ai ";
 
@@ -180,7 +181,7 @@ export function gatewaySessionInput(
     id?: string;
     harness: HarnessId;
     disabledMcpServers?: readonly string[];
-  },
+  } & Partial<Omit<LocalDefaultSession, "harness">>,
   workCwd: string,
   installed: InstalledState = installedState(),
   reportedNames: readonly string[] = knownReportedMcpServerNames(),
@@ -188,6 +189,11 @@ export function gatewaySessionInput(
   servers: HarnessLaunchMcpServer[];
   names: ReadonlySet<string>;
   defaultOff: string[];
+  /**
+   * The connectors this chat switched on, when its connectors start off (a
+   * local model). Undefined when they follow the off list.
+   */
+  onlyOn?: readonly string[];
 } {
   const names = new Set(installed.connectors.map((c) => c.sessionName));
   if (
@@ -197,10 +203,13 @@ export function gatewaySessionInput(
     return { servers: [], names, defaultOff: [] };
   }
   const off = new Set(session.disabledMcpServers ?? []);
+  const onlyOn = gatewayOnList(session);
+  const on = onlyOn ? new Set(onlyOn) : null;
   const ready = launchableConnectors(installed);
   const docker = installed.docker ?? "";
   const servers = ready
     .filter((connector) => !off.has(connector.sessionName))
+    .filter((connector) => !on || on.has(connector.sessionName))
     .map((connector) => ({
       name: connector.sessionName,
       command: docker,
@@ -216,7 +225,30 @@ export function gatewaySessionInput(
       }
     }
   }
-  return { servers, names, defaultOff: defaultOff.sort() };
+  return {
+    servers,
+    names,
+    defaultOff: defaultOff.sort(),
+    ...(onlyOn ? { onlyOn } : {}),
+  };
+}
+
+/**
+ * Gateway connectors that are off only because the chat's connectors start
+ * off on a local model, for the composer's "N off" count.
+ */
+export function gatewayOffByDefault(
+  session: Parameters<typeof gatewaySessionInput>[0],
+  workCwd: string,
+  installed: InstalledState = installedState(),
+): string[] {
+  const input = gatewaySessionInput(session, workCwd, installed, []);
+  if (!input.onlyOn) return [];
+  const on = new Set(input.onlyOn);
+  const off = new Set(session.disabledMcpServers ?? []);
+  return launchableConnectors(installed)
+    .map((connector) => connector.sessionName)
+    .filter((name) => !on.has(name) && !off.has(name));
 }
 
 /** Gateway connectors a chat switched off, where the harness takes them. */

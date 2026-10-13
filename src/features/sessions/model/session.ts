@@ -470,6 +470,7 @@ export type PersistedSessionTools = {
   disabledSkills?: string[];
   disabledPlugins?: string[];
   modelProvider?: string;
+  gatewayOn?: string[];
   // [lane-1] persisted-tools
   // [lane-2] persisted-tools
   // [lane-3] persisted-tools
@@ -632,6 +633,13 @@ export type Session = {
    * like `extraDirs`. Carried with no effect until the provider picker uses it.
    */
   modelProvider?: string;
+  /**
+   * Gateway connectors switched on for a chat whose connectors start off
+   * (a Codex chat on a local model; see `gateway-connectors/model/localDefault`).
+   * Absent: connectors follow `disabledMcpServers` as before. Saved like
+   * `extraDirs`; an empty list is kept.
+   */
+  gatewayOn?: string[];
   /** One-shot composer text when opening a session from Inbox. */
   composerSeed?: string;
   /** Inbox issue/PR chip shown above the composer. In-memory, one-shot. */
