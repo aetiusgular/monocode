@@ -38,16 +38,46 @@ export function parseFindingLines(output: string): ParsedFinding[] {
     );
     if (match) {
       const comment = match[3].trim().slice(0, MAX_COMMENT);
-      if (comment) found.push({ path: match[1].trim(), line: Number(match[2]), comment });
+      if (comment && !marksNotAnIssue(comment))
+        found.push({ path: match[1].trim(), line: Number(match[2]), comment });
       continue;
     }
     const fileLevel = line.match(/^([^\s:`][^:`]*\.[A-Za-z0-9]+|[^\s:`][^:`]*\/[^:`]*):\s+(.+)$/);
     if (fileLevel) {
       const comment = fileLevel[2].trim().slice(0, MAX_COMMENT);
-      if (comment) found.push({ path: fileLevel[1].trim(), line: null, comment });
+      if (comment && !marksNotAnIssue(comment))
+        found.push({ path: fileLevel[1].trim(), line: null, comment });
     }
   }
   return found;
+}
+
+/** Trailing filler a model writes while it thinks aloud. */
+const FILLER =
+  /^(?:checking|let me (?:check|look|see)|moving on|next|ok(?:ay)?|hmm+)\b[^.!?…]*[.!?…]*$|^[.…\s]*$/i;
+
+/** A closing verdict that the line is not a problem. */
+const NOT_AN_ISSUE =
+  /^(?:(?:no|yes|ok(?:ay)?|actually)[,.]?\s+)?(?:(?:that|this|it|which)(?:'s| is| looks| seems)\s+(?:fine|ok(?:ay)?|correct|right|good|not (?:a|an) (?:problem|issue|bug))|no (?:issue|problem|bug)s?(?: here| there)?|not (?:a|an) (?:problem|issue|bug)|looks (?:correct|fine|good|ok(?:ay)?|right))\b[^.!?]*[.!]?$/i;
+
+/**
+ * Mac test 4.9: a hosted review's first finding was the model thinking
+ * aloud ("…without a blank line before it? No, that's fine. Checking…").
+ * A finding whose last real sentence says the line is not a problem is not
+ * a finding. Conservative: a "but" or "however" in that sentence keeps it,
+ * and a verdict earlier in the text followed by a claim keeps it.
+ */
+export function marksNotAnIssue(comment: string): boolean {
+  const sentences = comment
+    .split(/(?<=[.!?…])\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  while (sentences.length && FILLER.test(sentences[sentences.length - 1]))
+    sentences.pop();
+  const last = sentences[sentences.length - 1];
+  if (!last || /\b(?:but|however|although|except|unless)\b/i.test(last))
+    return false;
+  return NOT_AN_ISSUE.test(last);
 }
 
 function normalisePath(path: string): string {
