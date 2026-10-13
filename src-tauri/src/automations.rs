@@ -774,6 +774,41 @@ fn skip_pending_runs(
     Ok(changed)
 }
 
+/// The error a pending run carries when its automation was saved switched
+/// off before the run started (security fix F8).
+const CANCELLED: &str = "Cancelled before it started.";
+
+/// Mark the pending scheduled and event runs of an automation Skipped as
+/// cancelled. A manual run is the user's own click and is left alone; runs
+/// already started are left to finish.
+fn cancel_pending_runs(
+    conn: &Connection,
+    automation: &mut Automation,
+    now: i64,
+) -> Result<bool, String> {
+    let mut changed = false;
+    for mut run in list_runs(conn, &automation.id)? {
+        if run.status != "pending" || run.trigger == "manual" {
+            continue;
+        }
+        run.status = "skipped".into();
+        run.completed_at = Some(now);
+        run.error = Some(CANCELLED.into());
+        apply_run_summary(automation, &run);
+        write_run(conn, &run)?;
+        changed = true;
+    }
+    Ok(changed)
+}
+
+/// Delete an automation. Its runs go with it (`ON DELETE CASCADE`), so a
+/// pending run can no longer start: `begin_run` finds nothing.
+fn delete_automation(conn: &Connection, id: &str) -> Result<(), String> {
+    conn.execute("DELETE FROM automations WHERE id = ?1", [id])
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 /// Move one pending run to running, once. Re-reads its automation at this
 /// moment: a run whose automation is gone returns nothing, and one whose
 /// automation was switched off is marked Skipped and returns nothing. A run
@@ -836,7 +871,23 @@ pub fn automations_upsert(
     refuse_unborn_worktree(&automation)?;
     let triggers = Some(normalize_triggers(&automation));
     let conn = store.lock_conn()?;
-    let previous = get(&conn, &automation.id)?;
+    let saved = save_automation(&conn, automation, triggers, now)?;
+    drop(conn);
+    let _ = app.emit(CHANGED, ());
+    Ok(saved)
+}
+
+/// Write one automation, already checked, and settle its pending runs:
+/// switching it off skips them; saving it off while it was already off
+/// cancels a claimed one-time run that has not started (security fix F8).
+fn save_automation(
+    conn: &Connection,
+    automation: AutomationUpsert,
+    triggers: Option<Vec<AutomationTrigger>>,
+    now: i64,
+) -> Result<Automation, String> {
+    let previous = get(conn, &automation.id)?;
+    let was_off = previous.as_ref().is_some_and(|value| !value.enabled);
     let was_enabled = previous.as_ref().is_some_and(|value| value.enabled);
     let created_at = previous
         .as_ref()
@@ -884,11 +935,14 @@ pub fn automations_upsert(
     };
     let mut saved = saved;
     if !saved.enabled && was_enabled {
-        skip_pending_runs(&conn, &mut saved, now)?;
+        skip_pending_runs(conn, &mut saved, now)?;
+    } else if !saved.enabled && was_off {
+        // Claiming a one-time run switches its automation off, so the
+        // switch above never fires for it. Saving it off again (or deleting
+        // it) is how the user stops that run before it starts.
+        cancel_pending_runs(conn, &mut saved, now)?;
     }
-    write_automation(&conn, &saved)?;
-    drop(conn);
-    let _ = app.emit(CHANGED, ());
+    write_automation(conn, &saved)?;
     Ok(saved)
 }
 
@@ -900,8 +954,7 @@ pub fn automations_delete(
 ) -> Result<(), String> {
     validate_id(&id, "automation")?;
     let conn = store.lock_conn()?;
-    conn.execute("DELETE FROM automations WHERE id = ?1", [id])
-        .map_err(|error| error.to_string())?;
+    delete_automation(&conn, &id)?;
     drop(conn);
     let _ = app.emit(CHANGED, ());
     Ok(())
@@ -1970,6 +2023,57 @@ mod tests {
             .unwrap()
             .is_none());
         assert_eq!(run_status(&conn, "run-2").0, "skipped");
+    }
+
+    // Security fix F8: a claimed one-time run could not be stopped, because
+    // claiming it had already switched the automation off.
+    #[test]
+    fn saving_a_spent_one_time_automation_off_cancels_its_pending_run() {
+        let at = 1_000;
+        let conn = claim_store(vec![time_trigger("once", at, 0)], at);
+        set_enabled(&conn, false);
+        write_run(&conn, &pending_run("run-1", "scheduled", at)).unwrap();
+        write_run(&conn, &pending_run("manual", "manual", at)).unwrap();
+        let input = upsert(vec![time_trigger("once", at, 0)], false, at);
+        let triggers = Some(normalize_triggers(&input));
+        let saved = save_automation(&conn, input, triggers, at + 1).unwrap();
+        assert!(!saved.enabled);
+        let (status, error) = run_status(&conn, "run-1");
+        assert_eq!(status, "skipped");
+        assert_eq!(error.as_deref(), Some(CANCELLED));
+        assert!(begin_run(&conn, "run-1", at + 2).unwrap().is_none());
+        // The user's own Run now click is not cancelled by a save.
+        assert_eq!(run_status(&conn, "manual").0, "pending");
+        let automation = get(&conn, "automation-id").unwrap().unwrap();
+        assert_eq!(automation.last_run_error.as_deref(), Some(CANCELLED));
+    }
+
+    #[test]
+    fn saving_it_on_again_leaves_the_pending_run_to_start() {
+        let at = 1_000;
+        let conn = claim_store(vec![time_trigger("once", at, 0)], at);
+        set_enabled(&conn, false);
+        write_run(&conn, &pending_run("run-1", "scheduled", at)).unwrap();
+        let input = upsert(
+            vec![time_trigger("once", at + 600_000, 0)],
+            true,
+            at + 600_000,
+        );
+        let triggers = Some(normalize_triggers(&input));
+        save_automation(&conn, input, triggers, at + 1).unwrap();
+        assert_eq!(run_status(&conn, "run-1").0, "pending");
+    }
+
+    #[test]
+    fn deleting_an_automation_stops_its_pending_run() {
+        let at = 1_000;
+        let conn = claim_store(vec![time_trigger("once", at, 0)], at);
+        set_enabled(&conn, false);
+        write_run(&conn, &pending_run("run-1", "scheduled", at)).unwrap();
+        delete_automation(&conn, "automation-id").unwrap();
+        assert!(get(&conn, "automation-id").unwrap().is_none());
+        assert!(begin_run(&conn, "run-1", at + 2).unwrap().is_none());
+        assert!(pending_runs(&conn, i64::MAX).unwrap().is_empty());
     }
 
     #[test]
