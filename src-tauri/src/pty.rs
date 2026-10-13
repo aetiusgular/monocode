@@ -45,6 +45,9 @@ struct LivePty {
     #[cfg(windows)]
     master: Mutex<Box<dyn portable_pty::MasterPty + Send>>,
     pid: u32,
+    /// A process MonoCode started for a session (a preview server), not a
+    /// terminal's login shell.
+    owned: bool,
 }
 
 pub struct PtyHost {
@@ -64,6 +67,13 @@ impl PtyHost {
         Self {
             sessions: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The process id of a running process MonoCode started itself (such as
+    /// a preview server), or None for a terminal shell or an id not running.
+    /// It leads its own session (`setsid`), so its children share this id.
+    pub(crate) fn owned_pid(&self, id: &str) -> Option<u32> {
+        self.get(id).filter(|live| live.owned).map(|live| live.pid)
     }
 
     fn insert(&self, id: String, live: Arc<LivePty>) -> Option<Arc<LivePty>> {
@@ -431,6 +441,7 @@ fn spawn_unix(
         writer: Mutex::new(Box::new(writer)),
         master_fd: master,
         pid,
+        owned,
     });
     host.insert(id.clone(), live);
 
@@ -506,6 +517,7 @@ fn spawn_windows(
 ) -> Result<(), String> {
     use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
+    let owned = command.is_some();
     let (shell, args, extra_env) = match command {
         Some(command) => (command.program, command.args, command.env),
         None => {
@@ -557,6 +569,7 @@ fn spawn_windows(
         writer: Mutex::new(Box::new(writer)),
         master: Mutex::new(pair.master),
         pid,
+        owned,
     });
     host.insert(id.clone(), live);
 
@@ -982,12 +995,35 @@ mod tests {
                 writer: Mutex::new(Box::new(std::io::sink())),
                 master_fd: -1,
                 pid: 42,
+                owned: false,
             }),
         );
         assert!(host.remove_if_pid("term", 7).is_none());
         assert!(host.get("term").is_some());
         assert!(host.remove_if_pid("term", 42).is_some());
         assert!(host.get("term").is_none());
+    }
+
+    // Security fix F6: only a process MonoCode started is a preview.
+    #[test]
+    fn owned_pid_names_only_a_running_owned_process() {
+        let host = PtyHost::new();
+        let live = |pid: u32, owned: bool| {
+            Arc::new(LivePty {
+                cwd: std::path::PathBuf::from("/test"),
+                writer: Mutex::new(Box::new(std::io::sink())),
+                master_fd: -1,
+                pid,
+                owned,
+            })
+        };
+        host.insert("owned-1".into(), live(42, true));
+        host.insert("term".into(), live(43, false));
+        assert_eq!(host.owned_pid("owned-1"), Some(42));
+        assert_eq!(host.owned_pid("term"), None);
+        assert_eq!(host.owned_pid("missing"), None);
+        host.remove("owned-1");
+        assert_eq!(host.owned_pid("owned-1"), None);
     }
 
     #[test]

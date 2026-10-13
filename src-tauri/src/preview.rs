@@ -415,9 +415,187 @@ pub fn fetch_script(raw: &str) -> PreviewScript {
     }
 }
 
+/// Whether every listener on this loopback port belongs to the process
+/// session MonoCode started for a preview. The preview runs under `setsid`,
+/// so its server (`npm` -> `node` -> `vite`) shares the leader's session id.
+/// A port nobody listens on, or one another program also listens on, or one
+/// whose owner this user cannot see, is refused.
+#[cfg(unix)]
+fn port_held_by_session(leader: u32, port: u16) -> bool {
+    let Some(pids) = loopback_listeners(port) else {
+        return false;
+    };
+    !pids.is_empty()
+        && pids.iter().all(|&pid| {
+            // SAFETY: getsid only reads the session id of a process.
+            pid == leader || unsafe { libc::getsid(pid as libc::pid_t) } == leader as libc::pid_t
+        })
+}
+
+#[cfg(not(unix))]
+fn port_held_by_session(_leader: u32, _port: u16) -> bool {
+    false
+}
+
+/// True for a listening address a loopback connection reaches: loopback or
+/// any address, IPv4 or IPv6, in `/proc/net/tcp` hex form.
+#[cfg(target_os = "linux")]
+fn proc_loopback_or_any(hex: &str) -> bool {
+    match hex.len() {
+        // IPv4, little-endian: 127.x.x.x ends in 7F.
+        8 => hex == "00000000" || hex.ends_with("7F"),
+        32 => {
+            hex == "00000000000000000000000000000000"
+                || hex == "00000000000000000000000001000000"
+                || (hex.starts_with("0000000000000000FFFF0000") && hex.ends_with("7F"))
+                || hex == "0000000000000000FFFF000000000000"
+        }
+        _ => false,
+    }
+}
+
+/// The processes listening on this port on a loopback or wildcard address,
+/// or None when a listener's owner cannot be found.
+#[cfg(target_os = "linux")]
+fn loopback_listeners(port: u16) -> Option<Vec<u32>> {
+    use std::collections::HashSet;
+    let mut inodes: HashSet<u64> = HashSet::new();
+    for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        let Ok(text) = fs::read_to_string(table) else {
+            continue;
+        };
+        for line in text.lines().skip(1) {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            // local_address, state 0A is LISTEN, inode is the tenth field.
+            if fields.len() < 10 || fields[3] != "0A" {
+                continue;
+            }
+            let Some((addr, hex_port)) = fields[1].rsplit_once(':') else {
+                continue;
+            };
+            if u16::from_str_radix(hex_port, 16).ok() != Some(port) || !proc_loopback_or_any(addr) {
+                continue;
+            }
+            if let Ok(inode) = fields[9].parse::<u64>() {
+                inodes.insert(inode);
+            }
+        }
+    }
+    if inodes.is_empty() || inodes.contains(&0) {
+        return if inodes.is_empty() {
+            Some(Vec::new())
+        } else {
+            None
+        };
+    }
+    let mut found: HashSet<u64> = HashSet::new();
+    let mut pids = Vec::new();
+    for entry in fs::read_dir("/proc").ok()?.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(fds) = fs::read_dir(entry.path().join("fd")) else {
+            continue;
+        };
+        let mut owns = false;
+        for fd in fds.flatten() {
+            let Ok(target) = fs::read_link(fd.path()) else {
+                continue;
+            };
+            let target = target.to_string_lossy();
+            let Some(inode) = target
+                .strip_prefix("socket:[")
+                .and_then(|rest| rest.strip_suffix(']'))
+                .and_then(|n| n.parse::<u64>().ok())
+            else {
+                continue;
+            };
+            if inodes.contains(&inode) {
+                found.insert(inode);
+                owns = true;
+            }
+        }
+        if owns {
+            pids.push(pid);
+        }
+    }
+    // A socket whose owner is hidden (another user's process) is refused.
+    (found.len() == inodes.len()).then_some(pids)
+}
+
+/// The processes listening on this port on a loopback or wildcard address,
+/// from `lsof` (an absolute path and an argument list, no shell). None when
+/// it cannot be run.
+#[cfg(target_os = "macos")]
+fn loopback_listeners(port: u16) -> Option<Vec<u32>> {
+    let output = std::process::Command::new("/usr/sbin/lsof")
+        .args(["-nP", "-w", "-Fpn", "-sTCP:LISTEN"])
+        .arg(format!("-iTCP:{port}"))
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut pids = Vec::new();
+    let mut current: Option<u32> = None;
+    for line in text.lines() {
+        if let Some(pid) = line.strip_prefix('p') {
+            current = pid.parse().ok();
+        } else if let Some(name) = line.strip_prefix('n') {
+            let host = name.rsplit_once(':').map(|(h, _)| h).unwrap_or(name);
+            let reachable =
+                host == "*" || host == "[::1]" || host == "[::]" || host.starts_with("127.");
+            if let (true, Some(pid)) = (reachable, current) {
+                if !pids.contains(&pid) {
+                    pids.push(pid);
+                }
+            }
+        }
+    }
+    Some(pids)
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn loopback_listeners(_port: u16) -> Option<Vec<u32>> {
+    None
+}
+
+/// `fetch_script` for a running preview only (security fix F6): the URL's
+/// port must be one the preview's own processes listen on. `leader` is the
+/// preview's process id, found from the preview id in Rust, never taken
+/// from the caller.
+pub fn fetch_preview_script(leader: Option<u32>, raw: &str) -> PreviewScript {
+    let refuse = |error: &str| PreviewScript {
+        error: Some(error.into()),
+        ..PreviewScript::default()
+    };
+    let Some(leader) = leader else {
+        return refuse("This preview is not running");
+    };
+    let url = match loopback_url(raw) {
+        Ok(url) => url,
+        Err(error) => return refuse(&error),
+    };
+    let Some(port) = url.port_or_known_default() else {
+        return refuse("A preview URL needs a port");
+    };
+    if !port_held_by_session(leader, port) {
+        return refuse("Only the running preview's own port can be read");
+    }
+    fetch_script(url.as_str())
+}
+
 #[tauri::command]
-pub async fn preview_fetch_script(url: String) -> Result<PreviewScript, String> {
-    tauri::async_runtime::spawn_blocking(move || fetch_script(&url))
+pub async fn preview_fetch_script(
+    host: tauri::State<'_, crate::pty::PtyHost>,
+    preview_id: String,
+    url: String,
+) -> Result<PreviewScript, String> {
+    let leader = host.owned_pid(&preview_id);
+    tauri::async_runtime::spawn_blocking(move || fetch_preview_script(leader, &url))
         .await
         .map_err(|e| e.to_string())
 }
@@ -718,5 +896,59 @@ mod tests {
         );
         let script = fetch_script(&format!("http://127.0.0.1:{redirect}/x.js"));
         assert_eq!(script.status, Some(302));
+    }
+
+    // Security fix F6: the script fetch reads only a port the running
+    // preview's own processes listen on.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn fetch_preview_script_reads_only_the_previews_own_port() {
+        // The listener in `serve_once` runs in this test process, so its
+        // session is this process's session.
+        // SAFETY: getsid(0) reads this process's session id.
+        let session = unsafe { libc::getsid(0) } as u32;
+        let ok = serve_once(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\nContent-Length: 2\r\nConnection: close\r\n\r\n1;",
+        );
+        let script = fetch_preview_script(Some(session), &format!("http://127.0.0.1:{ok}/a.js"));
+        assert_eq!(script.status, Some(200), "{:?}", script.error);
+        assert_eq!(script.body.as_deref(), Some("1;"));
+
+        // No preview running.
+        let other = serve_once("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+        let none = fetch_preview_script(None, &format!("http://127.0.0.1:{other}/a.js"));
+        assert!(none.status.is_none());
+        assert_eq!(none.error.as_deref(), Some("This preview is not running"));
+
+        // A port held by another session (here: a leader that is not ours).
+        let foreign = fetch_preview_script(Some(1), &format!("http://127.0.0.1:{other}/a.js"));
+        assert!(foreign.status.is_none());
+        assert_eq!(
+            foreign.error.as_deref(),
+            Some("Only the running preview's own port can be read")
+        );
+
+        // A port nobody listens on.
+        let closed = preview_free_port().unwrap();
+        let closed =
+            fetch_preview_script(Some(session), &format!("http://127.0.0.1:{closed}/a.js"));
+        assert!(closed.status.is_none());
+        assert!(closed.error.is_some());
+
+        // Still loopback only.
+        let elsewhere = fetch_preview_script(Some(session), "http://example.com:80/a.js");
+        assert!(elsewhere.status.is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn proc_addresses_reach_loopback_or_any() {
+        assert!(proc_loopback_or_any("0100007F"));
+        assert!(proc_loopback_or_any("00000000"));
+        assert!(!proc_loopback_or_any("0101A8C0"));
+        assert!(proc_loopback_or_any("00000000000000000000000001000000"));
+        assert!(proc_loopback_or_any("00000000000000000000000000000000"));
+        assert!(proc_loopback_or_any("0000000000000000FFFF00000100007F"));
+        assert!(!proc_loopback_or_any("000080FE00000000FF005450B6AD1DFE"));
     }
 }

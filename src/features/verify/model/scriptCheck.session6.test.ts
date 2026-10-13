@@ -174,7 +174,9 @@ describe("verify after a turn that broke a served script", () => {
     tool: { title: "Edit src/main.js", kind: "edit", status: "completed" },
   };
 
+  const fetchedFor: string[] = [];
   beforeEach(async () => {
+    fetchedFor.length = 0;
     localStorage.clear();
     resetVerifyForTest();
     processes = new Map();
@@ -209,14 +211,16 @@ describe("verify after a turn that broke a served script", () => {
     setVerifyDepsForTest({
       probe: async () => ({ status: 200 }),
       // Vite 8 serves the file as written, with status 200.
-      fetchScript: async (url) =>
-        url === "http://localhost:5173/src/main.js"
+      fetchScript: async (url, previewId) => {
+        fetchedFor.push(previewId);
+        return url === "http://localhost:5173/src/main.js"
           ? {
               status: 200,
               contentType: "text/javascript",
               body: "import './style.css'\nconst = ;\n",
             }
-          : { status: 404 },
+          : { status: 404 };
+      },
       now: () => 5,
     });
     await startPreview({
@@ -256,6 +260,9 @@ describe("verify after a turn that broke a served script", () => {
       (check) => check.id === "scripts",
     );
     expect(scripts?.ok).toBe(false);
+    // Security fix F6: the fetch names the running preview, whose own port
+    // Rust checks.
+    expect(fetchedFor).toEqual(["p1"]);
     expect(scripts?.detail).toBe(
       "src/main.js line 2 does not parse in the browser: Unexpected token",
     );

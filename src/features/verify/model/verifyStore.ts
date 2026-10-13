@@ -64,15 +64,19 @@ type ChatState = {
 
 export type VerifyDeps = {
   probe(url: string): Promise<PreviewProbeResult>;
-  /** Loopback only, no redirects, like the probe. */
-  fetchScript(url: string): Promise<ScriptFetch>;
+  /**
+   * Loopback only, no redirects, like the probe, and only a port the
+   * running preview `previewId` itself listens on (checked in Rust).
+   */
+  fetchScript(url: string, previewId: string): Promise<ScriptFetch>;
   parseScript(text: string): Promise<ScriptParseError | null>;
   now(): number;
 };
 
 const DEFAULT_DEPS: VerifyDeps = {
   probe: (url) => invoke<PreviewProbeResult>("preview_probe", { url }),
-  fetchScript: (url) => invoke<ScriptFetch>("preview_fetch_script", { url }),
+  fetchScript: (url, previewId) =>
+    invoke<ScriptFetch>("preview_fetch_script", { previewId, url }),
   parseScript: parseWithAcorn,
   now: () => Date.now(),
 };
@@ -152,7 +156,11 @@ export function noteTurnStart(session: VerifyTurnSession): void {
   else state.autoSends = 0;
   const preview = previewForSession(session.id);
   // launch.json's `autoVerify: false` turns the check off for that server.
-  if (!isPreviewLive(preview) || !preview || preview.candidate.autoVerify === false) {
+  if (
+    !isPreviewLive(preview) ||
+    !preview ||
+    preview.candidate.autoVerify === false
+  ) {
     starts.delete(session.id);
     return;
   }
@@ -218,19 +226,20 @@ export async function verifyNow(
   state.checking = true;
   changed();
   try {
-    const http = alive && preview.url
-      ? await deps.probe(preview.url).catch(
-          (error: unknown): PreviewProbeResult => ({
-            error: error instanceof Error ? error.message : String(error),
-          }),
-        )
-      : preview.url
-        ? { error: "The server is not running" }
-        : undefined;
+    const http =
+      alive && preview.url
+        ? await deps
+            .probe(preview.url)
+            .catch((error: unknown): PreviewProbeResult => ({
+              error: error instanceof Error ? error.message : String(error),
+            }))
+        : preview.url
+          ? { error: "The server is not running" }
+          : undefined;
     const scripts =
       alive && preview.url && typeof http?.status === "number" && written.length
         ? await checkServedScripts(written, preview.runCwd, preview.url, {
-            fetchScript: deps.fetchScript,
+            fetchScript: (url) => deps.fetchScript(url, preview.processId),
             parseScript: deps.parseScript,
           }).catch(() => undefined)
         : undefined;
