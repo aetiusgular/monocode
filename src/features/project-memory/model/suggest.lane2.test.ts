@@ -117,7 +117,7 @@ describe("#36: Suggest memories", () => {
       harness: "codex",
       cwd: "/code/app",
       providerAccountId: "local",
-      model: "codex:qwen2.5:7b",
+      model: "qwen2.5:7b",
     });
     expect(String(prompts[0].prompt)).toContain("Use pnpm, not npm.");
     expect((await loadProposals("/code/app"))[0]).toMatchObject({

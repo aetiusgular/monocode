@@ -7,6 +7,7 @@ import {
   modelTimeoutFactor,
 } from "../../model-traits/model/modelTraits";
 import { MEMORY_ENTRY_MAX } from "../../monos/model/monoMemory";
+import { nativeModelId } from "../../sessions/model/models";
 import {
   isLocal,
   sessionIsLocal,
@@ -90,6 +91,12 @@ export function parseSuggestions(reply: string): string[] {
   return out;
 }
 
+/** The native id the session's harness expects, or undefined for its default. */
+export function suggestModelId(model: string | undefined): string | undefined {
+  const id = model?.trim() ? nativeModelId(model).trim() : "";
+  return id || undefined;
+}
+
 export type SuggestResult =
   { ok: true; proposals: MemoryProposal[] } | { ok: false; reason: string };
 
@@ -109,14 +116,17 @@ export async function suggestMemories(
   const maxChars = Math.floor(window * SUGGEST_WINDOW_SHARE * CHARS_PER_TOKEN);
   const excerpt = transcriptExcerpt(session.blocks, maxChars);
   if (!excerpt) return { ok: false, reason: "Nothing in this chat yet." };
+  // Mac finding 2.9: the harness wants its own model id (`qwen2.5:7b`), not
+  // MonoCode's key (`codex:qwen2.5:7b`). With no native id the harness uses
+  // its default, as helper prompts do in helperPrompt.ts.
+  const model = suggestModelId(session.model);
   let reply: string;
   try {
     reply = await runHarnessTextPrompt({
       harness: session.harness,
       cwd: session.cwd,
       providerAccountId: session.providerAccountId,
-      model: session.model,
-      modelSettings: session.modelSettings,
+      ...(model ? { model, modelSettings: session.modelSettings } : {}),
       prompt: suggestPrompt(excerpt),
       timeoutMs: SUGGEST_TIMEOUT_MS * modelTimeoutFactor(session.model),
       signal: options.signal,
