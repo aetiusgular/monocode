@@ -32,49 +32,13 @@ const COMPOUND = /[;&|`<>\n\r]|\$\(/;
 const CONTROL = /[\u0000-\u001f\u007f]/;
 
 /**
- * Commands that run whatever follows them. A prefix rule starting with one
- * would allow any program, so only an exact rule is kept for them.
+ * Whether MonoCode keeps a prefix rule for these words. An allowlist, the
+ * same for Claude Code's suggestions and for rules MonoCode derives: a
+ * suggestion is steered by the model, so `npx *`, `git *` or `make *` is
+ * never kept (see `prefixPolicy`).
  */
-const RUNS_ANYTHING = new Set([
-  "bash",
-  "sh",
-  "zsh",
-  "fish",
-  "dash",
-  "ksh",
-  "env",
-  "sudo",
-  "doas",
-  "su",
-  "xargs",
-  "eval",
-  "exec",
-  "command",
-  "builtin",
-  "nohup",
-  "time",
-  "timeout",
-  "nice",
-  "watch",
-  "ssh",
-  "osascript",
-  "open",
-  "source",
-  ".",
-]);
-/** Interpreters: a prefix of the bare name would run any script or code. */
-const INTERPRETERS =
-  /^(python[0-9.]*|node|deno|bun|perl|ruby|php|pwsh|powershell|lua|Rscript)$/;
-
 function prefixAllowed(prefix: string): boolean {
-  const words = prefix.split(" ");
-  const first = words[0] ?? "";
-  if (RUNS_ANYTHING.has(first)) return false;
-  // `python3 -m pytest *` names a module; `python3 *` or `node *` does not.
-  if (INTERPRETERS.test(first)) {
-    return words.length >= 3 && words[1] === "-m";
-  }
-  return true;
+  return prefixPolicy(prefix.split(" ")) !== null;
 }
 
 export type CommandRule =
@@ -619,8 +583,9 @@ export function deriveCommandRule(command: unknown): CommandRule | null {
  * Its `destination` is ignored: MonoCode keeps the rule on the chat.
  */
 export function suggestedCommandRule(suggestions: unknown): CommandRule | null {
-  // A suggested prefix MonoCode refuses (`bash *`) is skipped, so the rule
-  // falls back to one derived from the command.
+  // A suggested prefix outside MonoCode's allowlist (`bash *`, `npx *`) is
+  // skipped, so the rule falls back to one derived from the command, which
+  // is an exact rule unless the command fits the allowlist.
   if (!Array.isArray(suggestions)) return null;
   for (const update of suggestions.slice(0, 16)) {
     if (!update || typeof update !== "object") continue;
@@ -646,7 +611,11 @@ export function commandRuleForRequest(
   command: unknown,
   suggestions: unknown,
 ): CommandRule | null {
-  return suggestedCommandRule(suggestions) ?? deriveCommandRule(command);
+  // A suggestion is kept only when it covers this very command: a rule for
+  // some other command would allow what the user never saw.
+  const suggested = suggestedCommandRule(suggestions);
+  if (suggested && commandMatchesRule(command, suggested)) return suggested;
+  return deriveCommandRule(command);
 }
 
 /** The words a card or a row uses for a rule. */
