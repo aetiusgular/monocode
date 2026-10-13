@@ -56,14 +56,52 @@ function VarList({
   );
 }
 
+type AddVarDraft = { name: string; value: string; secret: boolean };
+const EMPTY_DRAFT: AddVarDraft = { name: "", value: "", secret: false };
+
+/**
+ * What was typed but not yet Set, per scope ("" is every project). Kept in
+ * memory only, for this app run, so closing Settings (Escape included) does
+ * not throw it away. Never written to disk, and a secret's value is not kept.
+ */
+const drafts = new Map<string, AddVarDraft>();
+
+/** Tests only. */
+export function __clearEnvDrafts() {
+  drafts.clear();
+}
+
+function useDraftField<K extends keyof AddVarDraft>(
+  scope: string,
+  key: K,
+): [AddVarDraft[K], (next: AddVarDraft[K]) => void] {
+  const [current, setCurrent] = useState(
+    () => (drafts.get(scope) ?? EMPTY_DRAFT)[key],
+  );
+  useEffect(() => {
+    setCurrent((drafts.get(scope) ?? EMPTY_DRAFT)[key]);
+  }, [scope, key]);
+  const set = (next: AddVarDraft[K]) => {
+    const draft = { ...(drafts.get(scope) ?? EMPTY_DRAFT), [key]: next };
+    // A secret's value is not held past the page: only its name and switch.
+    if (draft.secret) draft.value = "";
+    if (!draft.name && !draft.value && !draft.secret) drafts.delete(scope);
+    else drafts.set(scope, draft);
+    setCurrent(next);
+  };
+  return [current, set];
+}
+
 function AddVar({
+  scope,
   onAdd,
 }: {
+  scope: string;
   onAdd: (name: string, value: string, secret: boolean) => void;
 }) {
-  const [name, setName] = useState("");
-  const [value, setValue] = useState("");
-  const [secret, setSecret] = useState(false);
+  const [name, setName] = useDraftField(scope, "name");
+  const [value, setValue] = useDraftField(scope, "value");
+  const [secret, setSecret] = useDraftField(scope, "secret");
   const problem = name ? envNameProblem(name) : undefined;
   return (
     <div className="flex flex-col gap-1">
@@ -168,6 +206,7 @@ export function EnvironmentPage({
           onRemove={(name) => run(removeEnvVar(undefined, name))}
         />
         <AddVar
+          scope=""
           onAdd={(name, value, secret) =>
             run(setEnvVar({ name, value, secret }))
           }
@@ -194,6 +233,7 @@ export function EnvironmentPage({
               onRemove={(name) => run(removeEnvVar(project, name))}
             />
             <AddVar
+              scope={project}
               onAdd={(name, value, secret) =>
                 run(setEnvVar({ project, name, value, secret }))
               }

@@ -380,6 +380,7 @@ import {
   type SettingsSearchResult,
   type SettingsSectionId,
 } from "../model/settings";
+import { settingsEscapeAction } from "../model/settingsEscape";
 import { loadSoundsEnabled, playCue, saveSoundsEnabled } from "../model/sounds";
 import { setQuickComposerShortcut } from "../../quick-composer/model/quickComposer";
 import {
@@ -547,6 +548,11 @@ export function SettingsView({
       if (event.key !== "Escape" || event.defaultPrevented) return;
       event.preventDefault();
       event.stopPropagation();
+      // A focused text field keeps Settings open (2.10).
+      if (settingsEscapeAction(event.target) === "blur") {
+        (event.target as HTMLElement).blur();
+        return;
+      }
       onCloseRef.current();
     };
     // Let dialogs and other Settings controls handle Escape first.
