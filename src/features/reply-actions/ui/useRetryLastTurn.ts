@@ -5,6 +5,7 @@ import {
 } from "../../sessions/model/draftCache";
 import {
   lastUserTurnBlock,
+  lastUserTurnStartIndex,
   type LastTurnRecall,
 } from "../../sessions/model/editLastTurn";
 import type {
@@ -37,7 +38,10 @@ type Options = {
 export type RetryLastTurn = {
   /** Sends the last prompt again in place of its turn. Undefined where it cannot be. */
   retry: (() => void) | undefined;
-  /** The resend in flight was started by `retry`, not by an edit. */
+  /**
+   * The resend in flight was started by `retry`, not by an edit, and the
+   * retried turn has not put out anything yet.
+   */
   retrying: boolean;
 };
 
@@ -55,6 +59,9 @@ export function useRetryLastTurn({
   // The prompt a retry was started for. It stops matching once that prompt
   // is replaced, so nothing has to clear it when the resend goes through.
   const [retriedBlockId, setRetriedBlockId] = useState<string | null>(null);
+  // The prompt that replaced the retried one. Its turn reads "Retrying…"
+  // until its first output (Mac 11.T2.8).
+  const [retriedTurnId, setRetriedTurnId] = useState<string | null>(null);
   const block = lastUserTurnBlock(session.blocks);
   const blockId = block?.id;
   const intent = block?.intent;
@@ -92,11 +99,38 @@ export function useRetryLastTurn({
     if (accepted !== false && !rejected) setRetriedBlockId(blockId);
   }, [blockId, intent, recall, restorePrompt, sessionId, submit]);
 
+  const resending = !!session.resendingEdited;
+  // The harness took the retried prompt: the old prompt was replaced by the
+  // same text under a new block, and the resend is over.
+  const replaced =
+    !resending &&
+    retriedBlockId != null &&
+    blockId != null &&
+    retriedBlockId !== blockId;
+  useEffect(() => {
+    if (!replaced || !blockId) return;
+    setRetriedTurnId(blockId);
+    setRetriedBlockId(null);
+  }, [replaced, blockId]);
+  const awaitingOutput =
+    !!session.busy && !hasOutputAfterLastPrompt(session.blocks);
+
   return {
     retry: recall && blockId ? retry : undefined,
     retrying:
-      !!session.resendingEdited &&
-      retriedBlockId != null &&
-      retriedBlockId === blockId,
+      (resending && retriedBlockId != null && retriedBlockId === blockId) ||
+      (!resending &&
+        (replaced || (retriedTurnId != null && retriedTurnId === blockId)) &&
+        awaitingOutput),
   };
+}
+
+/** Anything the agent put out after the latest prompt. */
+function hasOutputAfterLastPrompt(blocks: Session["blocks"]): boolean {
+  const start = lastUserTurnStartIndex(blocks);
+  if (start < 0) return false;
+  for (let index = start + 1; index < blocks.length; index += 1) {
+    if (blocks[index].role !== "user") return true;
+  }
+  return false;
 }

@@ -1264,7 +1264,7 @@ function AgentTranscriptComponent({
                 background={backgroundTasks}
                 modelName={turnModelName}
                 doing={runningCallLabel(turn, cwd)}
-                resending={resendingEdited}
+                resending={resendingEdited || retryingLastTurn}
                 resendingLabel={retryingLastTurn ? RETRYING_LABEL : undefined}
               />
             ) : agentMascot && agentName ? (

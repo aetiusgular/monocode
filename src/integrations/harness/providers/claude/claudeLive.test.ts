@@ -2481,10 +2481,13 @@ describe("claude edit and resend", () => {
     reply("uuid-after-stop");
     await second.turn;
 
-    // A prompt sent now follows that last entry, not the one the app last
-    // showed.
+    // Claude also writes entries for the stop that it does not stream, so a
+    // prompt sent now follows the end of its transcript file (Mac 11.T2.8,
+    // claudeStoppedBoundary.session6.test.ts). That file cannot be read
+    // here, so the prompt has no boundary rather than a streamed one that
+    // would leave a stopped call unanswered.
     const third = await nextTurn("just the tests then");
-    expect(boundaries(third.events)).toEqual(["uuid-after-stop"]);
+    expect(boundaries(third.events)).toEqual([]);
     emit({ type: "result", subtype: "success", session_id: "sess_1" });
     await third.turn;
 

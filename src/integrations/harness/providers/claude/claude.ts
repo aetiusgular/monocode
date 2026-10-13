@@ -322,6 +322,14 @@ const lastEntryByThread = new Map<
      * A second prompt sent now follows the first, whose uuid is not known.
      */
     claimed: boolean;
+    /**
+     * The turn after this entry was stopped. Claude Code then writes entries
+     * of its own that it does not stream (the stopped calls' results and the
+     * interrupt note), so this is no longer where its conversation ends.
+     * Cutting back to it would leave a stopped call unanswered, and Claude
+     * Code would run it again in the resumed conversation (Mac 11.T2.8).
+     */
+    stale?: boolean;
   }
 >();
 /** A cut asked for by an edit, for the next start of that conversation. */
@@ -362,6 +370,8 @@ export async function sendClaudeTurn(input: SendTurnInput): Promise<void> {
     .then(async () => {
       live.cancelled = false;
       live.muteUpdates = false;
+      await refreshStaleEntry(input.sessionId, live);
+      if (live.cancelled) return;
       try {
         await runTurn(live, input);
       } catch (error) {
@@ -517,6 +527,8 @@ export async function cancelClaudeTurn(sessionId: string): Promise<void> {
     sessionId,
     buildControlRequest(nextControlId(live), { subtype: "interrupt" }),
   ).catch(() => undefined);
+  const last = lastEntryByThread.get(sessionId);
+  if (last) last.stale = true;
   finishActiveTurn(live, [
     { type: "message.completed" },
     { type: "reasoning.completed" },
@@ -2372,6 +2384,9 @@ function noteChainEntry(
     providerSessionId: stringField(rec, "session_id") ?? live.claudeSessionId,
     uuid,
     claimed: false,
+    // Streamed while a stop settles: the entries Claude writes for the stop
+    // itself may still follow, unstreamed.
+    ...(live.cancelled ? { stale: true } : {}),
   });
 }
 
@@ -2383,6 +2398,37 @@ function noteCompaction(threadId: string, rec: Record<string, unknown>): void {
   if (stringField(rec, "type") !== "system") return;
   if (stringField(rec, "subtype") !== "compact_boundary") return;
   lastEntryByThread.delete(threadId);
+}
+
+/**
+ * After a stopped turn, the place the next prompt joins the conversation is
+ * read from Claude Code's transcript file, which has the entries it wrote on
+ * the stop. When that cannot be read, the next prompt has no boundary and
+ * cannot be taken back, rather than one that would replay the stopped call.
+ */
+async function refreshStaleEntry(threadId: string, live: Live): Promise<void> {
+  const last = lastEntryByThread.get(threadId);
+  if (!last?.stale) return;
+  if (last.providerSessionId !== live.claudeSessionId) {
+    lastEntryByThread.delete(threadId);
+    return;
+  }
+  const uuid = await readClaudeLastEntry({
+    cwd: live.cwd,
+    sessionId: live.claudeSessionId,
+    providerAccountId: live.providerAccountId,
+  });
+  // A newer entry streamed meanwhile is newer than the file read.
+  if (lastEntryByThread.get(threadId) !== last) return;
+  if (uuid) {
+    lastEntryByThread.set(threadId, {
+      providerSessionId: live.claudeSessionId,
+      uuid,
+      claimed: false,
+    });
+  } else {
+    lastEntryByThread.delete(threadId);
+  }
 }
 
 /** A prompt is now in Claude's conversation, after the last entry seen. */
