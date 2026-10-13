@@ -65,22 +65,82 @@ const Strip = memo(function Strip({
     anchor: HTMLElement;
   } | null>(null);
   const timer = useRef<number | null>(null);
+  // The thumbnail the pointer is resting on, open or about to open, and where
+  // the pointer last was.
+  const resting = useRef<{
+    image: ToolImageRef;
+    anchor: HTMLElement;
+    x: number;
+    y: number;
+  } | null>(null);
   const cancel = () => {
     if (timer.current != null) window.clearTimeout(timer.current);
     timer.current = null;
   };
   useEffect(() => cancel, []);
-  const rest = (image: ToolImageRef, anchor: HTMLElement) => {
+  const rest = (image: ToolImageRef, anchor: HTMLElement, at: Point) => {
+    const current = resting.current;
+    if (current?.image.id === image.id) {
+      // A move over the same thumbnail keeps its timer or open preview.
+      current.anchor = anchor;
+      current.x = at.clientX;
+      current.y = at.clientY;
+      return;
+    }
     cancel();
-    timer.current = window.setTimeout(
-      () => setHovered({ image, anchor }),
-      HOVER_OPEN_MS,
-    );
+    // Moving to another thumbnail closes this preview; that one opens after
+    // its own rest.
+    if (current) setHovered(null);
+    resting.current = { image, anchor, x: at.clientX, y: at.clientY };
+    timer.current = window.setTimeout(() => {
+      timer.current = null;
+      setHovered({ image, anchor });
+    }, HOVER_OPEN_MS);
   };
   const leave = () => {
     cancel();
+    resting.current = null;
     setHovered(null);
   };
+  const leaveRef = useRef(leave);
+  leaveRef.current = leave;
+
+  // Closes when the pointer really moves off the thumbnail and its preview.
+  // Not on mouseleave: a thumbnail that changes width as its image loads, or
+  // the preview appearing, fires leave events and fake moves at the same
+  // pointer position (0.6, seen on Mac Chromium).
+  useEffect(() => {
+    const onMove = (event: MouseEvent) => {
+      const current = resting.current;
+      if (!current) return;
+      if (event.clientX === current.x && event.clientY === current.y) return;
+      current.x = event.clientX;
+      current.y = event.clientY;
+      if (current.anchor.isConnected && within(current.anchor, event)) return;
+      const preview = document.querySelector(
+        `[data-tool-image-preview="${CSS.escape(current.image.id)}"]`,
+      );
+      if (preview && within(preview, event)) return;
+      leaveRef.current();
+    };
+    const onWindowLeave = (event: MouseEvent) => {
+      // Leaving the window has no related target and ends at its edge.
+      if (event.relatedTarget != null) return;
+      const { clientX: x, clientY: y } = event;
+      if (x <= 0 || y <= 0 || x >= window.innerWidth || y >= window.innerHeight)
+        leaveRef.current();
+    };
+    window.addEventListener("pointermove", onMove, true);
+    window.addEventListener("mousemove", onMove, true);
+    document.addEventListener("mouseout", onWindowLeave, true);
+    window.addEventListener("blur", leaveRef.current);
+    return () => {
+      window.removeEventListener("pointermove", onMove, true);
+      window.removeEventListener("mousemove", onMove, true);
+      document.removeEventListener("mouseout", onWindowLeave, true);
+      window.removeEventListener("blur", leaveRef.current);
+    };
+  }, []);
 
   const shown = images.slice(0, MAX_STRIP_THUMBNAILS);
   const more = images.length - shown.length;
@@ -145,7 +205,7 @@ function Thumbnail({
   image: ToolImageRef;
   load: boolean;
   label: string;
-  onRest: (image: ToolImageRef, anchor: HTMLElement) => void;
+  onRest: (image: ToolImageRef, anchor: HTMLElement, at: Point) => void;
   onLeave: () => void;
 }) {
   const { url, failed } = useToolImageThumbnail(image.path, load);
@@ -161,8 +221,9 @@ function Thumbnail({
         onLeave();
         openToolImageGallery(image.id, event.currentTarget);
       }}
-      onMouseEnter={(event) => onRest(image, event.currentTarget)}
-      onMouseLeave={onLeave}
+      onPointerEnter={(event) => onRest(image, event.currentTarget, event)}
+      onPointerMove={(event) => onRest(image, event.currentTarget, event)}
+      onMouseEnter={(event) => onRest(image, event.currentTarget, event)}
     >
       {url ? (
         <img
@@ -193,5 +254,18 @@ function HoverPreview({ image }: { image: ToolImageRef }) {
       draggable={false}
       className="max-h-64 w-full rounded-lg bg-content/5 object-contain"
     />
+  );
+}
+
+type Point = { clientX: number; clientY: number };
+
+/** Whether the pointer is over the element's box as laid out now. */
+function within(element: Element, event: Point): boolean {
+  const box = element.getBoundingClientRect();
+  return (
+    event.clientX >= box.left &&
+    event.clientX < box.right &&
+    event.clientY >= box.top &&
+    event.clientY < box.bottom
   );
 }
