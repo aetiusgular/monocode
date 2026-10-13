@@ -49,14 +49,31 @@ export function buildThreadTitlePrompt(message: string): string {
   return `${THREAD_TITLE_PROMPT}\n\nUser message:\n${limitSection(message, MESSAGE_LIMIT)}`;
 }
 
+/**
+ * Wrapping a small model puts around a title: a markdown heading or bold, a
+ * `Title:` or `title -` label, quotes (Mac test 4.1: a 7B answered
+ * "Title: Purpose of calc.py"). Stripped until none is left.
+ */
+export function stripTitleWrapping(value: string): string {
+  let out = value.trim();
+  for (let i = 0; i < 6; i += 1) {
+    const next = out
+      .replace(/^#{1,6}\s+/, "")
+      .replace(/^(\*\*|__)(.*?)\1$/, "$2")
+      .replace(/^(\*\*|__)/, "")
+      .replace(/^(?:session |chat |thread )?title\s*(?::|-\s)\s*/i, "")
+      .replace(/^['"`\u201c\u2018]+|['"`\u201d\u2019]+$/g, "")
+      .trim();
+    if (next === out) break;
+    out = next;
+  }
+  return out;
+}
+
 export function sanitizeThreadTitle(raw: string): string {
-  const normalized = raw
-    .trim()
-    .split(/\r?\n/g)[0]
-    ?.trim()
-    .replace(/^['"`]+|['"`]+$/g, "")
-    .trim()
-    .replace(/\s+/g, " ");
+  const normalized = stripTitleWrapping(
+    raw.trim().split(/\r?\n/g)[0]?.trim() ?? "",
+  ).replace(/\s+/g, " ");
 
   if (!normalized) return "";
   if (normalized.length <= TITLE_LIMIT) return normalized;

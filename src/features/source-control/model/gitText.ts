@@ -133,7 +133,14 @@ export function parseBranchName(raw: string): string | null {
 }
 
 export function sanitizeCommitSubject(raw: string): string {
-  const singleLine = raw.trim().split(/\r?\n/g)[0]?.trim() ?? "";
+  // Mac test 4.1: a small model labels its answer ("Commit message: ...").
+  const singleLine = (raw.trim().split(/\r?\n/g)[0]?.trim() ?? "")
+    .replace(
+      /^(?:\*\*|__)?(?:git )?commit(?: message| subject)?\s*(?::|-\s)\s*(?:\*\*|__)?\s*/i,
+      "",
+    )
+    .replace(/^['"`]+|['"`]+$/g, "")
+    .trim();
   const withoutTrailingPeriod = singleLine.replace(/[.]+$/g, "").trim();
   if (!withoutTrailingPeriod) return "";
   if (withoutTrailingPeriod.length <= 72) return withoutTrailingPeriod;
