@@ -100,8 +100,27 @@ function trimOwners(owners: Record<string, Rules>, keep: string): void {
 }
 
 /**
+ * The same site with or without a leading `www.`, port kept: Claude Code's
+ * WebFetch follows a redirect between `x.com` and `www.x.com` on its own, so
+ * a rule for one form answers for both. Null for an IP address.
+ */
+export function wwwTwin(host: string): string | null {
+  if (host.startsWith("[")) return null;
+  const colon = host.lastIndexOf(":");
+  const name = colon >= 0 ? host.slice(0, colon) : host;
+  const port = colon >= 0 ? host.slice(colon) : "";
+  if (!name || /^[0-9.]+$/.test(name)) return null;
+  if (name.startsWith("www.")) {
+    const bare = name.slice(4);
+    return bare.includes(".") ? bare + port : null;
+  }
+  return name.includes(".") ? `www.${name}${port}` : null;
+}
+
+/**
  * The rule for this host in this chat or project, or null when there is none.
- * `projectDir` is the chat's working folder.
+ * `projectDir` is the chat's working folder. `www.<host>` and `<host>` are
+ * one site: Never on either blocks both, Always on either allows both.
  */
 export function siteRule(
   sessionId: string,
@@ -109,11 +128,24 @@ export function siteRule(
   host: string,
   store: Store = readSiteRules(),
 ): SiteDecision | null {
-  const chat = store.chat[sessionId]?.[host];
-  if (chat === "never") return "never";
-  const project = store.project[projectDir]?.[host];
-  if (project === "never") return "never";
-  return chat ?? project ?? null;
+  const twin = wwwTwin(host);
+  const forms = twin ? [host, twin] : [host];
+  const chatRules = store.chat[sessionId];
+  const projectRules = store.project[projectDir];
+  const ruleIn = (rules: Rules | undefined, decision: SiteDecision) =>
+    !!rules &&
+    forms.some(
+      (form) =>
+        Object.prototype.hasOwnProperty.call(rules, form) &&
+        rules[form] === decision,
+    );
+  if (ruleIn(chatRules, "never") || ruleIn(projectRules, "never")) {
+    return "never";
+  }
+  if (ruleIn(chatRules, "always") || ruleIn(projectRules, "always")) {
+    return "always";
+  }
+  return null;
 }
 
 /** Keep a rule. Returns false when it could not be saved. */
