@@ -815,6 +815,7 @@ import {
   type ResumedWorkspace,
 } from "./model/appLifecycle";
 import { withEmptyTurnNotice as withEmptyTurnNotice_s6 } from "../features/sessions/model/emptyTurn";
+import { providerLocality as providerLocality_s6 } from "../features/model-setup/model/providerLocality";
 // [lane-1] imports
 import { rewindOptions as rewindOptions_l1 } from "../features/rewind/model/rewind";
 import { cutChatTranscript as cutChatTranscript_l1 } from "../features/rewind/model/turnRewind";
@@ -7129,6 +7130,12 @@ function Workspace({
       const harnessText =
         options?.ciRepair?.prompt ??
         (rawCommand ? submittedText : composeNoteMessage(noteCard, promptText));
+      // 3.13: only the user's own words are scanned for @file mentions, and
+      // only on a local model route (security review of the Mac fixes).
+      const inline_s6 = {
+        typed: options?.ciRepair ? "" : rawCommand ? submittedText : promptText,
+        local: providerLocality_s6(current.modelProvider) === "local",
+      };
 
       const pendingSwitch = pendingComposerSwitch(current);
 
@@ -7203,6 +7210,7 @@ function Workspace({
                 sessionId,
                 cwd: initialWorkCwd,
                 disabledSkills: turnDisabledSkills(current),
+                inline: inline_s6,
               }),
             };
           },
@@ -7343,6 +7351,7 @@ function Workspace({
               sessionId,
               cwd: initialWorkCwd,
               disabledSkills: turnDisabledSkills(current),
+              inline: inline_s6,
             });
             await steerHarnessTurn({
               harness: current.harness,
@@ -8007,6 +8016,7 @@ function Workspace({
                   sessionId,
                   cwd: workCwd,
                   disabledSkills: turnDisabledSkills(current),
+                  inline: inline_s6,
                 });
           const turnPrompt = proposalDraft
             ? options?.orchestrationRetry?.response

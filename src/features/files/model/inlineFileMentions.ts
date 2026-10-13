@@ -77,15 +77,29 @@ function mentionsIn(
       value = value.slice(0, -1);
     }
     if (!value) continue;
-    // A bare word such as `@alice` is a name, not a file. Only a token the
-    // index knows, or one shaped like a path, is looked at.
-    if (!indexed && !/[./]/.test(value)) continue;
+    // Only files the project index lists: tracked or not ignored. An
+    // ignored file such as `.env` is never read this way, and neither is a
+    // dot file or anything under a dot folder, `.git/` included (security
+    // review of the Mac fixes, F1).
+    if (!indexed) continue;
+    if (indexed.relative.split("/").some((part) => part.startsWith("."))) continue;
     const key = indexed?.path ?? value;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push({ label: value, indexed });
   }
   return out;
+}
+
+/**
+ * The text with fenced blocks and inline code blanked out, at the same
+ * length, so a mention inside pasted code or a log is not read (F1).
+ */
+export function withoutCode(text: string): string {
+  const blank = (match: string) => match.replace(/[^\n]/g, " ");
+  return text
+    .replace(/(^|\n)(`{3,}|~{3,})[^\n]*\n[\s\S]*?(\n\2[^\n]*(?=\n|$)|$)/g, blank)
+    .replace(/`[^`\n]*`/g, blank);
 }
 
 /** A fence no line of `body` can close. */
@@ -122,13 +136,15 @@ export async function inlineFileMentionsForTurn(
   // Local folders only. A connected machine's path is not checked here.
   const root = literalAbsolutePath(context.cwd);
   if (!root || root === "/") return prompt;
+  // A home folder or one directly above it is not a project (F4).
+  if (/^\/(Users|home)(\/[^/]+)?\/?$/.test(root) || root === "/root") return prompt;
 
   const listFiles = deps.listFiles ?? loadProjectFiles;
   const insideFolder = deps.insideFolder ?? pathsInsideChatFolders;
   const readText = deps.readText ?? readTextFile;
 
   const files = await listFiles(context.cwd).catch(() => [] as ProjectFile[]);
-  const mentions = mentionsIn(typed, buildMentionIndex(files).labels);
+  const mentions = mentionsIn(withoutCode(typed), buildMentionIndex(files).labels);
   if (mentions.length === 0) return prompt;
 
   const sections: string[] = [];
