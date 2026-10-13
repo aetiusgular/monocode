@@ -54,7 +54,12 @@ export function UserLinkPreview({
 }) {
   // Off in Settings: no fetch and no gh call. The link stays a plain link.
   const previewsAllowed = useOutboundCallAllowed("link-previews");
-  if (!linkPreviewAllowedFor(message ?? {}, previewsAllowed))
+  // A link outside a message follows the switch; a message's link follows
+  // the switch as it was when the message was sent (5.9).
+  if (
+    !previewsAllowed ||
+    (message && !linkPreviewAllowedFor(message, previewsAllowed))
+  )
     return <PlainUserLink link={link} />;
   if (link.githubWorkItem) {
     const workItem = link.githubWorkItem;
