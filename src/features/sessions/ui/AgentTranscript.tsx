@@ -2485,6 +2485,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
         revealOnMount={revealOnMount}
         cwd={cwd}
         onOpenFile={onOpenFile}
+        hardBreaks
       />
     </div>
   );
@@ -3534,6 +3535,7 @@ export function MonoActivityTrail({
                 cwd={cwd}
                 onOpenFile={onOpenFile}
                 className="mono-run-report"
+                hardBreaks
               />
             </li>
           );
@@ -3736,6 +3738,7 @@ function ActivityPhaseGroup({
                     text={headline.text}
                     cwd={cwd}
                     onOpenFile={onOpenFile}
+                    hardBreaks
                   />
                 </div>
               ) : null}
@@ -4066,6 +4069,7 @@ function SubagentPanel({
                     text={report}
                     cwd={cwd}
                     onOpenFile={onOpenFile}
+                    hardBreaks
                   />
                 )}
               </div>
@@ -4417,6 +4421,7 @@ function ActivityThinkingRow({
             text={block.text}
             cwd={cwd}
             onOpenFile={onOpenFile}
+            hardBreaks
           />
         </div>
       ) : null}
@@ -4477,7 +4482,12 @@ function ActivityNoteRow({
       </button>
       {open ? (
         <div className="min-w-0 pb-2">
-          <AgentMarkdown text={block.text} cwd={cwd} onOpenFile={onOpenFile} />
+          <AgentMarkdown
+            text={block.text}
+            cwd={cwd}
+            onOpenFile={onOpenFile}
+            hardBreaks
+          />
         </div>
       ) : null}
     </div>
