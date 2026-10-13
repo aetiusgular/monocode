@@ -173,7 +173,7 @@ import { TurnRewindMenu as TurnRewindMenu_l1 } from "../../rewind/ui/TurnRewindM
 import { rememberText as rememberText_l2 } from "../../project-memory/model/remember";
 // [lane-3] imports
 import {
-  rowStartsOpen as rowStartsOpen_l3,
+  useRowOpen as useRowOpen_s6,
   useTranscriptDetail as useTranscriptDetail_l3,
   workStartsOpen as workStartsOpen_l3,
 } from "../hooks/useTranscriptDetail";
@@ -4366,8 +4366,7 @@ function ActivityThinkingRow({
   bare?: boolean;
   onOpenFile?: (path: string) => void;
 }) {
-  const transcriptDetail_l3 = useTranscriptDetail_l3();
-  const [open, setOpen] = useState(() => rowStartsOpen_l3(transcriptDetail_l3));
+  const [open, setOpen] = useRowOpen_s6();
   const text = proseSummary(block.text) || "Thinking";
   // In a group the rail is the bullet, so there is nothing to breathe while
   // reasoning streams in — the line itself does.
@@ -4521,10 +4520,7 @@ function ActivityToolRow({
   onOpenDiff?: (path: string) => void;
 }) {
   const [errorOpen, setErrorOpen] = useState(false);
-  const transcriptDetail_l3 = useTranscriptDetail_l3();
-  const [detailOpen, setDetailOpen] = useState(() =>
-    rowStartsOpen_l3(transcriptDetail_l3),
-  );
+  const [detailOpen, setDetailOpen] = useRowOpen_s6();
   const appCall = monoCodeToolCall(block);
   if (appCall) {
     return (
@@ -4830,8 +4826,7 @@ function ToolCall({
   onOpenDiff?: (path: string) => void;
   embedded?: boolean;
 }) {
-  const transcriptDetail_l3 = useTranscriptDetail_l3();
-  const [open, setOpen] = useState(() => rowStartsOpen_l3(transcriptDetail_l3));
+  const [open, setOpen] = useRowOpen_s6();
   const preview = block.tool?.preview;
   const label = toolCallLabel(block, cwd);
   const detail = block.tool?.detail?.trim();
