@@ -55,7 +55,7 @@ A fake model that makes Codex ask for approvals, edit files and run commands, so
 Setup, in macOS Terminal:
 
 1. Start the mock and leave it running: `node ~/Desktop/monocode/tests/cli-contract/codex-mock/serve.mjs`. It prints `codex-mock listening on http://127.0.0.1:11436/v1`. `--port <n>` picks another port; change `base_url` to match.
-2. `mkdir -p ~/codex-mock-home && cp ~/Desktop/monocode/tests/cli-contract/codex-mock/config.toml ~/codex-mock-home/`
+2. `mkdir -p ~/codex-mock-home && cp ~/Desktop/monocode/tests/cli-contract/codex-mock/config.toml ~/Desktop/monocode/tests/cli-contract/codex-mock/catalog.json ~/codex-mock-home/`, then in `~/codex-mock-home/config.toml` uncomment `model_catalog_json` and give it the catalog's absolute path, `$HOME` written out. Without the catalog MonoCode's model picker lists nothing for this home (Mac test 8.1).
 3. A wrapper named `codex`, like the local home's, in its own folder: `~/codex-mock-bin/codex` with
    ```
    #!/bin/sh
@@ -68,4 +68,4 @@ Setup, in macOS Terminal:
 
 Known from the cloud run: in Supervised mode, an approved `write` into a folder that does not exist yet fails with "Failed to create parent directories" (Linux sandbox; the Mac's is not checked). Use an existing folder.
 
-The mock's model is not in any catalog, so Codex logs "Model metadata for `codex-mock` not found" and uses its defaults. MonoCode's model picker may need a catalog file like the local home's to list it.
+`catalog.json` is built from model setup's template (`src/features/model-setup/model/catalogTemplate.ts`): text input only, a 16,384 token window. Without it Codex logs "Model metadata for `codex-mock` not found" and MonoCode's picker lists nothing, as the Mac run of 12 Oct found.

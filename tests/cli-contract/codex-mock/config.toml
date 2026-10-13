@@ -5,6 +5,9 @@
 model_provider = "codex_mock"
 model = "codex-mock"
 model_context_window = 16384
+# MonoCode's model picker lists a model only from a catalog. Copy catalog.json
+# beside this file and put its absolute path here (Mac test 8.1), for example:
+# model_catalog_json = "/Users/<you>/codex-mock-home/catalog.json"
 
 [model_providers.codex_mock]
 name = "codex_mock"
