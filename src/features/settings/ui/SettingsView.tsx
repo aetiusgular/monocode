@@ -150,9 +150,11 @@ import {
   UI_SCALE_DEFAULT,
   UI_SCALE_PERCENTS,
 } from "../model/uiScale";
+import { providerDefaultButton } from "../model/providerDefault";
 import {
   getHarnessAvailabilitySnapshot,
   harnessUnavailableHint,
+  hasProbedHarnessAvailability,
   isHarnessAvailable,
   probeHarnessAvailability,
   subscribeHarnessAvailability,
@@ -3917,6 +3919,12 @@ function ProviderRow({
   const available = isHarnessAvailable(harness);
   const current =
     models.length > 0 ? resolveModel(harness, selectedModel) : null;
+  const defaultButton = providerDefaultButton({
+    isDefault,
+    hasModel: !!current,
+    available,
+    probed: hasProbedHarnessAvailability(),
+  });
 
   useEffect(() => {
     if (!available || hasLiveCatalog(harness)) return;
@@ -3962,11 +3970,17 @@ function ProviderRow({
           }))}
         />
       ) : null}
+      {defaultButton.reason ? (
+        <span className="text-[12px] text-content/50">
+          {defaultButton.reason}
+        </span>
+      ) : null}
       <SecondaryButton
         onClick={() => current && onDefault(harness, current.id)}
-        disabled={isDefault || !current}
+        disabled={defaultButton.disabled}
+        title={defaultButton.reason}
       >
-        {isDefault ? "Default" : "Use by default"}
+        {defaultButton.label}
       </SecondaryButton>
       {available ? (
         <div className="flex items-center gap-2">
