@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { OUTBOUND_CALL_OFF_MESSAGE } from "../../settings/model/outboundCalls";
 import { clearKnownInboxItems } from "./inboxSeen";
 import {
   linearConnected,
@@ -694,8 +695,19 @@ export async function githubPrDiff(
 export async function listInboxItems(
   projects: readonly { path: string }[],
   query: InboxQuery,
-  options?: { force?: boolean },
+  options?: {
+    force?: boolean;
+    /**
+     * Leave GitHub out: the background check with "GitHub lookups" off
+     * (Mac finding 5.9). Kept under its own cache key, so opening the Inbox
+     * still asks GitHub.
+     */
+    skipGithub?: boolean;
+  },
 ): Promise<InboxListResult> {
+  if (options?.skipGithub) {
+    return fetchInboxItems(projects, query, { skipGithub: true });
+  }
   const key = inboxListCacheKey(projects, query);
   if (!options?.force && inboxListIsFresh(projects, query)) {
     return peekInboxList(projects, query) ?? { items: [], errors: {} };
@@ -736,12 +748,15 @@ export async function listInboxItems(
 async function fetchInboxItems(
   projects: readonly { path: string }[],
   query: InboxQuery,
+  options?: { skipGithub?: boolean },
 ): Promise<InboxListResult> {
   const unique = uniqueInboxProjects(projects);
   const preferredPaths = unique.map((project) => project.path);
-  const discovery = await Promise.allSettled(
-    unique.map((project) => githubRepositories(project.path)),
-  );
+  const discovery = options?.skipGithub
+    ? []
+    : await Promise.allSettled(
+        unique.map((project) => githubRepositories(project.path)),
+      );
   const resolved = discovery.flatMap((result, index) =>
     result.status === "fulfilled"
       ? result.value.map((repo) => ({ path: unique[index]!.path, repo }))
@@ -770,7 +785,10 @@ async function fetchInboxItems(
     preferredPaths,
   );
   const errors: InboxProviderErrors = {};
-  if (github.error && unique.length > 0) errors.github = github.error;
+  // Skipped GitHub counts as not answered, so what was seen is kept.
+  if (options?.skipGithub && unique.length > 0)
+    errors.github = OUTBOUND_CALL_OFF_MESSAGE;
+  else if (github.error && unique.length > 0) errors.github = github.error;
 
   let linearItems: InboxItem[] = [];
   if ((await linearConnected()).connected) {

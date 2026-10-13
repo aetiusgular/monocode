@@ -1,3 +1,4 @@
+import { outboundCallAllowed } from "../../settings/model/outboundCalls";
 import { gitPrStatus } from "../../../platform/tauri/fs";
 import {
   githubRepo,
@@ -63,6 +64,8 @@ export async function resolveLinkedWorkItem(
 ): Promise<LinkedWorkItem | null> {
   const fromUrl = parseGithubWorkItemUrl(message);
   if (fromUrl) return fromUrl;
+  // 5.9: the rest asks gh on its own; "GitHub lookups" off stops it.
+  if (!outboundCallAllowed("github-lookups")) return null;
 
   const hint = explicitHint(message) ?? generatedHint;
   if (hint && validNumber(hint.number)) {

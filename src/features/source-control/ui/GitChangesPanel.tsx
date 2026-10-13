@@ -1,4 +1,5 @@
 import { ask } from "@tauri-apps/plugin-dialog";
+import { outboundCallAllowed } from "../../settings/model/outboundCalls";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Check,
@@ -963,6 +964,14 @@ function ChangedFiles({
   );
 }
 
+/**
+ * Whether a GitHub lookup may run: always when the user asked for it,
+ * otherwise only with "GitHub lookups" on in Settings (Mac finding 5.9).
+ */
+export function githubLookupAllowed(userAsked: boolean): boolean {
+  return userAsked || outboundCallAllowed("github-lookups");
+}
+
 export function usePrStatus(
   cwd: string,
   branch: string | null | undefined,
@@ -976,8 +985,15 @@ export function usePrStatus(
       setPr(null);
       return;
     }
+    // 5.9: with "GitHub lookups" off, only a reload the user's own action
+    // asked for (a commit, a push, a new pull request) runs gh.
+    if (!githubLookupAllowed(nonce > 0)) {
+      setPr(prByCwd.get(cwd) ?? null);
+      return;
+    }
     let cancelled = false;
     const load = () => {
+      if (!githubLookupAllowed(nonce > 0)) return;
       void gitPrStatus(cwd)
         .then((next) => {
           if (cancelled) return;

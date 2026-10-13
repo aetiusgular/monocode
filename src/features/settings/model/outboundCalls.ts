@@ -7,7 +7,7 @@ import { useSyncExternalStore } from "react";
  * sends anything.
  */
 export type OutboundCallId =
-  "link-previews" | "usage" | "version-check" | "star-check";
+  "link-previews" | "usage" | "version-check" | "star-check" | "github-lookups";
 
 export type OutboundCall = {
   id: OutboundCallId;
@@ -51,6 +51,13 @@ export const OUTBOUND_CALLS: readonly OutboundCall[] = [
     description:
       "Asks gh whether your GitHub account starred the MonoCode repository, on launch and when a window gains focus. Off, the star prompt stays hidden.",
   },
+  {
+    id: "github-lookups",
+    label: "GitHub lookups",
+    hosts: ["api.github.com (through gh)"],
+    description:
+      "Asks gh which GitHub repository and fork parent a project has, and whether its branch has a pull request, at launch, on the Inbox's background check, when a project opens, when a window gains focus, and when a first message names an issue or pull request by number. Off, none of these run on their own: the Inbox, the pull request bar and linked issues fill in when you open the Inbox or act on a pull request. Every gh MonoCode starts runs with gh's telemetry off.",
+  },
 ];
 
 export type OutboundCallSettings = Record<OutboundCallId, boolean>;
@@ -74,6 +81,7 @@ export function defaultOutboundCalls(): OutboundCallSettings {
     usage: true,
     "version-check": true,
     "star-check": true,
+    "github-lookups": true,
   };
 }
 

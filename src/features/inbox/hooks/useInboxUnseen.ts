@@ -45,6 +45,7 @@ import { JIRA_CHANGE_EVENT, loadHiddenJiraProjectIds } from "../model/jira";
 import type { RecentProject } from "../../projects/model/recents";
 import type { SessionSummary } from "../../sessions/data/sessionStore";
 import { playCue } from "../../settings/model/sounds";
+import { outboundCallAllowed } from "../../settings/model/outboundCalls";
 import {
   InboxNotificationTracker,
   inboxNotificationSubject,
@@ -185,7 +186,13 @@ export function useInboxActivity(
         jiraHiddenProjectIds: loadHiddenJiraProjectIds(),
       };
       try {
-        const listed = await listInboxItems(projects, query, { force });
+        // 5.9: with "GitHub lookups" off, the background check runs no gh.
+        const listed = await listInboxItems(projects, query, {
+          force,
+          ...(outboundCallAllowed("github-lookups")
+            ? {}
+            : { skipGithub: true }),
+        });
         if (cancelled) return;
         const visible = applyInboxFilters(listed.items, filters, "");
         rememberNotificationProjects(

@@ -1288,12 +1288,8 @@ fn git_github_status_for() -> GitHubStatus {
             authenticated: false,
         };
     };
-    let mut cmd = Command::new(program);
-    cmd.args(["auth", "status", "--active", "--hostname", "github.com"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GH_PROMPT_DISABLED", "1")
-        .env("GH_PAGER", "cat")
-        .env("GIT_PAGER", "cat");
+    let mut cmd = gh_command(program);
+    cmd.args(["auth", "status", "--active", "--hostname", "github.com"]);
     crate::harness::apply_gui_env(&mut cmd);
     crate::hide_window_console(&mut cmd);
     let authenticated = cmd
@@ -4455,16 +4451,36 @@ fn parse_github_rate_limit_backoff(json: &str) -> Result<Option<SystemTime>, Str
         .ok_or_else(|| "Invalid GitHub rate-limit reset".into())
 }
 
+/// Environment every `gh` MonoCode starts gets (Mac finding 5.9): no
+/// telemetry (`GH_TELEMETRY` is gh's documented switch, `DO_NOT_TRACK` the
+/// convention it also honours), no update or extension notices, no prompts,
+/// no pager. Environment variables win over the user's own `gh` config.
+pub(crate) const GH_ENV: &[(&str, &str)] = &[
+    ("GH_TELEMETRY", "0"),
+    ("DO_NOT_TRACK", "1"),
+    ("GH_NO_UPDATE_NOTIFIER", "1"),
+    ("GH_NO_EXTENSION_UPDATE_NOTIFIER", "1"),
+    ("GH_PROMPT_DISABLED", "1"),
+    ("GIT_TERMINAL_PROMPT", "0"),
+    ("GH_PAGER", "cat"),
+    ("GIT_PAGER", "cat"),
+];
+
+/// The one way MonoCode builds a `gh` process: an argument list, never a
+/// shell string, with `GH_ENV` set.
+pub(crate) fn gh_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut cmd = Command::new(program);
+    for (key, value) in GH_ENV {
+        cmd.env(key, value);
+    }
+    cmd
+}
+
 fn gh_run_raw(root: &Path, args: &[&str], allow_empty: bool) -> Result<String, String> {
     let program = crate::harness::resolve_gui_binary("gh")
         .ok_or_else(|| "GitHub CLI (`gh`) is not installed.".to_string())?;
-    let mut cmd = Command::new(&program);
-    cmd.current_dir(root)
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GH_PROMPT_DISABLED", "1")
-        .env("GH_PAGER", "cat")
-        .env("GIT_PAGER", "cat");
+    let mut cmd = gh_command(&program);
+    cmd.current_dir(root).args(args);
     crate::harness::apply_gui_env(&mut cmd);
     crate::hide_window_console(&mut cmd);
     let output = cmd.output().map_err(|error| {
@@ -6646,6 +6662,50 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::Arc;
+
+    #[test]
+    fn gh_processes_get_telemetry_and_notices_off() {
+        let cmd = gh_command("gh");
+        let envs: std::collections::HashMap<String, String> = cmd
+            .get_envs()
+            .filter_map(|(key, value)| {
+                Some((
+                    key.to_string_lossy().into_owned(),
+                    value?.to_string_lossy().into_owned(),
+                ))
+            })
+            .collect();
+        assert_eq!(envs.get("GH_TELEMETRY").map(String::as_str), Some("0"));
+        assert_eq!(envs.get("DO_NOT_TRACK").map(String::as_str), Some("1"));
+        assert_eq!(
+            envs.get("GH_NO_UPDATE_NOTIFIER").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            envs.get("GH_PROMPT_DISABLED").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(cmd.get_program(), "gh");
+        assert_eq!(cmd.get_args().count(), 0);
+    }
+
+    #[test]
+    fn every_gh_spawn_goes_through_gh_command() {
+        // A `gh` started any other way would miss GH_ENV.
+        let needle = concat!("resolve_gui_binary(", "\"gh\")");
+        for (file, source) in [
+            ("fs.rs", include_str!("fs.rs")),
+            ("inbox_media.rs", include_str!("inbox_media.rs")),
+        ] {
+            let spawns = source.matches(needle).count();
+            let built = source.matches(concat!("gh_", "command(")).count();
+            assert!(spawns > 0, "{file}");
+            assert!(
+                built >= spawns,
+                "{file}: {built} gh_command for {spawns} gh"
+            );
+        }
+    }
 
     static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 

@@ -43,12 +43,14 @@ afterEach(() => {
 });
 
 describe("outbound call switches", () => {
-  it("lists the four calls with hosts and a description", () => {
+  it("lists the five calls with hosts and a description", () => {
     expect(OUTBOUND_CALLS.map((call) => call.id)).toEqual([
       "link-previews",
       "usage",
       "version-check",
       "star-check",
+      // Mac finding 5.9.
+      "github-lookups",
     ]);
     for (const call of OUTBOUND_CALLS) {
       expect(call.label).toBeTruthy();

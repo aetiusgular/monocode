@@ -685,6 +685,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     label: "GitHub star check",
     keywords: "outbound privacy network gh github star",
   },
+  {
+    id: "outbound-github-lookups",
+    section: "general",
+    label: "GitHub lookups",
+    keywords: "outbound privacy network gh github repo view fork pull request telemetry",
+  },
 ];
 
 export type SettingsSearchResult = {

@@ -1,5 +1,4 @@
 use std::io::Read;
-use std::process::Command;
 use std::time::Duration;
 
 use crate::dirs_home;
@@ -264,11 +263,8 @@ fn path_has_dotdot(path: &str) -> bool {
 fn github_auth_token() -> Option<String> {
     let program = crate::harness::resolve_gui_binary("gh")?;
     let home = dirs_home()?;
-    let mut cmd = Command::new(program);
-    cmd.current_dir(&home)
-        .args(["auth", "token"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GH_PAGER", "cat");
+    let mut cmd = crate::fs::gh_command(program);
+    cmd.current_dir(&home).args(["auth", "token"]);
     crate::harness::apply_gui_env(&mut cmd);
     crate::hide_window_console(&mut cmd);
     let output = cmd.output().ok()?;
