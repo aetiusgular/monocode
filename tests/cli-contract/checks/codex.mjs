@@ -737,6 +737,41 @@ async function checkCommandsAlways({ codexPath }) {
   };
 }
 
+async function checkWebSearchOff({ codexPath }) {
+  // Mac test 11.15: MonoCode turns Codex's web search off on a local model
+  // route with the thread config `web_search = "disabled"`.
+  const toolNames = (body) =>
+    (body?.tools ?? []).map((t) => (t.type === "function" || t.type === "namespace" ? t.name : t.type));
+  const seen = {};
+  for (const [label, config] of [
+    ["plain", undefined],
+    ["disabled", { web_search: "disabled" }],
+  ]) {
+    const s = await open({ codexPath, script: () => [text("ok")] });
+    try {
+      const started = await s.client.request("thread/start", {
+        cwd: s.dirs.work,
+        ...SUPERVISED,
+        ...(config ? { config } : {}),
+      });
+      await s.client.runTurn({ threadId: started.thread.id, input: userInput("hi"), ...SUPERVISED_TURN });
+      seen[label] = toolNames(s.fake.turnRequests()[0]?.body);
+    } finally {
+      await shut(s);
+    }
+  }
+  const before = (seen.plain ?? []).includes("web_search");
+  const after = (seen.disabled ?? []).includes("web_search");
+  return {
+    status: before && !after ? "pass" : "fail",
+    finding:
+      before && !after
+        ? 'web_search = "disabled" on thread/start removes web_search from the request tools.'
+        : `web_search in tools: plain ${before}, disabled ${after}. The override key needs another look.`,
+    seen,
+  };
+}
+
 export const codexChecks = [
   { id: "check-3", title: "Codex developerInstructions on thread/start, resume and turn/start", flag: "capabilities: codex instructions \"session\"", run: check3 },
   { id: "check-4", title: "Codex thread/revert three turns back", flag: "capabilities: codex rewind \"anyTurn\"", run: check4 },
@@ -750,6 +785,7 @@ export const codexChecks = [
   { id: "accept-for-session", title: "Codex acceptForSession on a file change", flag: "lane 5 Allow for this chat", run: checkAcceptForSession },
   { id: "codex-mock", title: "codex-mock home and server behind the real Codex", flag: "session 7 setup", run: checkCodexMock },
   { id: "outside-patch", title: "Codex supervised patch outside the working folder", flag: "lane 5 folder path check", run: checkOutsidePatch },
+  { id: "web-search-off", title: "Codex web search off through thread config", flag: "Mac test 11.15 codexWebSearchConfig", run: checkWebSearchOff },
   { id: "commands-always", title: "Codex Commands = Always: on-request with the read-only sandbox", flag: "Mac test 11.T2.3 commandsAlwaysPolicy", run: checkCommandsAlways },
 ];
 

@@ -1,6 +1,13 @@
 import { sanitizeModelProvider } from "../../../../features/model-setup/model/modelProvider";
 import { sanitizePermissionsProfile } from "../../../../features/model-setup/model/permissionsProfile";
 import { autoModeAllowed } from "../../../../features/model-setup/model/sessionProvider";
+import { providerForAccount } from "../../../../features/model-setup/model/modelProviders";
+import { providerLocality } from "../../../../features/model-setup/model/providerLocality";
+import {
+  reportedRouteLocality,
+  type Locality,
+} from "../../../../features/server-locality/model/locality";
+import type { CodexModelRoute } from "./codexProtocol";
 
 /** The provider and permissions profile a Codex thread is opened with. */
 export type CodexThreadIdentity = {
@@ -88,4 +95,42 @@ export function codexNetworkAmendmentDecision(amendment: {
       },
     },
   };
+}
+
+/**
+ * Where a Codex thread's model route goes: the provider picked for the chat,
+ * else the one the Models page wrote for its account, else the route this
+ * Codex reports in `config/read` (a wrapper script home). Unknown when none
+ * of these says.
+ */
+export function codexRouteLocality(input: {
+  modelProvider?: unknown;
+  providerAccountId?: unknown;
+  reported?: CodexModelRoute | null;
+}): Locality {
+  const picked =
+    sanitizeModelProvider(input.modelProvider) ??
+    providerForAccount(
+      typeof input.providerAccountId === "string"
+        ? input.providerAccountId
+        : undefined,
+    )?.id;
+  if (picked) return providerLocality(picked);
+  return input.reported ? reportedRouteLocality(input.reported) : "unknown";
+}
+
+/**
+ * Codex's own `web_search` tool searches through the model's service. A local
+ * model server has no such service: Ollama answers "ollama cloud is disabled:
+ * web search is unavailable" after the turn has run (Mac test 11.15). On a
+ * local route the thread is opened with web search off, which Codex 0.161.0
+ * honours as the top-level `web_search = "disabled"` (the request's `tools`
+ * then has no `web_search`; `tools.web_search = false` and
+ * `features.web_search_request = false` leave it in). Hosted and unknown
+ * routes keep Codex's own setting.
+ */
+export function codexWebSearchConfig(
+  route: Locality,
+): Record<string, string> | undefined {
+  return route === "local" ? { web_search: "disabled" } : undefined;
 }

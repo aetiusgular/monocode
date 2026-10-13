@@ -91,11 +91,18 @@ import {
   pickCodexNetworkAmendment as pickCodexNetworkAmendment_l5,
   codexNetworkAmendmentDecision as codexNetworkAmendmentDecision_l5,
   type CodexNetworkAmendment as CodexNetworkAmendment_l5,
+  codexRouteLocality,
+  codexWebSearchConfig,
 } from "./codexProviders";
 import {
   codexEditAdapter as codexEditAdapter_l5,
   editAdapterConfig as editAdapterConfig_l5,
 } from "../../../../features/model-setup/model/editAdapter";
+import {
+  knownHarnessModelRoute,
+  requestHarnessReport,
+} from "../../../../features/server-locality/model/sessionServers";
+import type { Locality } from "../../../../features/server-locality/model/locality";
 
 type ApprovalOutcome = ApprovalDecision | "cancelled";
 
@@ -868,6 +875,13 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     let threadId: string | undefined;
     let didResume = false;
 
+    // Mac test 11.15: a local model route gets Codex's web search off.
+    const routeLocality = await codexThreadRouteLocality(input);
+    const providerConfig = threadOverrides(
+      editAdapterConfig_l5(editAdapter_l5),
+      codexWebSearchConfig(routeLocality),
+    );
+
     // An override for a server Codex has no entry for fails the whole
     // configuration load, so only switch off servers this Codex knows. The
     // app-server this one replaces ran the same Codex and was asked a moment
@@ -924,7 +938,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
           // [lane-4] thread-resume-call
           // [lane-5] thread-resume-call
           ...identity_l5,
-          providerConfig: editAdapterConfig_l5(editAdapter_l5),
+          providerConfig,
         });
         const opened = await openThread("thread/resume", {
           threadId: resume.threadId,
@@ -957,7 +971,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
         // [lane-4] thread-start-call
         // [lane-5] thread-start-call
         ...identity_l5,
-        providerConfig: editAdapterConfig_l5(editAdapter_l5),
+        providerConfig,
       });
       const opened = await openThread("thread/start", {
         ...params,
@@ -1047,6 +1061,42 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     await stopCodexSession(input.sessionId);
     throw error;
   }
+}
+
+// How long opening a thread waits for this Codex's own route when MonoCode
+// does not know it. A slower answer leaves the route unknown.
+const ROUTE_REPORT_WAIT_MS = 5_000;
+
+/**
+ * Where this thread's model route goes. When the chat and its account do not
+ * say (a wrapper script home), the route this Codex reported from its own
+ * configuration decides; it is read once per account and folder.
+ */
+async function codexThreadRouteLocality(
+  input: HarnessSessionInput,
+): Promise<Locality> {
+  const known = codexRouteLocality(input);
+  if (known !== "unknown") return known;
+  const account = input.providerAccountId;
+  await Promise.race([
+    requestHarnessReport("codex", account, input.cwd),
+    new Promise((resolve) => setTimeout(resolve, ROUTE_REPORT_WAIT_MS)),
+  ]);
+  return codexRouteLocality({
+    ...input,
+    reported: knownHarnessModelRoute("codex", account, input.cwd),
+  });
+}
+
+/** The thread `config` overrides, merged; undefined when there are none. */
+function threadOverrides(
+  ...parts: (Record<string, string> | undefined)[]
+): Record<string, string> | undefined {
+  const merged = Object.assign({}, ...parts.filter(Boolean)) as Record<
+    string,
+    string
+  >;
+  return Object.keys(merged).length ? merged : undefined;
 }
 
 /** Server names in this Codex's configuration, or null when it cannot say. */
