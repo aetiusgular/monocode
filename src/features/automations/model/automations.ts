@@ -631,6 +631,29 @@ export async function claimDueAutomations(
   return claimed;
 }
 
+/**
+ * The run status and error for how a run's turn settled. A run is Succeeded
+ * only when its turn completed; anything else, a setup step that threw
+ * before the agent started included (a worktree that could not be made, Mac
+ * test 2.16), is Failed with its error, or Cancelled.
+ */
+export function automationRunSettlement(outcome: {
+  status: "completed" | "failed" | "cancelled";
+  error?: string;
+}): { status: AutomationRunStatus; error?: string } {
+  if (outcome.status === "completed" && !outcome.error?.trim())
+    return { status: "succeeded" };
+  if (outcome.status === "cancelled")
+    return {
+      status: "cancelled",
+      ...(outcome.error?.trim() ? { error: outcome.error.trim() } : {}),
+    };
+  return {
+    status: "failed",
+    error: outcome.error?.trim() || "The run failed before the agent answered.",
+  };
+}
+
 export async function updateAutomationRun(
   runId: string,
   status: AutomationRunStatus,

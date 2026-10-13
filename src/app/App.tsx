@@ -524,6 +524,7 @@ import { hiddenApprovalNotices } from "../features/notifications/model/approvalT
 import { useSessionReminders } from "../features/notifications/hooks/useSessionReminders";
 import { ReminderNotices } from "../features/sessions/ui/ReminderNotices";
 import { useUnseenFinishedSessions } from "../features/sessions/hooks/useUnseenFinishedSessions";
+import { failedTurnSessions } from "../features/sessions/model/sessionDone";
 import { useUnseenReplyCounts } from "../features/sessions/hooks/useUnseenReplyCounts";
 import {
   loadNotificationsEnabled,
@@ -828,6 +829,7 @@ import {
 import type { HarnessSessionRow as HarnessSessionRow_l1 } from "../features/session-import/model/types";
 // [lane-2] imports
 import { startManualAutomationRun as startManualAutomationRun_l2 } from "../features/automations/model/automations";
+import { automationRunSettlement } from "../features/automations/model/automations";
 import { appBlock as appBlock_l2 } from "../features/session-preamble/model/appBlock";
 import {
   forgetSessionContext as forgetSessionContext_l2,
@@ -2180,6 +2182,11 @@ function Workspace({
     sessions,
     busySessionIds,
     activeSessionId,
+  );
+  // Mac test 2.16: a chat whose last turn ended in an error reads Failed,
+  // not Done, in the sidebar.
+  const failedTurnErrors = useStableValue(
+    useMemo(() => failedTurnSessions(sessions), [sessions]),
   );
   const monoSessionIds = useMemo(
     () =>
@@ -8726,15 +8733,10 @@ function Workspace({
           rejectionMessage:
             "The selected agent session could not start this run.",
           onSettled: (outcome) => {
-            const status =
-              outcome.status === "completed"
-                ? "succeeded"
-                : outcome.status === "cancelled"
-                  ? "cancelled"
-                  : "failed";
+            const { status, error } = automationRunSettlement(outcome);
             void updateAutomationRun(run.id, status, {
               sessionId: session.id,
-              ...(outcome.error ? { error: outcome.error } : {}),
+              ...(error ? { error } : {}),
             })
               .catch(() => undefined)
               .finally(releaseReservation);
@@ -13420,6 +13422,7 @@ function Workspace({
               titleBarAbove={compactTitleBar}
               onToggleProjectRail={onToggleProjectRail}
               unseenFinishedIds={unseenFinishedIds}
+              failedTurnErrors={failedTurnErrors}
               inboxUnseen={inboxUnseen}
               linkedSessionUpdateIds={linkedSessionUpdateIds}
               settingsOpen={settingsOpen}

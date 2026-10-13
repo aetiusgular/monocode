@@ -331,6 +331,20 @@ fn copy_worktree_include(source: &Path, target: &Path) -> Result<IncludeReport, 
     Ok(report)
 }
 
+/// What a worktree is refused with in a repository that has no commits:
+/// `git worktree add` needs a commit to check out (Mac test 2.16).
+pub(crate) const NO_COMMITS_MESSAGE: &str = "This repository has no commits yet, so a fresh worktree cannot be made from it. Make a first commit, or set Working copy to Current.";
+
+/// True for a git repository whose HEAD names no commit yet. False for a
+/// folder that is not a repository, or one git cannot read: those keep the
+/// error git gives them.
+pub(crate) fn has_no_commits(root: &Path) -> bool {
+    let inside = git(root, &["rev-parse", "--is-inside-work-tree"])
+        .map(|out| out.trim() == "true")
+        .unwrap_or(false);
+    inside && git(root, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]).is_err()
+}
+
 fn create(
     root: &Path,
     branch: &str,
@@ -385,7 +399,14 @@ fn create(
             "--end-of-options",
             &format!("{source}^{{commit}}"),
         ],
-    )?;
+    )
+    .map_err(|error| {
+        if has_no_commits(root) {
+            NO_COMMITS_MESSAGE.to_string()
+        } else {
+            error
+        }
+    })?;
     std::fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
     let path_str = path_to_js(&path);
     if existing {
@@ -1121,6 +1142,31 @@ mod tests {
         );
         assert!(worktree_parent(main, Some("relative/trees")).is_err());
         assert!(worktree_parent(main, Some("/tmp/../etc")).is_err());
+    }
+
+    #[test]
+    fn refuses_a_worktree_in_a_repository_with_no_commits() {
+        let dir =
+            std::env::temp_dir().join(format!("monocode-worktree-unborn-{}", uuid::Uuid::new_v4()));
+        let root = dir.join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        let _guard = Repo(dir.clone());
+        git_checked(&root, &["init", "-b", "main"]).unwrap();
+        assert!(has_no_commits(&root));
+        let error = create(&root, "mc/run", "HEAD", false, None).unwrap_err();
+        assert_eq!(error, NO_COMMITS_MESSAGE);
+        // Nothing was made beside the repository.
+        assert!(!dir.join("repo-worktrees").exists());
+        // A folder that is not a repository keeps git's own answer.
+        let plain = dir.join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert!(!has_no_commits(&plain));
+    }
+
+    #[test]
+    fn a_repository_with_a_commit_has_commits() {
+        let repo = repo();
+        assert!(!has_no_commits(&repo.0.join("repo")));
     }
 
     #[test]

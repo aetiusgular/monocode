@@ -16,6 +16,7 @@ import {
   CircleAlert,
   CircleDashed,
   CircleDot,
+  CircleX,
   Clock,
   FileScript,
   Folder,
@@ -339,6 +340,8 @@ type Props = {
   compactProjectRail?: boolean;
   titleBarAbove?: boolean;
   unseenFinishedIds?: Set<string>;
+  /** Open chats whose last turn ended in an error, with the error. */
+  failedTurnErrors?: ReadonlyMap<string, string>;
   inboxUnseen?: boolean;
   /** Linked GitHub work changed after the session last advanced. */
   linkedSessionUpdateIds?: ReadonlySet<string>;
@@ -440,6 +443,7 @@ function SidebarComponent({
   compactProjectRail = true,
   titleBarAbove = false,
   unseenFinishedIds: unseenFinishedIdsProp,
+  failedTurnErrors = NO_FAILED_TURNS,
   inboxUnseen = false,
   linkedSessionUpdateIds = new Set(),
   settingsOpen = false,
@@ -1569,6 +1573,7 @@ function SidebarComponent({
         isSelected={selectedSessionIds.has(session.id)}
         busy={listedBusySessionIds.has(session.id)}
         done={unseenFinishedIds.has(session.id)}
+        failedError={failedTurnErrors.get(session.id)}
         linkedUpdate={linkedSessionUpdateIds.has(session.id)}
         needsApproval={listedApprovalSessionIds.has(session.id)}
         dropTarget={isSessionDrop("session", session.id)}
@@ -3258,12 +3263,15 @@ function SessionListItem({
   return <li ref={ref}>{children}</li>;
 }
 
+const NO_FAILED_TURNS: ReadonlyMap<string, string> = new Map();
+
 const SessionCard = memo(function SessionCard({
   session,
   isActive,
   isSelected,
   busy,
   done,
+  failedError,
   linkedUpdate,
   needsApproval,
   dropTarget,
@@ -3285,6 +3293,8 @@ const SessionCard = memo(function SessionCard({
   isSelected: boolean;
   busy: boolean;
   done: boolean;
+  /** The error the last turn ended with: shown as Failed, not Done. */
+  failedError?: string;
   linkedUpdate: boolean;
   needsApproval: boolean;
   dropTarget?: boolean;
@@ -3330,11 +3340,14 @@ const SessionCard = memo(function SessionCard({
     compact && !orchestrationExpanded
       ? null
       : resolveModel(session.harness, session.model).name;
+  const failed = done && !busy && !!failedError;
   const statusClass = needsApproval
     ? "text-amber-400"
     : busy
       ? "text-accent"
-      : done
+      : failed
+        ? "text-rose-400"
+        : done
         ? "text-emerald-400"
         : draft
           ? "text-content/55"
@@ -3353,6 +3366,15 @@ const SessionCard = memo(function SessionCard({
           <TerminalSpinner className="inline-block w-3 select-none text-center text-[11px] leading-none text-accent" />
           <span>Working...</span>
         </>
+      ) : failed ? (
+        <span
+          data-session-failed
+          title={failedError}
+          className="flex items-center gap-1"
+        >
+          <CircleX className="size-3" strokeWidth={1.75} />
+          <span>Failed</span>
+        </span>
       ) : done ? (
         <>
           <Check className="size-3" strokeWidth={2.25} />

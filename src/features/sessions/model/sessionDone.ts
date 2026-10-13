@@ -1,4 +1,5 @@
 /** Sessions that finished while unfocused, until the user looks at them. */
+import type { Block, Session } from "./session";
 
 export function nextUnseenFinishedSessions({
   previousBusyIds,
@@ -53,4 +54,34 @@ export function nextUnseenReplyCounts({
   if (focusedSessionId) next.delete(focusedSessionId);
   for (const id of next.keys()) if (!trackedIds.has(id)) next.delete(id);
   return next;
+}
+
+/**
+ * The error the last turn ended with, if it ended with one: an error notice
+ * after the last prompt the user sent. A chat that finished this way is not
+ * "Done" (Mac test 2.16: an automation run whose worktree could not be made
+ * showed Done in the sidebar).
+ */
+export function lastTurnError(blocks: readonly Block[]): string | undefined {
+  for (let i = blocks.length - 1; i >= 0; i -= 1) {
+    const block = blocks[i];
+    if (block.role === "user" && !block.internal) return undefined;
+    if (block.role === "system" && block.notice === "error") {
+      return block.text.trim() || "The turn failed.";
+    }
+  }
+  return undefined;
+}
+
+/** Open sessions whose last turn ended in an error, with that error. */
+export function failedTurnSessions(
+  sessions: readonly Pick<Session, "id" | "blocks" | "busy">[],
+): Map<string, string> {
+  const failed = new Map<string, string>();
+  for (const session of sessions) {
+    if (session.busy) continue;
+    const error = lastTurnError(session.blocks);
+    if (error) failed.set(session.id, error);
+  }
+  return failed;
 }

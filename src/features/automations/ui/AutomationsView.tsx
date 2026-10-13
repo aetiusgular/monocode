@@ -772,6 +772,15 @@ function RunRow({
           {formatAutomationRunDuration(run)}
         </span>
       </button>
+      {run.status === "failed" && run.error ? (
+        <p
+          role="alert"
+          data-automation-run-error
+          className="px-4 pb-2.5 text-[11.5px] leading-4 text-rose-400 [overflow-wrap:anywhere]"
+        >
+          {run.error}
+        </p>
+      ) : null}
     </li>
   );
 }

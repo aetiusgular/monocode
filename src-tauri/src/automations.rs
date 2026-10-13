@@ -259,6 +259,22 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// A fresh worktree needs a commit to start from. An automation that would
+/// make one in a repository with no commits is refused when it is saved,
+/// accepted or switched on, with the reason, rather than failing at each
+/// run with git's "Needed a single revision" (Mac test 2.16). It is not
+/// moved to the current working copy: where a run works is the user's call.
+/// Switching one off is still allowed.
+fn refuse_unborn_worktree(input: &AutomationUpsert) -> Result<(), String> {
+    if input.workspace_mode != "worktree" || !input.enabled {
+        return Ok(());
+    }
+    if crate::worktrees::has_no_commits(&crate::fs::expand_home(&input.cwd)) {
+        return Err(crate::worktrees::NO_COMMITS_MESSAGE.into());
+    }
+    Ok(())
+}
+
 fn validate_upsert(input: &AutomationUpsert, now: i64) -> Result<(), String> {
     validate_id(&input.id, "automation")?;
     if input.name.trim().is_empty() || input.name.len() > MAX_NAME {
@@ -706,6 +722,7 @@ pub fn automations_upsert(
 ) -> Result<Automation, String> {
     let now = now_millis();
     validate_upsert(&automation, now)?;
+    refuse_unborn_worktree(&automation)?;
     let triggers = Some(normalize_triggers(&automation));
     let conn = store.lock_conn()?;
     let previous = get(&conn, &automation.id)?;
@@ -1350,6 +1367,55 @@ mod tests {
         let interval = claim_store(vec![time_trigger("interval", 0, 30)], at);
         let automation = get(&interval, "automation-id").unwrap().unwrap();
         assert!(has_live_time_trigger(&automation, i64::MAX / 2));
+    }
+
+    #[test]
+    fn refuses_a_fresh_worktree_in_a_repository_with_no_commits() {
+        let dir = std::env::temp_dir().join(format!(
+            "monocode-automation-unborn-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(args)
+                .output()
+                .map(|out| out.status.success())
+                .unwrap_or(false)
+        };
+        if !git(&["init", "-b", "main"]) {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        let mut input = upsert(vec![time_trigger("weekdays", 0, 0)], true, 1);
+        input.cwd = dir.to_string_lossy().into_owned();
+        input.workspace_mode = "worktree".into();
+        assert_eq!(
+            refuse_unborn_worktree(&input).unwrap_err(),
+            crate::worktrees::NO_COMMITS_MESSAGE
+        );
+        // The current working copy is fine, and so is switching it off.
+        input.workspace_mode = "current".into();
+        assert!(refuse_unborn_worktree(&input).is_ok());
+        input.workspace_mode = "worktree".into();
+        input.enabled = false;
+        assert!(refuse_unborn_worktree(&input).is_ok());
+        // After a first commit the worktree is allowed.
+        input.enabled = true;
+        assert!(git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "first"
+        ]));
+        assert!(refuse_unborn_worktree(&input).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
