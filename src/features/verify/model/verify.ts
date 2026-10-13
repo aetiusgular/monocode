@@ -9,12 +9,22 @@ import { stripAnsi } from "../../app-preview/model/previewUrl";
  * 2. Its output since the turn began has no error lines.
  * 3. A GET on the preview URL returns below 500.
  *
+ * 4. Each `.js`, `.mjs` or `.cjs` file the turn changed, fetched from the
+ *    server, parses (Mac test 6.8). See `scriptCheck.ts`.
+ *
  * It cannot see console errors or layout: the app cannot look inside a
  * cross-origin frame, and Tauri has no console or screenshot API. Verify
  * never starts a server.
  */
 
-export type VerifyCheckId = "alive" | "errors" | "http";
+import type { ScriptCheck } from "./scriptCheck";
+
+export type VerifyCheckId = "alive" | "errors" | "http" | "scripts";
+
+/** The card's line under a pass: the page itself was not looked at. */
+export const PASS_TITLE = "Server check found no problems";
+export const PASS_NOTE =
+  "The page itself was not checked: errors in the browser, such as a syntax error, do not show here.";
 
 export type VerifyCheck = {
   id: VerifyCheckId;
@@ -33,6 +43,8 @@ export type VerifyResult = {
   /** New error lines in the server's output, at most `MAX_ERROR_LINES`. */
   errorLines: string[];
   url?: string;
+  /** The changed scripts that were fetched and parsed. */
+  scriptsChecked?: string[];
   /** What "Send to agent" posts. At most `MAX_REPORT_CHARS`. */
   report: string;
 };
@@ -99,8 +111,31 @@ export type VerifyInput = {
   url?: string;
   /** The probe's answer: a status, or why there is none. */
   http?: { status?: number | null; error?: string | null };
+  /** The parse check of changed scripts, when any were served. */
+  scripts?: ScriptCheck;
   at: number;
 };
+
+function scriptsCheck(scripts: ScriptCheck): VerifyCheck {
+  if (scripts.problems.length === 0)
+    return {
+      id: "scripts",
+      ok: true,
+      detail: `Changed scripts parse: ${scripts.checked.join(", ")}`.slice(0, 300),
+    };
+  const first = scripts.problems[0];
+  const where = `${first.path}${first.line ? ` line ${first.line}` : ""}`;
+  const more =
+    scripts.problems.length > 1 ? ` (and ${scripts.problems.length - 1} more)` : "";
+  return {
+    id: "scripts",
+    ok: false,
+    detail: `${where} does not parse in the browser: ${asData(first.message)}${more}`.slice(
+      0,
+      300,
+    ),
+  };
+}
 
 function httpCheck(input: VerifyInput): VerifyCheck {
   if (!input.url)
@@ -131,7 +166,7 @@ function asData(line: string): string {
 /** The report "Send to agent" posts, cut to `MAX_REPORT_CHARS`. */
 export function verifyReport(result: Omit<VerifyResult, "report">): string {
   if (result.ok)
-    return "MonoCode checked the preview after your last turn: the server is running, its output shows no new errors, and the page answers.";
+    return "MonoCode checked the preview server after your last turn: it is running, its output shows no new errors, and it answers. The page itself was not checked in a browser.";
   const head = [
     "MonoCode checked the preview server after your last turn and found a problem.",
     ...result.checks.filter((check) => !check.ok).map((check) => `- ${check.detail}`),
@@ -183,6 +218,7 @@ export function evaluateVerify(input: VerifyInput): VerifyResult {
         }
       : { id: "errors", ok: true, detail: "No new error lines in the server output" },
     httpCheck(input),
+    ...(input.scripts ? [scriptsCheck(input.scripts)] : []),
   ];
   const partial = {
     sessionId: input.sessionId,
@@ -192,6 +228,9 @@ export function evaluateVerify(input: VerifyInput): VerifyResult {
     checks,
     errorLines: lines,
     ...(input.url ? { url: input.url } : {}),
+    ...(input.scripts?.checked.length
+      ? { scriptsChecked: input.scripts.checked }
+      : {}),
   };
   return { ...partial, report: verifyReport(partial) };
 }

@@ -1,4 +1,7 @@
-import { turnWroteFiles } from "../../file-cards/model/documentFiles";
+import {
+  turnWrittenPaths,
+  turnWroteFiles,
+} from "../../file-cards/model/documentFiles";
 import {
   isPreviewLive,
   previewForSession,
@@ -16,6 +19,12 @@ import {
   type OutputMark,
   type VerifyResult,
 } from "./verify";
+import {
+  checkServedScripts,
+  parseWithAcorn,
+  type ScriptFetch,
+  type ScriptParseError,
+} from "./scriptCheck";
 
 /**
  * #38a: the turn watch, the results, and the automatic loop.
@@ -55,11 +64,16 @@ type ChatState = {
 
 export type VerifyDeps = {
   probe(url: string): Promise<PreviewProbeResult>;
+  /** Loopback only, no redirects, like the probe. */
+  fetchScript(url: string): Promise<ScriptFetch>;
+  parseScript(text: string): Promise<ScriptParseError | null>;
   now(): number;
 };
 
 const DEFAULT_DEPS: VerifyDeps = {
   probe: (url) => invoke<PreviewProbeResult>("preview_probe", { url }),
+  fetchScript: (url) => invoke<ScriptFetch>("preview_fetch_script", { url }),
+  parseScript: parseWithAcorn,
   now: () => Date.now(),
 };
 
@@ -161,7 +175,17 @@ export async function noteTurnEnd(
   if (!start) return undefined;
   if (!turnWroteFiles(latestTurnBlocks(session.blocks))) return undefined;
   const turnKey = latestTurnKey(session.blocks) ?? start.turnKey;
-  const result = await verifyNow(session.id, turnKey, start.mark, start.processId);
+  const written = turnWrittenPaths(
+    latestTurnBlocks(session.blocks),
+    previewForSession(session.id)?.workCwd,
+  );
+  const result = await verifyNow(
+    session.id,
+    turnKey,
+    start.mark,
+    start.processId,
+    written,
+  );
   if (!result) return undefined;
   const state = chat(session.id);
   const autoSend = !result.ok && state.auto && state.autoSends < MAX_AUTO_SENDS;
@@ -169,14 +193,16 @@ export async function noteTurnEnd(
 }
 
 /**
- * Run the three checks now. `mark` limits the output read to what came after
- * it; without one, the whole held output is read.
+ * Run the checks now. `mark` limits the output read to what came after it;
+ * without one, the whole held output is read. `written` are the files the
+ * turn changed; its scripts are fetched and parsed.
  */
 export async function verifyNow(
   sessionId: string,
   turnKey: string,
   mark?: OutputMark,
   processId?: string,
+  written: readonly string[] = [],
 ): Promise<VerifyResult | undefined> {
   const preview = previewForSession(sessionId);
   if (!preview) return undefined;
@@ -201,6 +227,13 @@ export async function verifyNow(
       : preview.url
         ? { error: "The server is not running" }
         : undefined;
+    const scripts =
+      alive && preview.url && typeof http?.status === "number" && written.length
+        ? await checkServedScripts(written, preview.runCwd, preview.url, {
+            fetchScript: deps.fetchScript,
+            parseScript: deps.parseScript,
+          }).catch(() => undefined)
+        : undefined;
     const result = evaluateVerify({
       sessionId,
       turnKey,
@@ -218,6 +251,7 @@ export async function verifyNow(
       newOutput: outputSince(sameProcess ? mark : undefined, output),
       ...(preview.url ? { url: preview.url } : {}),
       ...(http ? { http } : {}),
+      ...(scripts ? { scripts } : {}),
       at: deps.now(),
     });
     state.result = result;

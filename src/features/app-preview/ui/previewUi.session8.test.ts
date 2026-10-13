@@ -226,6 +226,9 @@ describe("the verify card", () => {
       }),
     );
     expect(container.querySelector("[data-verify-send]")).toBeNull();
-    expect(container.textContent).toContain("Console errors and layout are not checked");
+    expect(container.textContent).toContain("Server check found no problems");
+    expect(container.textContent).toContain(
+      "The page itself was not checked: errors in the browser, such as a syntax error, do not show here.",
+    );
   });
 });

@@ -193,6 +193,35 @@ export function turnWroteFiles(blocks: readonly Block[]): boolean {
   return writeCalls(blocks).some((block) => writeLanded(block, false));
 }
 
+/**
+ * Mac test 6.8: the files a settled turn wrote or edited through a tool call
+ * that landed, as absolute paths, one entry per file, in the order first
+ * written. Deletes and moves are left out. Edits a shell command made are not
+ * seen here.
+ */
+export function turnWrittenPaths(
+  blocks: readonly Block[],
+  cwd?: string,
+): string[] {
+  const found = new Map<string, string>();
+  for (const block of writeCalls(blocks)) {
+    if (!writeLanded(block, false)) continue;
+    const kind = block.tool?.kind?.trim().toLowerCase();
+    if (kind === "delete" || kind === "move") continue;
+    const display = resolveToolCallDisplay(
+      toolCallLabel(block, cwd),
+      block.tool?.preview,
+      cwd,
+    );
+    if (!display.isFile || !display.filePath || !display.previewMatchesFile)
+      continue;
+    if (display.filePath.startsWith(REMOTE_PATH_PREFIX)) continue;
+    const key = pathKey(display.filePath);
+    if (!found.has(key)) found.set(key, display.filePath);
+  }
+  return [...found.values()];
+}
+
 /** The cards to show now, and how many more the "+N more" row stands for. */
 export function documentCardWindow<T>(
   files: readonly T[],

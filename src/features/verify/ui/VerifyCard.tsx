@@ -7,7 +7,7 @@ import {
   verifyState,
   verifyVersion,
 } from "../model/verifyStore";
-import type { VerifyResult } from "../model/verify";
+import { PASS_NOTE, PASS_TITLE, type VerifyResult } from "../model/verify";
 
 /**
  * #38a: the card under the latest turn when MonoCode checked the preview
@@ -74,7 +74,7 @@ export function VerifyCardView({
             <CircleAlert className="size-3.5 text-red-500" strokeWidth={1.75} />
           )}
           <span className="font-medium text-content/85">
-            {result.ok ? "Preview checked: no problems found" : "Preview check failed"}
+            {result.ok ? PASS_TITLE : "Preview check failed"}
           </span>
           {checking ? (
             <LoaderCircle className="size-3 animate-spin text-content/40" strokeWidth={1.75} />
@@ -82,8 +82,10 @@ export function VerifyCardView({
         </div>
         {result.ok ? (
           <p className="text-[11.5px] text-content/50">
-            The server runs, its output has no new errors, and the page answers. Console
-            errors and layout are not checked.
+            {result.scriptsChecked?.length
+              ? `The changed scripts parse: ${result.scriptsChecked.join(", ")}. `
+              : ""}
+            {PASS_NOTE}
           </p>
         ) : (
           <ul className="flex flex-col gap-0.5 text-[11.5px] text-content/70">

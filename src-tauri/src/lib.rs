@@ -676,6 +676,7 @@ pub fn run() {
             preview::preview_resolve_cwd,
             preview::preview_free_port,
             preview::preview_probe,
+            preview::preview_fetch_script,
             // [lane-4] commands
             fs::git_review_patch,
             // [lane-5] commands

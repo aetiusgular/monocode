@@ -325,14 +325,7 @@ pub fn probe(raw: &str) -> PreviewProbe {
             }
         }
     };
-    let agent = ureq::AgentBuilder::new()
-        .resolver(|netloc: &str| loopback_addrs(netloc))
-        .redirects(0)
-        .timeout_connect(PROBE_CONNECT)
-        .timeout_read(PROBE_READ)
-        .user_agent("MonoCode preview check")
-        .build();
-    match agent.get(url.as_str()).call() {
+    match loopback_agent().get(url.as_str()).call() {
         Ok(response) => read_response(response),
         Err(ureq::Error::Status(_, response)) => read_response(response),
         Err(ureq::Error::Transport(error)) => PreviewProbe {
@@ -340,6 +333,93 @@ pub fn probe(raw: &str) -> PreviewProbe {
             ..PreviewProbe::default()
         },
     }
+}
+
+/// Largest script read for the parse check, in bytes.
+const SCRIPT_BODY_BYTES: u64 = 1024 * 1024;
+
+#[derive(Debug, Serialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewScript {
+    pub status: Option<u16>,
+    pub content_type: Option<String>,
+    /// The body as text, when it is under `SCRIPT_BODY_BYTES` and UTF-8.
+    pub body: Option<String>,
+    /// Larger than the limit: not read whole, so not checked.
+    pub too_large: bool,
+    pub error: Option<String>,
+}
+
+fn loopback_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .resolver(|netloc: &str| loopback_addrs(netloc))
+        .redirects(0)
+        .timeout_connect(PROBE_CONNECT)
+        .timeout_read(PROBE_READ)
+        .user_agent("MonoCode preview check")
+        .build()
+}
+
+/// One GET for a script the preview serves, for the parse check (Mac test
+/// 6.8). The same limits as the probe: loopback only, no redirects, a name
+/// never reaches a resolver. The body is read up to 1 MB.
+pub fn fetch_script(raw: &str) -> PreviewScript {
+    let url = match loopback_url(raw) {
+        Ok(url) => url,
+        Err(error) => {
+            return PreviewScript {
+                error: Some(error),
+                ..PreviewScript::default()
+            }
+        }
+    };
+    let response = match loopback_agent().get(url.as_str()).call() {
+        Ok(response) => response,
+        Err(ureq::Error::Status(_, response)) => response,
+        Err(ureq::Error::Transport(error)) => {
+            return PreviewScript {
+                error: Some(error.to_string()),
+                ..PreviewScript::default()
+            }
+        }
+    };
+    let status = response.status();
+    let content_type = response.header("content-type").map(str::to_string);
+    let mut bytes = Vec::new();
+    let read = response
+        .into_reader()
+        .take(SCRIPT_BODY_BYTES + 1)
+        .read_to_end(&mut bytes);
+    if let Err(error) = read {
+        return PreviewScript {
+            status: Some(status),
+            content_type,
+            error: Some(error.to_string()),
+            ..PreviewScript::default()
+        };
+    }
+    if bytes.len() as u64 > SCRIPT_BODY_BYTES {
+        return PreviewScript {
+            status: Some(status),
+            content_type,
+            too_large: true,
+            ..PreviewScript::default()
+        };
+    }
+    PreviewScript {
+        status: Some(status),
+        content_type,
+        body: String::from_utf8(bytes).ok(),
+        too_large: false,
+        error: None,
+    }
+}
+
+#[tauri::command]
+pub async fn preview_fetch_script(url: String) -> Result<PreviewScript, String> {
+    tauri::async_runtime::spawn_blocking(move || fetch_script(&url))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// One GET on a loopback preview URL. Never follows a redirect.
@@ -614,5 +694,29 @@ mod tests {
         let result = probe(&format!("http://127.0.0.1:{port}/"));
         assert!(result.status.is_none());
         assert!(result.error.is_some());
+    }
+
+    // Mac test 6.8: the parse check reads a script the preview serves.
+    #[test]
+    fn fetch_script_reads_the_body_on_loopback_only() {
+        let ok = serve_once(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\nContent-Length: 9\r\nConnection: close\r\n\r\nconst = ;",
+        );
+        let script = fetch_script(&format!("http://127.0.0.1:{ok}/src/main.js"));
+        assert_eq!(script.status, Some(200));
+        assert_eq!(script.body.as_deref(), Some("const = ;"));
+        assert_eq!(script.content_type.as_deref(), Some("text/javascript"));
+        assert!(!script.too_large);
+
+        let elsewhere = fetch_script("http://example.com:80/main.js");
+        assert!(elsewhere.status.is_none());
+        assert!(elsewhere.body.is_none());
+        assert!(elsewhere.error.is_some());
+
+        let redirect = serve_once(
+            "HTTP/1.1 302 Found\r\nLocation: http://example.com/x.js\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        let script = fetch_script(&format!("http://127.0.0.1:{redirect}/x.js"));
+        assert_eq!(script.status, Some(302));
     }
 }
