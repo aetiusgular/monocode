@@ -106,12 +106,24 @@ export function isCommandRuleKey(key: unknown): key is string {
   return commandRuleFromKey(key) !== null;
 }
 
+/** Characters a word may hold outside quotes: none of them means anything to bash or zsh. */
+const PLAIN = /^[A-Za-z0-9_./:%@,+=-]$/;
+/** What a backslash may make literal outside quotes: printable ASCII. */
+const ESCAPABLE = /^[\x20-\x7e]$/;
+
 /**
  * The words of a command as the shell would pass them, quotes removed. Null
- * when the shell could change the words before the program sees them: a
- * `$` expansion (outside single quotes), a glob or brace pattern outside
- * quotes (a file named `--output=x` would become a flag), a comment, or an
- * unclosed quote. Such a command never matches a prefix rule.
+ * when the shell could change the words before the program sees them. Claude
+ * Code runs a command in the user's `$SHELL`, which is zsh on a stock Mac,
+ * so the reading holds for bash and zsh both. It is an allowlist:
+ * - outside quotes, only letters, digits and `_./:%@,+=-`, plus a backslash
+ *   before a printable character; a word may not start with `=` (zsh runs
+ *   `=cmd` as a path lookup). `(`, `)`, `^`, `~`, `#`, `!`, `$`, globs and
+ *   braces all refuse, since zsh glob qualifiers like `*(e:cmd:)` run code;
+ * - inside single quotes, anything but a control character, and no `''`
+ *   straight after a closing quote (zsh's RC_QUOTES reads that as a quote);
+ * - inside double quotes, anything but `$`, a backtick, `\` or `!`.
+ * Such a command never matches a prefix rule.
  */
 export function shellWords(command: string): string[] | null {
   const words: string[] = [];
@@ -119,6 +131,8 @@ export function shellWords(command: string): string[] | null {
   let inWord = false;
   let i = 0;
   const text = command.trim();
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(text.replace(/[ \t]/g, ""))) return null;
   while (i < text.length) {
     const c = text[i];
     if (c === " " || c === "\t") {
@@ -129,9 +143,12 @@ export function shellWords(command: string): string[] | null {
       continue;
     }
     if (c === "'") {
+      if (i > 0 && text[i - 1] === "'") return null;
       const end = text.indexOf("'", i + 1);
       if (end < 0) return null;
-      word += text.slice(i + 1, end);
+      const quoted = text.slice(i + 1, end);
+      if (quoted.includes("\t")) return null;
+      word += quoted;
       inWord = true;
       i = end + 1;
       continue;
@@ -146,14 +163,8 @@ export function shellWords(command: string): string[] | null {
           i++;
           break;
         }
-        if (d === "$" || d === "`") return null;
-        if (d === "\\" && i + 1 < text.length) {
-          const next = text[i + 1];
-          if (next === "\n" || next === "\r") return null;
-          word += '$`"\\'.includes(next) ? next : d + next;
-          i += 2;
-          continue;
-        }
+        if (d === "$" || d === "`" || d === "\\" || d === "!" || d === "\t")
+          return null;
         word += d;
         i++;
       }
@@ -163,14 +174,15 @@ export function shellWords(command: string): string[] | null {
     }
     if (c === "\\") {
       const next = text[i + 1];
-      if (next === undefined || next === "\n" || next === "\r") return null;
+      if (next === undefined || !ESCAPABLE.test(next)) return null;
       word += next;
       inWord = true;
       i += 2;
       continue;
     }
-    if ("$*?[]{}`".includes(c)) return null;
-    if (c === "#" && !inWord) return null;
+    if (!PLAIN.test(c)) return null;
+    // `=cmd` is a command path lookup in zsh, also after empty quotes.
+    if (c === "=" && word === "") return null;
     word += c;
     inWord = true;
     i++;

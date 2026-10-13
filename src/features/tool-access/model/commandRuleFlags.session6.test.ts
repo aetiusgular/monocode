@@ -159,12 +159,14 @@ describe("a prefix rule refuses flags that run, write or load config (F1)", () =
     // File names with spaces are fine; a leading dash after `--` asks.
     expect(commandMatchesRule('git diff -- "my notes.txt"', rule)).toBe(true);
     expect(commandMatchesRule("git diff -- '-notes.txt'", rule)).toBe(false);
-    expect(shellWords(`a 'b c' "d\\"e" f\\ g`)).toEqual([
+    expect(shellWords(`a 'b c' "d'e" f\\ g`)).toEqual([
       "a",
       "b c",
-      'd"e',
+      "d'e",
       "f g",
     ]);
+    // A backslash inside double quotes asks (R1): zsh and bash differ there.
+    expect(shellWords(`"d\\"e"`)).toBeNull();
   });
 
   it("pytest refuses plugins and config", () => {
