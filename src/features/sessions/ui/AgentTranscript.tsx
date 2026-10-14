@@ -174,6 +174,7 @@ import { rememberText as rememberText_l2 } from "../../project-memory/model/reme
 import { rememberedNotice as rememberedNotice_s6 } from "../../project-memory/model/remember";
 // [lane-3] imports
 import {
+  rowStartsOpen as rowStartsOpen_s6,
   useRowOpen as useRowOpen_s6,
   useTranscriptDetail as useTranscriptDetail_l3,
   workStartsOpen as workStartsOpen_l3,
@@ -3673,7 +3674,10 @@ function ActivityPhaseGroup({
 }) {
   const [override, setOverride] = useState<boolean | null>(null);
   const waiting = phase.steps.some(needsApproval);
-  const open = waiting || (override ?? active);
+  // Everything opens a settled group too; a group toggled by hand keeps its
+  // state through later setting changes (Mac 3.10).
+  const rowsOpen = rowStartsOpen_s6(useTranscriptDetail_l3());
+  const open = waiting || (override ?? (active || rowsOpen));
   const [liveScroller, setLiveScroller] = useState<HTMLDivElement | null>(null);
   useLivePhaseScroll(liveScroller, active && open, phase.steps);
   // Steps already here when the group mounted, or that landed while it was
