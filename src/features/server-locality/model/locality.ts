@@ -151,6 +151,10 @@ export function sessionLocalityParts(
       {
         ...(session.id ? { id: session.id } : {}),
         harness: session.harness,
+        // The folder, so the gateway's local default reads the route the
+        // harness reported for it, as the composer and the panel do (2.23).
+        ...(session.cwd ? { cwd: session.cwd } : {}),
+        ...(session.worktreeCwd ? { worktreeCwd: session.worktreeCwd } : {}),
         disabledMcpServers: session.disabledMcpServers ?? [],
         ...(session.model ? { model: session.model } : {}),
         ...(session.modelProvider
