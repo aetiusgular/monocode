@@ -296,19 +296,28 @@ function AutomationsContent({
     return { project, harness, model };
   };
 
+  // A refusal belongs to the form it came from. Cancel, leaving the form or
+  // a project change clears it (Mac 2.16).
+  useEffect(() => {
+    setError(null);
+  }, [cwd]);
+
   const beginCreate = () => {
+    setError(null);
     setPickerOpen(true);
     setDraft(null);
   };
 
   const beginBlank = () => {
     const { project, harness, model } = defaultDraftTarget();
+    setError(null);
     setPickerOpen(false);
     setDraft(newAutomationDraft(project, harness, model));
   };
 
   const beginFromTemplate = (template: AutomationTemplate) => {
     const { project, harness, model } = defaultDraftTarget();
+    setError(null);
     setPickerOpen(false);
     setDraft(draftFromTemplate(project, harness, model, template));
   };
@@ -319,6 +328,7 @@ function AutomationsContent({
     setSaving(true);
     try {
       const saved = await saveAutomation(nextDraft);
+      setError(null);
       setPickerOpen(false);
       setDraft(null);
       setSelectedId(saved.id);
@@ -433,6 +443,8 @@ function AutomationsContent({
                     colors={groupColors}
                     customColors={groupCustomColors}
                     onSelect={() => {
+                      if (automation.id !== selected?.id || draft)
+                        setError(null);
                       setPickerOpen(false);
                       setDraft(null);
                       setSelectedId(automation.id);
@@ -490,8 +502,12 @@ function AutomationsContent({
             saving={saving}
             running={editorDraft.id === running}
             dirty={draft != null}
-            onChange={setDraft}
+            onChange={(next) => {
+              if (next.cwd !== editorDraft.cwd) setError(null);
+              setDraft(next);
+            }}
             onClose={() => {
+              setError(null);
               setDraft(null);
               if (!editorDraft.id) setPickerOpen(true);
             }}
