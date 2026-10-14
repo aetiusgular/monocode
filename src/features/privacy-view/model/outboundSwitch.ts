@@ -1,8 +1,12 @@
 import {
   getAllRateLimits,
   loadRateLimits,
+  setCachedRateLimits,
 } from "../../providers/model/rateLimitsCache";
-import type { RateLimitProvider } from "../../providers/model/rateLimits";
+import {
+  unavailableRateLimits,
+  type RateLimitProvider,
+} from "../../providers/model/rateLimits";
 import {
   OUTBOUND_CALL_OFF_MESSAGE,
   setOutboundCallAllowed,
@@ -25,6 +29,34 @@ const USAGE_PROVIDERS: readonly RateLimitProvider[] = [
 export function setOutboundCall(id: OutboundCallId, allowed: boolean): void {
   setOutboundCallAllowed(id, allowed);
   if (id === "usage" && allowed) resumeBlockedUsage();
+  if (id === "usage" && !allowed) clearSwitchedOffUsage();
+}
+
+/** The providers whose usage the switch covers. Codex reports through its own process. */
+const SWITCHED_PROVIDERS: readonly RateLimitProvider[] = [
+  "claude",
+  "opencode",
+  "devin",
+];
+
+/**
+ * Turning usage off replaces each figure fetched before with the off state at
+ * once, so the footer stops showing old percentages and an "Updated" time
+ * (Mac 5.9).
+ */
+export function clearSwitchedOffUsage(): void {
+  for (const key of Object.keys(getAllRateLimits())) {
+    const split = key.indexOf(":");
+    if (split <= 0) continue;
+    const provider = key.slice(0, split) as RateLimitProvider;
+    if (!SWITCHED_PROVIDERS.includes(provider)) continue;
+    const accountId = key.slice(split + 1) || "default";
+    setCachedRateLimits(
+      provider,
+      accountId,
+      unavailableRateLimits(provider, OUTBOUND_CALL_OFF_MESSAGE),
+    );
+  }
 }
 
 export function resumeBlockedUsage(): Promise<unknown> {

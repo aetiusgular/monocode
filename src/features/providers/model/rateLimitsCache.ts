@@ -1,8 +1,13 @@
 import { useSyncExternalStore } from "react";
 import {
+  OUTBOUND_CALL_OFF_MESSAGE,
+  outboundCallAllowed,
+} from "../../settings/model/outboundCalls";
+import {
   errorRateLimits,
   fetchingRateLimits,
   idleRateLimits,
+  unavailableRateLimits,
   type ProviderRateLimits,
   type RateLimitProvider,
 } from "./rateLimits";
@@ -104,6 +109,13 @@ export function loadRateLimits(
             : provider === "devin"
               ? await fetchDevinRateLimits()
               : await fetchOpencodeGoRateLimits();
+      // The switch went off while this request ran: show the off state, not
+      // the figures that came back (Mac 5.9). Codex is not covered by it.
+      if (provider !== "codex" && !outboundCallAllowed("usage")) {
+        const off = unavailableRateLimits(provider, OUTBOUND_CALL_OFF_MESSAGE);
+        publish(key, off);
+        return off;
+      }
       publish(key, result);
       return result;
     } catch (error) {

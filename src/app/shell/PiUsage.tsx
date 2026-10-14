@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { RefreshCw } from "../../shared/ui/icons";
 import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
 import {
@@ -11,7 +11,12 @@ import {
   idleRateLimits,
   RATE_LIMIT_MIN_REFETCH_MS,
   RATE_LIMIT_POLL_MS,
+  unavailableRateLimits,
 } from "../../features/providers/model/rateLimits";
+import {
+  OUTBOUND_CALL_OFF_MESSAGE,
+  useOutboundCallAllowed,
+} from "../../features/settings/model/outboundCalls";
 import { UsageProviderChip } from "./UsageProviderChip";
 
 export function PiUsage({ model, now }: { model?: string; now: number }) {
@@ -84,11 +89,29 @@ function PiProviderUsage({
       window.removeEventListener("focus", onVisible);
     };
   }, [provider]);
-  const fetching = limits.status === "fetching";
+  // Off in Settings: drop the figures at once; on again: fetch fresh ones
+  // (Mac 5.9).
+  const usageAllowed = useOutboundCallAllowed("usage");
+  const wasAllowed = useRef(usageAllowed);
+  useEffect(() => {
+    if (usageAllowed && !wasAllowed.current) refreshRef.current(true);
+    wasAllowed.current = usageAllowed;
+  }, [usageAllowed]);
+  const shown = useMemo(
+    () =>
+      usageAllowed
+        ? limits
+        : unavailableRateLimits(
+            piBillingProvider(provider),
+            OUTBOUND_CALL_OFF_MESSAGE,
+          ),
+    [usageAllowed, limits, provider],
+  );
+  const fetching = usageAllowed && limits.status === "fetching";
   return (
     <>
       <UsageProviderChip
-        limits={limits}
+        limits={shown}
         now={now}
         presentation={{
           sourceLabel: "Pi's saved OAuth account",
