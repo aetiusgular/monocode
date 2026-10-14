@@ -2881,30 +2881,321 @@ fn git_range_context_for(root: &Path) -> Result<GitRangeContext, String> {
 }
 
 fn git_pr_status_for(root: &Path) -> Option<GitPr> {
-    let branch = git_branch(root)?;
-    let repo = git_github_repo_for(root).ok()?;
-    let head = github_pr_head_filter(&repo, &branch)?;
-    let json = gh_stdout(
-        root,
-        &[
-            "pr",
-            "list",
-            "--head",
-            &head,
-            "--json",
-            "number,title,url,state",
-            "--limit",
-            "20",
-            "--state",
-            "all",
-        ],
-    )?;
-    parse_gh_pr_list(&json)
+    git_pr_status_with(root, &|args: &[&str]| gh_stdout(root, args))
 }
 
-fn github_pr_head_filter(repo: &str, branch: &str) -> Option<String> {
-    let (owner, _) = split_github_repo(repo).ok()?;
-    Some(format!("{owner}:{branch}"))
+/// The pull request for the checked-out branch, found the way `gh pr view`
+/// finds one (cli/cli `pkg/cmd/pr/shared/finder.go`): list the base
+/// repository's pull requests whose head branch has this name, then keep the
+/// one whose head is where this branch is pushed. `gh pr list --head` takes a
+/// branch name only. GitHub's `headRefName` filter never matches
+/// `owner:branch` (gh's manual: "`<owner>:<branch>` syntax not supported"),
+/// so the qualified filter used before found nothing (Mac test 4.10).
+///
+/// `gh` is passed in so tests can stand in for it.
+fn git_pr_status_with(root: &Path, gh: &dyn Fn(&[&str]) -> Option<String>) -> Option<GitPr> {
+    let local = git_head_branch(root)?;
+    let base = gh(&["repo", "view", "--json", "nameWithOwner,defaultBranchRef"])
+        .and_then(|json| parse_github_base_repo(&json))?;
+    let head = git_pr_head_for(root, &local, &base.slug)?;
+    let args = pr_list_for_branch_args(&head.branch);
+    let json = gh(&args.iter().map(String::as_str).collect::<Vec<_>>())?;
+    select_branch_pr(&json, &head, base.default_branch.as_deref())
+}
+
+/// The base repository `gh` resolves in a folder, and its default branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitHubBaseRepo {
+    slug: String,
+    default_branch: Option<String>,
+}
+
+fn parse_github_base_repo(json: &str) -> Option<GitHubBaseRepo> {
+    #[derive(Deserialize)]
+    struct BranchRef {
+        #[serde(default)]
+        name: String,
+    }
+    #[derive(Deserialize)]
+    struct View {
+        #[serde(rename = "nameWithOwner")]
+        name_with_owner: String,
+        #[serde(rename = "defaultBranchRef", default)]
+        default_branch_ref: Option<BranchRef>,
+    }
+    let view: View = serde_json::from_str(json).ok()?;
+    let (owner, name) = split_github_repo(&view.name_with_owner).ok()?;
+    Some(GitHubBaseRepo {
+        slug: format!("{owner}/{name}"),
+        default_branch: view
+            .default_branch_ref
+            .map(|branch| branch.name.trim().to_string())
+            .filter(|name| !name.is_empty()),
+    })
+}
+
+/// What a pull request's head must be to belong to the local branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PrHead {
+    /// The branch name on the remote it is pushed to (GitHub's `headRefName`).
+    branch: String,
+    /// The GitHub repository the branch is pushed to, as `(owner, name)`,
+    /// when that is not the base repository: a fork, so the pull request is
+    /// cross-repository and its head owner is `owner`. `None`: the head is in
+    /// the base repository.
+    fork: Option<(String, String)>,
+}
+
+/// Where `local` is pushed, read as `gh` reads it: `<branch>@{push}` first,
+/// then `branch.<b>.pushRemote`, `remote.pushDefault` and `branch.<b>.remote`,
+/// with the merge ref's name when `push.default` is `upstream` or `tracking`.
+/// A branch with no push destination is looked for under its own name in the
+/// base repository, as gh does.
+///
+/// `None` when the push remote's URL cannot be placed: a host alias such as
+/// `github-work:` pointing at another repository, or another forge. Showing
+/// nothing beats showing a PR from someone else's branch of the same name
+/// (security review of the 14 Oct fixes, F4). An SSH URL whose path is the
+/// base repository, on any host, is the base repository (an alias for it).
+fn git_pr_head_for(root: &Path, local: &str, base_slug: &str) -> Option<PrHead> {
+    let Some((remote, branch)) = git_push_destination(root, local) else {
+        return Some(PrHead {
+            branch: local.to_string(),
+            fork: None,
+        });
+    };
+    let url = git_stdout(root, &["remote", "get-url", "--push", "--", &remote])?;
+    let remote_url = parse_remote_url(&url)?;
+    let github = GITHUB_HOSTS.contains(&remote_url.host.as_str());
+    let (owner, name) = (remote_url.owner, remote_url.name);
+    // An SSH host alias (`github-work:acme/widget`) for the base repository
+    // is the base repository; an https URL on another host is not.
+    if format!("{owner}/{name}").eq_ignore_ascii_case(base_slug) && (github || remote_url.ssh) {
+        return Some(PrHead { branch, fork: None });
+    }
+    if !github {
+        return None;
+    }
+    Some(PrHead {
+        branch,
+        fork: Some((owner, name)),
+    })
+}
+
+/// Hosts that are GitHub itself: the web host and its SSH-over-443 host.
+const GITHUB_HOSTS: &[&str] = &["github.com", "www.github.com", "ssh.github.com"];
+
+/// A remote URL whose path is exactly `owner/name`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RemoteUrl {
+    host: String,
+    owner: String,
+    name: String,
+    /// Reached over SSH (`ssh://` or scp-like), where the host may be an
+    /// alias from the user's SSH config.
+    ssh: bool,
+}
+
+/// A remote URL in git's network forms: `scheme://[user@]host[:port]/owner/name[.git]`
+/// for https, http, ssh and git, and scp-like `[user@]host:owner/name[.git]`.
+/// The host is read whole, never searched for, so `notgithub.com` is not
+/// GitHub. Lowercased. Local paths and `file://` give `None`.
+fn parse_remote_url(url: &str) -> Option<RemoteUrl> {
+    let url = url.trim();
+    let mut ssh = true;
+    let (host, path) = if let Some((scheme, rest)) = url.split_once("://") {
+        let scheme = scheme.to_ascii_lowercase();
+        if !matches!(
+            scheme.as_str(),
+            "https" | "http" | "ssh" | "git" | "git+ssh" | "ssh+git"
+        ) {
+            return None;
+        }
+        ssh = scheme.contains("ssh");
+        let (authority, path) = rest.split_once('/')?;
+        let host = authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, host)| host);
+        let host = host.split_once(':').map_or(host, |(host, _)| host);
+        (host, path)
+    } else {
+        // scp-like: a colon before any slash. A single letter before the
+        // colon is a Windows drive, as git reads it.
+        let (left, path) = url.split_once(':')?;
+        if left.contains('/')
+            || left.contains('\\')
+            || (left.len() == 1 && left.chars().all(|c| c.is_ascii_alphabetic()))
+        {
+            return None;
+        }
+        (left.rsplit_once('@').map_or(left, |(_, host)| host), path)
+    };
+    if host.is_empty() || host.contains(char::is_whitespace) {
+        return None;
+    }
+    let path = path.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let (owner, name) = split_github_repo(path).ok()?;
+    Some(RemoteUrl {
+        host: host.to_ascii_lowercase(),
+        owner: owner.to_ascii_lowercase(),
+        name: name.to_ascii_lowercase(),
+        ssh,
+    })
+}
+
+fn git_push_destination(root: &Path, local: &str) -> Option<(String, String)> {
+    // A branch name never starts with "-" (git check-ref-format), and
+    // rev-parse would read one as an option.
+    if local.is_empty() || local.starts_with('-') {
+        return None;
+    }
+    let remotes = git_remote_names(root);
+    if let Some(full) = git_stdout(
+        root,
+        &[
+            "rev-parse",
+            "--symbolic-full-name",
+            &format!("{local}@{{push}}"),
+        ],
+    ) {
+        if let Some(found) = split_remote_tracking_ref(&full, &remotes) {
+            return Some(found);
+        }
+    }
+    let config = |key: &str| {
+        git_stdout(root, &["config", "--get", key]).filter(|value| !value.trim().is_empty())
+    };
+    let remote = config(&format!("branch.{local}.pushRemote"))
+        .or_else(|| config("remote.pushDefault"))
+        .or_else(|| config(&format!("branch.{local}.remote")))?;
+    // "." is the local repository, not a remote.
+    if remote == "." || !remotes.iter().any(|name| name == &remote) {
+        return None;
+    }
+    let push_default = config("push.default").map(|value| value.to_ascii_lowercase());
+    let branch = if matches!(push_default.as_deref(), Some("upstream" | "tracking")) {
+        config(&format!("branch.{local}.merge"))
+            .and_then(|merge| merge.strip_prefix("refs/heads/").map(str::to_string))
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| local.to_string())
+    } else {
+        local.to_string()
+    };
+    Some((remote, branch))
+}
+
+/// `refs/remotes/<remote>/<branch>` split at the longest remote name that
+/// fits, since remote names may hold "/".
+fn split_remote_tracking_ref(full: &str, remotes: &[String]) -> Option<(String, String)> {
+    let rest = full.trim().strip_prefix("refs/remotes/")?;
+    let remote = remotes
+        .iter()
+        .filter(|name| {
+            rest.len() > name.len() + 1
+                && rest.starts_with(name.as_str())
+                && rest.as_bytes()[name.len()] == b'/'
+        })
+        .max_by_key(|name| name.len())?;
+    Some((remote.clone(), rest[remote.len() + 1..].to_string()))
+}
+
+/// `gh pr list` for one head branch. The branch goes in alone: GitHub's
+/// `headRefName` filter takes a ref name, never `owner:branch`. It is joined to
+/// the flag with `=`, so a name the repository's config supplies (a merge ref)
+/// is never read as another flag. No flag that moves gh to the search API
+/// (`--search`, `--author`, `--label`, `--draft`), where `head:` matches names
+/// that only begin with the branch.
+fn pr_list_for_branch_args(branch: &str) -> Vec<String> {
+    [
+        "pr",
+        "list",
+        &format!("--head={branch}"),
+        "--state",
+        "all",
+        "--limit",
+        "30",
+        "--json",
+        "number,title,url,state,headRefName,headRepositoryOwner,headRepository,isCrossRepository",
+    ]
+    .iter()
+    .map(|arg| arg.to_string())
+    .collect()
+}
+
+/// The pull request in `gh pr list` output whose head is `head`: the same
+/// branch name, and either in the base repository or, for a fork, owned by
+/// the fork's owner. An open one wins, else the newest (gh lists newest
+/// first). On the default branch only an open one counts (cli/cli #4263), so
+/// an old merged pull request from `main` does not show.
+fn select_branch_pr(json: &str, head: &PrHead, default_branch: Option<&str>) -> Option<GitPr> {
+    #[derive(Deserialize)]
+    struct Owner {
+        #[serde(default)]
+        login: String,
+    }
+    #[derive(Deserialize)]
+    struct HeadRepo {
+        #[serde(default)]
+        name: String,
+    }
+    #[derive(Deserialize)]
+    struct Row {
+        number: i64,
+        title: String,
+        url: String,
+        state: String,
+        #[serde(rename = "headRefName", default)]
+        head_ref_name: String,
+        #[serde(rename = "isCrossRepository", default)]
+        is_cross_repository: bool,
+        #[serde(rename = "headRepositoryOwner", default)]
+        head_repository_owner: Option<Owner>,
+        #[serde(rename = "headRepository", default)]
+        head_repository: Option<HeadRepo>,
+    }
+    let rows: Vec<Row> = serde_json::from_str(json).ok()?;
+    let open_only = head.fork.is_none() && default_branch == Some(head.branch.as_str());
+    let mut best: Option<GitPr> = None;
+    for row in rows {
+        if row.head_ref_name != head.branch {
+            continue;
+        }
+        let matches = match &head.fork {
+            None => !row.is_cross_repository,
+            Some((owner, name)) => {
+                row.is_cross_repository
+                    && row
+                        .head_repository_owner
+                        .as_ref()
+                        .is_some_and(|found| found.login.eq_ignore_ascii_case(owner))
+                    // A deleted fork has no head repository; the owner decides.
+                    && row
+                        .head_repository
+                        .as_ref()
+                        .is_none_or(|repo| repo.name.is_empty() || repo.name.eq_ignore_ascii_case(name))
+            }
+        };
+        if !matches {
+            continue;
+        }
+        let pr = GitPr {
+            number: row.number,
+            title: row.title,
+            url: row.url,
+            state: row.state.to_lowercase(),
+        };
+        if pr.state == "open" {
+            return Some(pr);
+        }
+        if open_only {
+            continue;
+        }
+        if best.is_none() {
+            best = Some(pr);
+        }
+    }
+    best
 }
 
 fn git_github_repo_for(root: &Path) -> Result<String, String> {
@@ -4263,33 +4554,6 @@ fn parse_github_work_item(json: &str, kind: &str, repo: &str) -> Result<GitHubWo
         .into_iter()
         .next()
         .ok_or_else(|| "GitHub did not return a work item".into())
-}
-
-fn parse_gh_pr_list(json: &str) -> Option<GitPr> {
-    #[derive(Deserialize)]
-    struct Row {
-        number: i64,
-        title: String,
-        url: String,
-        state: String,
-    }
-    let rows: Vec<Row> = serde_json::from_str(json).ok()?;
-    let mut best: Option<GitPr> = None;
-    for row in rows {
-        let pr = GitPr {
-            number: row.number,
-            title: row.title,
-            url: row.url,
-            state: row.state.to_lowercase(),
-        };
-        if pr.state == "open" {
-            return Some(pr);
-        }
-        if best.is_none() {
-            best = Some(pr);
-        }
-    }
-    best
 }
 
 fn git_pr_create_for(root: &Path, input: &GitPrCreateInput) -> Result<String, String> {
@@ -8881,21 +9145,446 @@ mod tests {
         assert!(a.0.join("b.txt").exists());
     }
 
-    #[test]
-    fn parse_gh_pr_list_prefers_open() {
-        let json = r#"[{"number":2,"title":"Old","url":"https://example.com/2","state":"MERGED"},{"number":3,"title":"Now","url":"https://example.com/3","state":"OPEN"}]"#;
-        let pr = parse_gh_pr_list(json).unwrap();
-        assert_eq!(pr.number, 3);
-        assert_eq!(pr.state, "open");
-        assert_eq!(pr.title, "Now");
+    fn pr_rows(rows: &[(i64, &str, &str, bool, &str, &str)]) -> String {
+        let rows: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(number, state, head, cross, owner, repo)| {
+                serde_json::json!({
+                    "number": number,
+                    "title": format!("PR {number}"),
+                    "url": format!("https://github.com/acme/widget/pull/{number}"),
+                    "state": state,
+                    "headRefName": head,
+                    "isCrossRepository": cross,
+                    "headRepositoryOwner": { "login": owner },
+                    "headRepository": { "name": repo },
+                })
+            })
+            .collect();
+        serde_json::Value::Array(rows).to_string()
+    }
+
+    fn same_repo(branch: &str) -> PrHead {
+        PrHead {
+            branch: branch.into(),
+            fork: None,
+        }
     }
 
     #[test]
-    fn pr_head_filter_qualifies_branch_with_repo_owner() {
+    fn select_branch_pr_finds_a_same_repository_pr() {
+        // Mac test 4.10: PR #1 from `s7r2-pr1` in the base repository.
+        let json = pr_rows(&[(
+            1,
+            "OPEN",
+            "s7r2-pr1",
+            false,
+            "aetiusgular",
+            "monocode-pr-test",
+        )]);
+        let pr = select_branch_pr(&json, &same_repo("s7r2-pr1"), Some("main")).unwrap();
+        assert_eq!(pr.number, 1);
+        assert_eq!(pr.state, "open");
+    }
+
+    #[test]
+    fn select_branch_pr_skips_a_forks_pr_with_the_same_branch_name() {
+        // What the 7 Sep owner prefix meant to stop: `main` matching a PR
+        // opened from someone's fork's `main`.
+        let json = pr_rows(&[
+            (9, "OPEN", "main", true, "stranger", "widget"),
+            (4, "MERGED", "feature", false, "acme", "widget"),
+        ]);
+        assert!(select_branch_pr(&json, &same_repo("main"), Some("main")).is_none());
+    }
+
+    #[test]
+    fn select_branch_pr_matches_a_fork_by_owner() {
+        let head = PrHead {
+            branch: "fix".into(),
+            fork: Some(("Me".into(), "widget".into())),
+        };
+        let json = pr_rows(&[
+            (7, "OPEN", "fix", false, "acme", "widget"),
+            (8, "OPEN", "fix", true, "stranger", "widget"),
+            (9, "OPEN", "fix", true, "me", "widget"),
+        ]);
         assert_eq!(
-            github_pr_head_filter("hardbeat920/monocode", "main").as_deref(),
-            Some("hardbeat920:main")
+            select_branch_pr(&json, &head, Some("main")).unwrap().number,
+            9
         );
+        // A fork renamed on GitHub is another repository.
+        let other = pr_rows(&[(9, "OPEN", "fix", true, "me", "widget-old")]);
+        assert!(select_branch_pr(&other, &head, Some("main")).is_none());
+    }
+
+    #[test]
+    fn select_branch_pr_accepts_a_deleted_forks_pr_by_owner() {
+        let head = PrHead {
+            branch: "fix".into(),
+            fork: Some(("me".into(), "widget".into())),
+        };
+        let json = r#"[{"number":5,"title":"T","url":"u","state":"CLOSED","headRefName":"fix","isCrossRepository":true,"headRepositoryOwner":{"login":"me"},"headRepository":null}]"#;
+        assert_eq!(
+            select_branch_pr(json, &head, Some("main")).unwrap().number,
+            5
+        );
+    }
+
+    #[test]
+    fn select_branch_pr_prefers_open_then_newest() {
+        let json = pr_rows(&[
+            (3, "MERGED", "feature", false, "acme", "widget"),
+            (2, "CLOSED", "feature", false, "acme", "widget"),
+            (6, "OPEN", "feature", false, "acme", "widget"),
+        ]);
+        assert_eq!(
+            select_branch_pr(&json, &same_repo("feature"), Some("main"))
+                .unwrap()
+                .number,
+            6
+        );
+        let closed = pr_rows(&[
+            (3, "MERGED", "feature", false, "acme", "widget"),
+            (2, "CLOSED", "feature", false, "acme", "widget"),
+        ]);
+        let pr = select_branch_pr(&closed, &same_repo("feature"), Some("main")).unwrap();
+        assert_eq!((pr.number, pr.state.as_str()), (3, "merged"));
+    }
+
+    #[test]
+    fn select_branch_pr_shows_only_an_open_pr_on_the_default_branch() {
+        let json = pr_rows(&[(3, "MERGED", "main", false, "acme", "widget")]);
+        assert!(select_branch_pr(&json, &same_repo("main"), Some("main")).is_none());
+        assert_eq!(
+            select_branch_pr(&json, &same_repo("main"), Some("trunk"))
+                .unwrap()
+                .number,
+            3
+        );
+    }
+
+    #[test]
+    fn select_branch_pr_refuses_output_it_cannot_read() {
+        assert!(select_branch_pr("not json", &same_repo("main"), None).is_none());
+        assert!(select_branch_pr("[]", &same_repo("main"), None).is_none());
+    }
+
+    #[test]
+    fn pr_list_for_branch_sends_the_branch_name_alone() {
+        let args = pr_list_for_branch_args("s7r2-pr1");
+        assert!(args.contains(&"--head=s7r2-pr1".to_string()));
+        assert_eq!(
+            args.iter().filter(|arg| arg.starts_with("--head")).count(),
+            1
+        );
+        // A merge ref from the repository's config stays the flag's value.
+        let hostile = pr_list_for_branch_args("--repo=evil/repo");
+        assert!(hostile.contains(&"--head=--repo=evil/repo".to_string()));
+        assert!(!hostile.iter().any(|arg| arg.starts_with("--repo")));
+        for search in [
+            "--search",
+            "-S",
+            "--author",
+            "--label",
+            "--draft",
+            "--assignee",
+            "--app",
+        ] {
+            assert!(
+                !args.iter().any(|arg| arg == search),
+                "{search} moves gh to the search API"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_github_base_repo_reads_the_default_branch() {
+        let base = parse_github_base_repo(
+            r#"{"nameWithOwner":"acme/widget","defaultBranchRef":{"name":"trunk"}}"#,
+        )
+        .unwrap();
+        assert_eq!(base.slug, "acme/widget");
+        assert_eq!(base.default_branch.as_deref(), Some("trunk"));
+        let empty =
+            parse_github_base_repo(r#"{"nameWithOwner":"acme/widget","defaultBranchRef":null}"#)
+                .unwrap();
+        assert_eq!(empty.default_branch, None);
+        assert!(parse_github_base_repo(r#"{"nameWithOwner":"widget"}"#).is_none());
+    }
+
+    fn remote(host: &str, owner: &str, name: &str, ssh: bool) -> Option<RemoteUrl> {
+        Some(RemoteUrl {
+            host: host.into(),
+            owner: owner.into(),
+            name: name.into(),
+            ssh,
+        })
+    }
+
+    #[test]
+    fn parse_remote_url_reads_every_network_form() {
+        for (url, ssh) in [
+            ("https://github.com/Acme/Widget.git", false),
+            ("git@github.com:Acme/Widget.git", true),
+            ("ssh://git@github.com/Acme/Widget", true),
+            ("ssh://git@github.com:22/Acme/Widget.git", true),
+            ("https://github.com/Acme/Widget/", false),
+            ("git://github.com/acme/widget.git", false),
+        ] {
+            assert_eq!(
+                parse_remote_url(url),
+                remote("github.com", "acme", "widget", ssh),
+                "{url}"
+            );
+        }
+        assert_eq!(
+            parse_remote_url("ssh://git@ssh.github.com:443/acme/widget.git"),
+            remote("ssh.github.com", "acme", "widget", true)
+        );
+        assert_eq!(
+            parse_remote_url("git@github-work:acme/widget.git"),
+            remote("github-work", "acme", "widget", true)
+        );
+    }
+
+    #[test]
+    fn parse_remote_url_reads_the_host_whole() {
+        // Review F4: a search for "github.com" took these as GitHub.
+        assert_eq!(
+            parse_remote_url("https://notgithub.com/me/widget"),
+            remote("notgithub.com", "me", "widget", false)
+        );
+        for url in [
+            "https://gitlab.com/g/github.com/me/widget",
+            "/srv/git/widget.git",
+            "file:///srv/acme/widget.git",
+            "C:/work/widget",
+            "ext::sh -c touch% /tmp/x",
+            "https://github.com/acme",
+            "https://github.com/acme/widget/extra",
+        ] {
+            assert_eq!(parse_remote_url(url), None, "{url}");
+        }
+    }
+
+    #[test]
+    fn split_remote_tracking_ref_takes_the_longest_remote() {
+        let remotes = vec!["team".to_string(), "team/fork".to_string()];
+        assert_eq!(
+            split_remote_tracking_ref("refs/remotes/team/fork/feat/x", &remotes),
+            Some(("team/fork".into(), "feat/x".into()))
+        );
+        assert_eq!(
+            split_remote_tracking_ref("refs/remotes/team/feat", &remotes),
+            Some(("team".into(), "feat".into()))
+        );
+        assert_eq!(split_remote_tracking_ref("refs/heads/feat", &remotes), None);
+        assert_eq!(
+            split_remote_tracking_ref("refs/remotes/other/feat", &remotes),
+            None
+        );
+    }
+
+    /// A stand-in for gh 2.94.0: `pr list --head X` lists the PRs whose
+    /// `headRefName` is exactly X, the way GitHub's GraphQL filter does, so
+    /// `owner:branch` lists nothing. Records every call.
+    fn fake_gh<'a>(
+        base: &'a str,
+        prs: &'a str,
+        calls: &'a std::cell::RefCell<Vec<Vec<String>>>,
+    ) -> impl Fn(&[&str]) -> Option<String> + 'a {
+        move |args: &[&str]| {
+            calls
+                .borrow_mut()
+                .push(args.iter().map(|arg| arg.to_string()).collect());
+            match args {
+                ["repo", "view", ..] => Some(base.to_string()),
+                ["pr", "list", head, ..] if head.starts_with("--head=") => {
+                    let head = &head["--head=".len()..];
+                    let rows: Vec<serde_json::Value> = serde_json::from_str(prs).ok()?;
+                    let kept: Vec<serde_json::Value> = rows
+                        .into_iter()
+                        .filter(|row| row["headRefName"].as_str() == Some(head))
+                        .collect();
+                    Some(serde_json::Value::Array(kept).to_string())
+                }
+                _ => None,
+            }
+        }
+    }
+
+    #[test]
+    fn pr_status_finds_the_pr_for_a_published_branch() {
+        // Mac test 4.10, rebuilt: `s7r2-pr1` published to origin with
+        // Publish Branch (`push -u`), PR #1 open in the same repository.
+        let dir = tmp("pr-status-published");
+        if !init_git(
+            &dir.0,
+            "main",
+            Some("https://github.com/aetiusgular/monocode-pr-test.git"),
+        ) || !git(&dir.0, &["commit", "--allow-empty", "-m", "init"])
+            || !git(&dir.0, &["checkout", "-b", "s7r2-pr1"])
+            || !git(
+                &dir.0,
+                &["update-ref", "refs/remotes/origin/s7r2-pr1", "HEAD"],
+            )
+            || !git(&dir.0, &["config", "branch.s7r2-pr1.remote", "origin"])
+            || !git(
+                &dir.0,
+                &["config", "branch.s7r2-pr1.merge", "refs/heads/s7r2-pr1"],
+            )
+        {
+            return;
+        }
+        let base = r#"{"nameWithOwner":"aetiusgular/monocode-pr-test","defaultBranchRef":{"name":"main"}}"#;
+        let prs = pr_rows(&[(
+            1,
+            "OPEN",
+            "s7r2-pr1",
+            false,
+            "aetiusgular",
+            "monocode-pr-test",
+        )]);
+        let calls = std::cell::RefCell::new(Vec::new());
+        let gh = fake_gh(base, &prs, &calls);
+        let pr = git_pr_status_with(&dir.0, &gh).expect("the PR for s7r2-pr1");
+        assert_eq!((pr.number, pr.state.as_str()), (1, "open"));
+        let calls = calls.borrow();
+        let list = calls
+            .iter()
+            .find(|call| call[..2] == ["pr", "list"])
+            .unwrap();
+        assert_eq!(list[2], "--head=s7r2-pr1");
+    }
+
+    #[test]
+    fn pr_status_finds_a_pr_from_a_fork() {
+        // origin is the fork, upstream the parent; gh resolves the parent as
+        // the base, and the PR's head is `me:fix`.
+        let dir = tmp("pr-status-fork");
+        if !init_git(&dir.0, "main", Some("git@github.com:me/widget.git"))
+            || !git(
+                &dir.0,
+                &[
+                    "remote",
+                    "add",
+                    "upstream",
+                    "https://github.com/acme/widget.git",
+                ],
+            )
+            || !git(&dir.0, &["commit", "--allow-empty", "-m", "init"])
+            || !git(&dir.0, &["checkout", "-b", "fix"])
+            || !git(&dir.0, &["update-ref", "refs/remotes/origin/fix", "HEAD"])
+            || !git(&dir.0, &["config", "branch.fix.remote", "origin"])
+            || !git(&dir.0, &["config", "branch.fix.merge", "refs/heads/fix"])
+        {
+            return;
+        }
+        let base = r#"{"nameWithOwner":"acme/widget","defaultBranchRef":{"name":"main"}}"#;
+        let prs = pr_rows(&[
+            (40, "OPEN", "fix", false, "acme", "widget"),
+            (41, "OPEN", "fix", true, "me", "widget"),
+        ]);
+        let calls = std::cell::RefCell::new(Vec::new());
+        let pr = git_pr_status_with(&dir.0, &fake_gh(base, &prs, &calls)).unwrap();
+        assert_eq!(pr.number, 41);
+    }
+
+    #[test]
+    fn pr_head_follows_the_push_remote_and_push_default() {
+        let dir = tmp("pr-head-push");
+        if !init_git(&dir.0, "main", Some("https://github.com/acme/widget.git"))
+            || !git(
+                &dir.0,
+                &["remote", "add", "mine", "https://github.com/me/widget.git"],
+            )
+            || !git(&dir.0, &["commit", "--allow-empty", "-m", "init"])
+            || !git(&dir.0, &["checkout", "-b", "feat"])
+            || !git(&dir.0, &["config", "branch.feat.remote", "origin"])
+            || !git(&dir.0, &["config", "branch.feat.merge", "refs/heads/other"])
+        {
+            return;
+        }
+        // Tracks origin/other, but pushes to the fork under its own name.
+        assert!(git(&dir.0, &["config", "branch.feat.pushRemote", "mine"]));
+        assert_eq!(
+            git_pr_head_for(&dir.0, "feat", "acme/widget"),
+            Some(PrHead {
+                branch: "feat".into(),
+                fork: Some(("me".into(), "widget".into())),
+            })
+        );
+        // push.default=upstream pushes to the merge ref's name.
+        assert!(git(
+            &dir.0,
+            &["config", "--unset", "branch.feat.pushRemote"]
+        ));
+        assert!(git(&dir.0, &["config", "push.default", "upstream"]));
+        assert_eq!(
+            git_pr_head_for(&dir.0, "feat", "acme/widget"),
+            Some(same_repo("other"))
+        );
+        // Never pushed and no remote named: its own name in the base repo.
+        assert!(git(&dir.0, &["checkout", "-b", "loose"]));
+        assert_eq!(
+            git_pr_head_for(&dir.0, "loose", "acme/widget"),
+            Some(same_repo("loose"))
+        );
+        // Review F4: a remote that cannot be placed shows no PR rather than
+        // the base repository's same-named one.
+        assert!(git(
+            &dir.0,
+            &["remote", "add", "lab", "https://gitlab.com/me/widget.git"]
+        ));
+        assert!(git(&dir.0, &["config", "branch.loose.pushRemote", "lab"]));
+        assert_eq!(git_pr_head_for(&dir.0, "loose", "acme/widget"), None);
+        assert!(git(
+            &dir.0,
+            &["remote", "add", "alias", "git@github-work:me/widget.git"]
+        ));
+        assert!(git(&dir.0, &["config", "branch.loose.pushRemote", "alias"]));
+        assert_eq!(git_pr_head_for(&dir.0, "loose", "acme/widget"), None);
+        // An SSH alias for the base repository is the base repository.
+        assert!(git(
+            &dir.0,
+            &[
+                "remote",
+                "set-url",
+                "alias",
+                "git@github-work:Acme/widget.git"
+            ]
+        ));
+        assert_eq!(
+            git_pr_head_for(&dir.0, "loose", "acme/widget"),
+            Some(same_repo("loose"))
+        );
+        // The same path over https on another forge is not.
+        assert!(git(
+            &dir.0,
+            &[
+                "remote",
+                "set-url",
+                "alias",
+                "https://gitlab.com/acme/widget.git"
+            ]
+        ));
+        assert_eq!(git_pr_head_for(&dir.0, "loose", "acme/widget"), None);
+    }
+
+    #[test]
+    fn pr_status_has_no_pr_on_a_detached_head() {
+        let dir = tmp("pr-status-detached");
+        if !init_git(&dir.0, "main", Some("https://github.com/acme/widget.git"))
+            || !git(&dir.0, &["commit", "--allow-empty", "-m", "init"])
+            || !git(&dir.0, &["checkout", "--detach"])
+        {
+            return;
+        }
+        let calls = std::cell::RefCell::new(Vec::new());
+        let base = r#"{"nameWithOwner":"acme/widget"}"#;
+        assert!(git_pr_status_with(&dir.0, &fake_gh(base, "[]", &calls)).is_none());
+        assert!(calls.borrow().is_empty(), "no gh call on a detached head");
     }
 
     #[test]
