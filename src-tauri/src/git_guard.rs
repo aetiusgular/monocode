@@ -67,6 +67,12 @@ const NETWORK: &[&str] = &[
 /// Turns off every transport, so a lazy fetch cannot run anything.
 const NO_TRANSPORT: &str = "protocol.allow=never";
 
+/// Every protocol git knows. Git checks `protocol.<name>.allow` before
+/// `protocol.allow`, so a repository's `protocol.file.allow=always` beats
+/// `NO_TRANSPORT`. A command-line `-c` beats the repository for the same key,
+/// so each one is also set to `never` (security fix V1).
+const PROTOCOLS: &[&str] = &["file", "ext", "fd", "ssh", "git", "http", "https"];
+
 /// Subcommands that can run a diff driver. They get `--no-ext-diff`.
 const DIFFS: &[&str] = &["diff", "log", "show"];
 
@@ -255,6 +261,12 @@ fn entry_names_command(key: &str, value: Option<&str>) -> bool {
         ("remote", Some(_), "promisor") => !is_false(value),
         ("remote", Some(_), "partialclonefilter" | "uploadpack" | "receivepack" | "vcs") => true,
         ("remote", Some(_), "url" | "pushurl") => names_transport_command(value),
+        // Security fix V1: a repository's `protocol.<name>.allow` beats
+        // MonoCode's `protocol.allow=never` for a lazy fetch run under a chat's
+        // rule, so any value but `never` counts.
+        ("protocol", _, "allow") => {
+            !value.is_some_and(|value| value.trim().eq_ignore_ascii_case("never"))
+        }
         _ => false,
     }
 }
@@ -304,8 +316,9 @@ const READ_HOOKS: &[&str] = &["post-index-change"];
 
 /// Whether a read-only git command run in `cwd` could run a command the
 /// repository itself names: a filter or diff driver, `core.fsmonitor`, a
-/// pager, an alias, a gpg program, a hooks path, or a hook git runs when it
-/// refreshes the index. `Err` when git could not answer, which callers treat
+/// pager, an alias, a gpg program, a hooks path, a transport a lazy fetch
+/// could use (a promisor remote, a protocol allowed), or a hook
+/// git runs when it refreshes the index. `Err` when git could not answer, which callers treat
 /// as a yes.
 pub(crate) fn repo_names_commands(cwd: &Path) -> Result<bool, String> {
     let output = plain_git()
@@ -317,7 +330,7 @@ pub(crate) fn repo_names_commands(cwd: &Path) -> Result<bool, String> {
             "--includes",
             "--show-scope",
             "--get-regexp",
-            r"^(filter|diff|core|pager|alias|gpg|remote|extensions)\.",
+            r"^(filter|diff|core|pager|alias|gpg|remote|extensions|protocol)\.",
         ])
         .output()
         .map_err(|error| error.to_string())?;
@@ -452,6 +465,9 @@ fn guard_with(
     // calls get no transport at all, so such a read fails instead.
     if !subcommand(args).is_some_and(|sub| NETWORK.contains(&sub)) {
         globals.extend(["-c".to_string(), NO_TRANSPORT.to_string()]);
+        for protocol in PROTOCOLS {
+            globals.extend(["-c".to_string(), format!("protocol.{protocol}.allow=never")]);
+        }
     }
     if let Some(sub) = subcommand(args) {
         let mut inserted = Vec::new();
@@ -945,6 +961,101 @@ mod tests {
         // Without the uploadpack line, the promisor flag alone still counts.
         run(&clone, &["config", "--unset", "remote.origin.uploadpack"]);
         assert_eq!(repo_names_commands(&clone), Ok(true));
+    }
+
+    /// A bare server repository with one commit that allows filters, and a
+    /// `--filter=blob:none` clone of it under a parent folder.
+    fn partial_clone(name: &str) -> (Repo, Repo, PathBuf) {
+        let server = plain_repo(&format!("{name}-server"));
+        std::fs::write(server.0.join("f.txt"), "hello\n").unwrap();
+        run(&server.0, &["add", "f.txt"]);
+        run(&server.0, &["commit", "-qm", "one"]);
+        run(&server.0, &["config", "uploadpack.allowFilter", "true"]);
+        let parent = plain_repo(&format!("{name}-parent"));
+        let clone = parent.0.join("clone");
+        let url = format!("file://{}", server.0.display());
+        let status = Command::new("git")
+            .args(["clone", "-q", "--no-checkout", "--filter=blob:none", &url])
+            .arg(&clone)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        (server, parent, clone)
+    }
+
+    /// A script that touches `marker` and then runs `then`.
+    fn marker_script(dir: &Path, name: &str, marker: &Path, then: &str) -> PathBuf {
+        let script = dir.join(name);
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\n{then}\n", marker.display()),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        script
+    }
+
+    #[test]
+    fn a_repository_protocol_allow_does_not_beat_the_guard() {
+        // Security fix V1: git checks `protocol.<name>.allow` before
+        // `protocol.allow`, so a repository's `protocol.file.allow=always`
+        // beat the command line's `protocol.allow=never`.
+        let (_server, parent, clone) = partial_clone("v1");
+        let marker = parent.0.join("ran");
+        let script = marker_script(&parent.0, "up.sh", &marker, "exec git-upload-pack \"$@\"");
+        run(
+            &clone,
+            &[
+                "config",
+                "remote.origin.uploadpack",
+                script.to_str().unwrap(),
+            ],
+        );
+        run(&clone, &["config", "protocol.file.allow", "always"]);
+        // The guarded read first: once a read fetches the blob, no later read
+        // fetches again.
+        let (globals, rest) = guard(&clone, &["show", "HEAD:f.txt"]).unwrap();
+        let _ = Command::new("git")
+            .current_dir(&clone)
+            .args(&globals)
+            .args(&rest)
+            .output()
+            .unwrap();
+        assert!(!marker.exists(), "a guarded read ran uploadpack");
+        // Control: plain git with only `protocol.allow=never` still runs it,
+        // so the guarded result is not vacuous.
+        let _ = Command::new("git")
+            .current_dir(&clone)
+            .args(["-c", NO_TRANSPORT, "show", "HEAD:f.txt"])
+            .output()
+            .unwrap();
+        assert!(
+            marker.exists(),
+            "protocol.allow=never alone did not run uploadpack"
+        );
+        let (fetch_globals, _) = guard(&clone, &["fetch", "origin"]).unwrap();
+        assert!(!fetch_globals.iter().any(|arg| arg.starts_with("protocol.")));
+    }
+
+    #[test]
+    fn a_repository_protocol_allow_is_found() {
+        // Security fix V1.
+        for (key, value) in [
+            ("protocol.file.allow", "always"),
+            ("protocol.ext.allow", "user"),
+            ("protocol.allow", "always"),
+        ] {
+            let repo = plain_repo("protocol-named");
+            run(&repo.0, &["config", key, value]);
+            assert_eq!(repo_names_commands(&repo.0), Ok(true), "{key}={value}");
+        }
+        let repo = plain_repo("protocol-never");
+        run(&repo.0, &["config", "protocol.ext.allow", "never"]);
+        assert_eq!(repo_names_commands(&repo.0), Ok(false));
     }
 
     #[test]
