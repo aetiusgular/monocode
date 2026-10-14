@@ -292,6 +292,11 @@ fn entry_names_command(key: &str, value: Option<&str>) -> bool {
         // Security fix V2: `url.<base>.insteadOf` can turn a plain remote URL
         // into an `ext::` one, which the remote's own URL does not show.
         ("url", Some(_), "insteadof" | "pushinsteadof") => true,
+        // Review of the 14 Oct fixes: an included file can sit in the work
+        // tree, where an agent's ordinary edit (no card in Auto-accept edits)
+        // adds `core.fsmonitor` to it after this check passed. Any include
+        // counts.
+        ("include", None, "path") | ("includeif", Some(_), "path") => true,
         _ => false,
     }
 }
@@ -342,7 +347,8 @@ const READ_HOOKS: &[&str] = &["post-index-change"];
 /// Whether a read-only git command run in `cwd` could run a command the
 /// repository itself names: a filter or diff driver, `core.fsmonitor`, a
 /// pager, an alias, a gpg program, a hooks path, a transport a lazy fetch
-/// could use (a promisor remote, a protocol allowed, a URL rewrite), or a hook
+/// could use (a promisor remote, a protocol allowed, a URL rewrite), a
+/// submodule, whose own config git reads on a recursing read, or a hook
 /// git runs when it refreshes the index. `Err` when git could not answer, which callers treat
 /// as a yes.
 pub(crate) fn repo_names_commands(cwd: &Path) -> Result<bool, String> {
@@ -355,7 +361,7 @@ pub(crate) fn repo_names_commands(cwd: &Path) -> Result<bool, String> {
             "--includes",
             "--show-scope",
             "--get-regexp",
-            r"^(filter|diff|core|pager|alias|gpg|remote|extensions|protocol|url)\.",
+            r"^(filter|diff|core|pager|alias|gpg|remote|extensions|protocol|url|include|includeif)\.",
         ])
         .output()
         .map_err(|error| error.to_string())?;
@@ -367,6 +373,9 @@ pub(crate) fn repo_names_commands(cwd: &Path) -> Result<bool, String> {
         }
         Some(1) => {}
         _ => return Err("git could not read this repository's config.".into()),
+    }
+    if has_submodules(cwd)? {
+        return Ok(true);
     }
     for hook in READ_HOOKS {
         let output = plain_git()
@@ -391,6 +400,63 @@ pub(crate) fn repo_names_commands(cwd: &Path) -> Result<bool, String> {
         if std::fs::symlink_metadata(&path).is_ok() {
             return Ok(true);
         }
+    }
+    Ok(false)
+}
+
+/// Whether the repository at `cwd` has submodules: a `modules` folder in its
+/// git folder (where `git submodule` keeps each submodule's repository and
+/// config), a `.gitmodules` file at its top, or a gitlink in its index. A submodule's own config is not
+/// in this repository's scopes, yet `git status` and `git diff` recurse into
+/// it and run its `core.fsmonitor` or filters (security review of the 14 Oct
+/// fixes, F1; standing case 27). A `.gitmodules` whose submodules were never
+/// cloned counts too: it fails closed. Not inside a repository: no.
+fn has_submodules(cwd: &Path) -> Result<bool, String> {
+    let ask = |args: &[&str]| -> Result<Option<std::path::PathBuf>, String> {
+        let output = plain_git()
+            .args(["-c", "core.fsmonitor=false", "-C"])
+            .arg(cwd)
+            .args(args)
+            .output()
+            .map_err(|error| error.to_string())?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let path = String::from_utf8(output.stdout)
+            .map_err(|_| "git printed a path that is not text.".to_string())?;
+        let path = Path::new(path.trim_end_matches(['\n', '\r']));
+        Ok(Some(if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            cwd.join(path)
+        }))
+    };
+    if let Some(modules) = ask(&["rev-parse", "--git-path", "modules"])? {
+        if std::fs::symlink_metadata(&modules).is_ok() {
+            return Ok(true);
+        }
+    }
+    if let Some(top) = ask(&["rev-parse", "--show-toplevel"])? {
+        if std::fs::symlink_metadata(top.join(".gitmodules")).is_ok() {
+            return Ok(true);
+        }
+    }
+    // A repository added as a gitlink with no `.gitmodules` (an embedded
+    // repository, or one whose `.git` file points elsewhere): `git status`
+    // still recurses into it. Read from the index, which runs nothing.
+    let output = plain_git()
+        .args(["-c", "core.fsmonitor=false", "-C"])
+        .arg(cwd)
+        .args(["ls-files", "--stage", "-z"])
+        .output()
+        .map_err(|error| error.to_string())?;
+    if output.status.success()
+        && output
+            .stdout
+            .split(|byte| *byte == 0)
+            .any(|record| record.starts_with(b"160000 "))
+    {
+        return Ok(true);
     }
     Ok(false)
 }
@@ -932,6 +998,100 @@ mod tests {
             run(&repo.0, &["config", key, value]);
             assert_eq!(repo_names_commands(&repo.0), Ok(true), "{key}={value}");
         }
+    }
+
+    #[test]
+    fn a_submodule_counts_as_naming_a_command() {
+        // Review F1: the submodule's own config is outside the superproject's
+        // scopes, and a plain `git status` in the superproject runs its
+        // fsmonitor.
+        let sub = repo("sm-sub");
+        let top = repo("sm-top");
+        assert_eq!(repo_names_commands(&top.0), Ok(false));
+        let url = sub.0.to_str().unwrap().to_string();
+        run(
+            &top.0,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "-q",
+                &url,
+                "lib",
+            ],
+        );
+        assert_eq!(repo_names_commands(&top.0), Ok(true));
+        // Control: the recursion is real.
+        let marker = top.0.join("fsmonitor-ran");
+        let script = top.0.join("fsm.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let module_git = top.0.join(".git").join("modules").join("lib");
+        let status = Command::new("git")
+            .arg("--git-dir")
+            .arg(&module_git)
+            .args(["config", "core.fsmonitor", script.to_str().unwrap()])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        std::fs::write(top.0.join("lib").join("a.txt"), "two\n").unwrap();
+        let _ = Command::new("git")
+            .current_dir(&top.0)
+            .args(["status", "--short"])
+            .output()
+            .unwrap();
+        #[cfg(unix)]
+        assert!(
+            marker.exists(),
+            "plain git status did not reach the submodule"
+        );
+    }
+
+    #[test]
+    fn an_embedded_repository_with_no_gitmodules_counts() {
+        let top = repo("sm-embedded");
+        let inner = top.0.join("vendor");
+        std::fs::create_dir_all(&inner).unwrap();
+        run(&inner, &["init", "-q"]);
+        std::fs::write(inner.join("b.txt"), "b\n").unwrap();
+        run(&inner, &["add", "b.txt"]);
+        run(&inner, &["commit", "-qm", "inner"]);
+        assert_eq!(repo_names_commands(&top.0), Ok(false));
+        // `git add` of a folder holding a repository stages a gitlink.
+        run(&top.0, &["add", "vendor"]);
+        assert!(!top.0.join(".gitmodules").exists());
+        assert_eq!(repo_names_commands(&top.0), Ok(true));
+    }
+
+    #[test]
+    fn any_include_counts() {
+        // Review of the 14 Oct fixes: the included file names nothing yet,
+        // but sits where an agent's ordinary edit can add a command.
+        for key in ["include.path", "includeIf.gitdir:/.path"] {
+            let repo = plain_repo("include-any");
+            run(&repo.0, &["config", key, "../cfg/extra"]);
+            assert_eq!(repo_names_commands(&repo.0), Ok(true), "{key}");
+        }
+    }
+
+    #[test]
+    fn a_gitmodules_file_alone_counts() {
+        let top = plain_repo("sm-file");
+        std::fs::write(
+            top.0.join(".gitmodules"),
+            "[submodule \"lib\"]\n\tpath = lib\n\turl = ../lib\n",
+        )
+        .unwrap();
+        assert_eq!(repo_names_commands(&top.0), Ok(true));
     }
 
     #[test]
