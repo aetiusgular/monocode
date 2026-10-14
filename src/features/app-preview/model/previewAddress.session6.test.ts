@@ -53,6 +53,7 @@ beforeEach(() => {
     }),
     resolveCwd: async (root) => root,
     freePort: async () => 53_261,
+    listeningPorts: async () => [],
     probe: async (url) => {
       fake.probes.push(url);
       return fake.answers[url] ?? { error: "Connection refused" };
@@ -156,7 +157,9 @@ describe("a server that prints no address", () => {
     expect(fake.timers.length).toBe(timers + 1);
   });
 
-  it("does not probe for a server that names no port", async () => {
+  it("does not guess a port for a server that names no port", async () => {
+    // Mac fix 6.18 (third pass): the address search is still scheduled, to
+    // ask which ports the server's own processes listen on (none here).
     fake.script = "node server.js";
     await startPreview({
       sessionId: "s1",
@@ -165,7 +168,7 @@ describe("a server that prints no address", () => {
       candidate: devScript(fake.script),
       confirmedByUser: true,
     });
-    expect(fake.timers).toEqual([]);
+    expect(fake.timers.map((t) => t.ms)).toEqual([ADDRESS_FALLBACK_MS]);
     await findAddress("s1");
     expect(fake.probes).toEqual([]);
     expect(previewForSession("s1")?.url).toBeUndefined();

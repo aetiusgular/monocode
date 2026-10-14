@@ -92,6 +92,11 @@ export type PreviewDeps = {
   resolveCwd(root: string, relative: string): Promise<string>;
   freePort(): Promise<number>;
   probe(url: string): Promise<PreviewProbeResult>;
+  /**
+   * Mac test 6.18: the TCP ports the running preview's own processes listen
+   * on, looked up in Rust from its process id. Never another program's.
+   */
+  listeningPorts(processId: string): Promise<number[]>;
   start(input: StartOwnedProcessInput): Promise<OwnedProcess>;
   stop(id: string): Promise<boolean>;
   process(id: string): OwnedProcess | undefined;
@@ -107,6 +112,8 @@ const DEFAULT_DEPS: PreviewDeps = {
     invoke<string>("preview_resolve_cwd", { root, relative }),
   freePort: () => invoke<number>("preview_free_port"),
   probe: (url) => invoke<PreviewProbeResult>("preview_probe", { url }),
+  listeningPorts: (previewId) =>
+    invoke<number[]>("preview_listening_ports", { previewId }),
   start: startOwnedProcess,
   stop: stopOwnedProcess,
   process: getOwnedProcess,
@@ -125,7 +132,8 @@ const FAST_WINDOW_MS = 30_000;
 export const PROBE_GIVE_UP_MS = 120_000;
 /**
  * Mac test 6.18: how long a server may run without printing an address
- * before MonoCode probes the ports it was given or its command names.
+ * before MonoCode probes the ports it was given or its command names, then
+ * the ports its own processes listen on.
  */
 export const ADDRESS_FALLBACK_MS = 3_000;
 /** The host passed with PORT to a server on a free port (Mac test 6.17). */
@@ -298,53 +306,71 @@ function scheduleAddressProbe(sessionId: string, ms: number): void {
 
 /**
  * Mac test 6.18: a server that listens but prints no address. Probe the
- * port MonoCode passed as PORT and the ports its command names, through the
- * loopback-only probe; the first that answers 2xx to 4xx is the address.
- * Tried again every few seconds until the probe gives up.
+ * port MonoCode passed as PORT and the ports its command names, then the
+ * ports the preview's own processes listen on (asked of the OS in Rust, for
+ * a server that hard-codes its port), through the loopback-only probe; the
+ * first that answers 2xx to 4xx is the address. Tried again every few
+ * seconds until the probe gives up.
  */
 export async function findAddress(
   sessionId: string,
 ): Promise<AppPreview | undefined> {
   const before = previews.get(sessionId);
   if (!before || before.url || !isPreviewLive(before)) return before;
-  for (const port of fallbackPorts(before)) {
-    const url = previewUrlForPort(port);
-    if (!url) continue;
-    const result = await deps.probe(url).catch(
-      (): PreviewProbeResult => ({ error: "no answer" }),
-    );
-    const current = previews.get(sessionId);
-    if (
-      !current ||
-      current.processId !== before.processId ||
-      !isPreviewLive(current) ||
-      current.url
-    )
-      return current;
-    const status = result.status;
-    if (typeof status === "number" && status >= 200 && status < 500) {
-      set(sessionId, {
-        url,
-        port,
-        status: "ready",
-        httpStatus: status,
-        frame: {
-          blocked: result.frameBlocked === true,
-          ...(result.frameReason ? { reason: result.frameReason } : {}),
-        },
-        error: undefined,
-      });
-      scheduleProbe(sessionId, PROBE_SLOW_MS);
-      return previews.get(sessionId);
+  const stale = (current: AppPreview | undefined): boolean =>
+    !current ||
+    current.processId !== before.processId ||
+    !isPreviewLive(current) ||
+    Boolean(current.url);
+  const tried = new Set<number>();
+  const tryPorts = async (
+    ports: number[],
+  ): Promise<{ done: boolean; current: AppPreview | undefined }> => {
+    for (const port of ports) {
+      if (tried.has(port)) continue;
+      tried.add(port);
+      const url = previewUrlForPort(port);
+      if (!url) continue;
+      const result = await deps
+        .probe(url)
+        .catch((): PreviewProbeResult => ({ error: "no answer" }));
+      const current = previews.get(sessionId);
+      if (stale(current)) return { done: true, current };
+      const status = result.status;
+      if (typeof status === "number" && status >= 200 && status < 500) {
+        set(sessionId, {
+          url,
+          port,
+          status: "ready",
+          httpStatus: status,
+          frame: {
+            blocked: result.frameBlocked === true,
+            ...(result.frameReason ? { reason: result.frameReason } : {}),
+          },
+          error: undefined,
+        });
+        scheduleProbe(sessionId, PROBE_SLOW_MS);
+        return { done: true, current: previews.get(sessionId) };
+      }
     }
-  }
+    return { done: false, current: previews.get(sessionId) };
+  };
+  const named = await tryPorts(fallbackPorts(before));
+  if (named.done) return named.current;
+  const listening = await deps
+    .listeningPorts(before.processId)
+    .catch((): number[] => []);
+  if (stale(previews.get(sessionId))) return previews.get(sessionId);
+  const found = await tryPorts(
+    listening.filter(
+      (port) => Number.isInteger(port) && port > 0 && port < 65_536,
+    ),
+  );
+  if (found.done) return found.current;
   const current = previews.get(sessionId);
   if (
     current &&
-    !current.url &&
-    isPreviewLive(current) &&
-    current.processId === before.processId &&
-    fallbackPorts(current).length &&
+    !stale(current) &&
     deps.now() - current.startedAt < PROBE_GIVE_UP_MS
   )
     scheduleAddressProbe(sessionId, PROBE_SLOW_MS);
@@ -483,7 +509,9 @@ async function launch(
   syncFromProcess(preview);
   const synced = previews.get(sessionId) ?? preview;
   if (synced.url && isPreviewLive(synced)) scheduleProbe(sessionId, PROBE_FAST_MS);
-  else if (isPreviewLive(synced) && fallbackPorts(synced).length)
+  // Every live server without an address is looked for, a named port or
+  // not: one that hard-codes its port is found through what it listens on.
+  else if (isPreviewLive(synced))
     scheduleAddressProbe(sessionId, ADDRESS_FALLBACK_MS);
   return previews.get(sessionId) ?? preview;
 }

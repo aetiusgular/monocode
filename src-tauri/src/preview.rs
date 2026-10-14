@@ -511,7 +511,7 @@ fn proc_loopback_or_any(hex: &str) -> bool {
 
 /// A `/proc/net/tcp` address read as where it listens. IPv4 is one
 /// little-endian word; IPv6 is four. A v4-mapped address counts as IPv4.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 fn proc_listen_addr(hex: &str) -> Option<ListenAddr> {
     let word = |chunk: &str| u32::from_str_radix(chunk, 16).ok().map(u32::swap_bytes);
     let addr = match hex.len() {
@@ -535,6 +535,148 @@ fn proc_listen_addr(hex: &str) -> Option<ListenAddr> {
     } else {
         ListenAddr::Ip(addr)
     })
+}
+
+/// LISTEN rows of a `/proc/net/tcp` or `/tcp6` table on a loopback or
+/// wildcard address, as (socket inode, port). A row whose inode cannot be
+/// read gives inode 0, which no process holds.
+#[cfg(any(target_os = "linux", test))]
+fn proc_listen_rows(text: &str) -> Vec<(u64, u16)> {
+    let mut rows = Vec::new();
+    for line in text.lines().skip(1) {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        // local_address, state 0A is LISTEN, inode is the tenth field.
+        if fields.len() < 10 || fields[3] != "0A" {
+            continue;
+        }
+        let Some((addr, hex_port)) = fields[1].rsplit_once(':') else {
+            continue;
+        };
+        let Ok(port) = u16::from_str_radix(hex_port, 16) else {
+            continue;
+        };
+        let reachable = match proc_listen_addr(addr) {
+            Some(ListenAddr::Any) => true,
+            Some(ListenAddr::Ip(ip)) => ip.is_loopback(),
+            None => false,
+        };
+        if reachable {
+            rows.push((fields[9].parse::<u64>().unwrap_or(0), port));
+        }
+    }
+    rows
+}
+
+/// The ports, among `listeners` (process id, port), that the preview's own
+/// processes hold, sorted, at most [`MAX_LISTENING_PORTS`].
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn owned_ports(listeners: &[(u32, u16)], owned: &dyn Fn(u32) -> bool) -> Vec<u16> {
+    let mut ports: Vec<u16> = listeners
+        .iter()
+        .filter(|(pid, port)| *port != 0 && owned(*pid))
+        .map(|(_, port)| *port)
+        .collect();
+    ports.sort_unstable();
+    ports.dedup();
+    ports.truncate(MAX_LISTENING_PORTS);
+    ports
+}
+
+/// The most listening ports one preview is asked about.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+const MAX_LISTENING_PORTS: usize = 8;
+
+/// Every process listening on a loopback or wildcard TCP address, as
+/// (process id, port), read from `/proc/net/tcp`, `/proc/net/tcp6` and each
+/// process's `/proc/<pid>/fd`. Only `pids` are looked at.
+#[cfg(target_os = "linux")]
+fn proc_listeners_of(pids: &[u32]) -> Vec<(u32, u16)> {
+    use std::collections::HashMap;
+    let mut ports: HashMap<u64, u16> = HashMap::new();
+    for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        if let Ok(text) = fs::read_to_string(table) {
+            for (inode, port) in proc_listen_rows(&text) {
+                if inode != 0 {
+                    ports.insert(inode, port);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if ports.is_empty() {
+        return out;
+    }
+    for &pid in pids {
+        let Ok(fds) = fs::read_dir(format!("/proc/{pid}/fd")) else {
+            continue;
+        };
+        for fd in fds.flatten() {
+            let Ok(target) = fs::read_link(fd.path()) else {
+                continue;
+            };
+            let target = target.to_string_lossy();
+            if let Some(&port) = target
+                .strip_prefix("socket:[")
+                .and_then(|rest| rest.strip_suffix(']'))
+                .and_then(|n| n.parse::<u64>().ok())
+                .and_then(|inode| ports.get(&inode))
+            {
+                if !out.contains(&(pid, port)) {
+                    out.push((pid, port));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Whether `pid` is the preview's leader or in its session.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn in_session(leader: u32, pid: u32) -> bool {
+    // SAFETY: getsid only reads the session id of a process.
+    pid == leader || unsafe { libc::getsid(pid as libc::pid_t) } == leader as libc::pid_t
+}
+
+/// Mac test 6.18: the loopback or wildcard TCP ports the preview's own
+/// processes (its leader and everything in its `setsid` session) listen on.
+/// Used only when the server printed no address and the ports MonoCode
+/// passed or the command names do not answer. The caller probes them on
+/// loopback only.
+#[cfg(target_os = "linux")]
+fn session_listening_ports(leader: u32) -> Vec<u16> {
+    let pids: Vec<u32> = fs::read_dir("/proc")
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter_map(|e| e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()))
+                .filter(|&pid| in_session(leader, pid))
+                .collect()
+        })
+        .unwrap_or_default();
+    owned_ports(&proc_listeners_of(&pids), &|pid| in_session(leader, pid))
+}
+
+/// macOS: every TCP listener this user can see, from `lsof` (an absolute
+/// path and an argument list, no shell), filtered to the preview's session.
+#[cfg(target_os = "macos")]
+fn session_listening_ports(leader: u32) -> Vec<u16> {
+    let Ok(output) = std::process::Command::new("/usr/sbin/lsof")
+        .args(["-nP", "-w", "-Fpn", "-sTCP:LISTEN", "-iTCP"])
+        .stdin(std::process::Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    let listeners: Vec<(u32, u16)> = parse_lsof_ports(&String::from_utf8_lossy(&output.stdout))
+        .into_iter()
+        .map(|(l, port)| (l.pid, port))
+        .collect();
+    owned_ports(&listeners, &|pid| in_session(leader, pid))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn session_listening_ports(_leader: u32) -> Vec<u16> {
+    Vec::new()
 }
 
 /// The processes listening on this port on a loopback or wildcard address,
@@ -617,12 +759,28 @@ fn loopback_listeners(port: u16) -> Option<Vec<PortListener>> {
 #[cfg(any(target_os = "macos", test))]
 fn parse_lsof_listeners(text: &str) -> Vec<PortListener> {
     let mut listeners = Vec::new();
+    for (listener, _) in parse_lsof_ports(text) {
+        if !listeners.contains(&listener) {
+            listeners.push(listener);
+        }
+    }
+    listeners
+}
+
+/// `lsof -F pn` output read as (listener, port) on loopback or every
+/// address. A name without a port reads as port 0.
+#[cfg(any(target_os = "macos", test))]
+fn parse_lsof_ports(text: &str) -> Vec<(PortListener, u16)> {
+    let mut listeners = Vec::new();
     let mut current: Option<u32> = None;
     for line in text.lines() {
         if let Some(pid) = line.strip_prefix('p') {
             current = pid.parse().ok();
         } else if let Some(name) = line.strip_prefix('n') {
-            let host = name.rsplit_once(':').map(|(h, _)| h).unwrap_or(name);
+            let (host, port) = match name.rsplit_once(':') {
+                Some((h, p)) => (h, p.parse::<u16>().unwrap_or(0)),
+                None => (name, 0),
+            };
             let addr = if host == "*" || host == "[::]" {
                 Some(ListenAddr::Any)
             } else {
@@ -644,9 +802,9 @@ fn parse_lsof_listeners(text: &str) -> Vec<PortListener> {
                     })
             };
             if let (Some(addr), Some(pid)) = (addr, current) {
-                let listener = PortListener { pid, addr };
-                if !listeners.contains(&listener) {
-                    listeners.push(listener);
+                let entry = (PortListener { pid, addr }, port);
+                if !listeners.contains(&entry) {
+                    listeners.push(entry);
                 }
             }
         }
@@ -714,6 +872,22 @@ pub async fn preview_fetch_script(
 ) -> Result<PreviewScript, String> {
     let leader = host.owned_pid(&preview_id);
     tauri::async_runtime::spawn_blocking(move || fetch_preview_script(leader, &url))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Mac test 6.18: the TCP ports the running preview's own processes listen
+/// on, on loopback or every address. `preview_id` is resolved to its process
+/// in Rust; another program's ports are never listed.
+#[tauri::command]
+pub async fn preview_listening_ports(
+    host: tauri::State<'_, crate::pty::PtyHost>,
+    preview_id: String,
+) -> Result<Vec<u16>, String> {
+    let Some(leader) = host.owned_pid(&preview_id) else {
+        return Ok(Vec::new());
+    };
+    tauri::async_runtime::spawn_blocking(move || session_listening_ports(leader))
         .await
         .map_err(|e| e.to_string())
 }
@@ -1198,5 +1372,149 @@ mod tests {
         // `serve_once` binds 127.0.0.1; `localhost` reads from there.
         let script = fetch_preview_script(Some(session), &format!("http://localhost:{ok}/a.js"));
         assert_eq!(script.status, Some(200), "{:?}", script.error);
+    }
+
+    // Mac test 6.18: a server on a port nobody named is found through the
+    // ports its own processes listen on.
+    #[test]
+    fn proc_rows_read_loopback_and_wildcard_listeners_only() {
+        let table = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:144F 00000000:0000 0A 00000000:00000000 00:00000000 00000000   501        0 1111 1 0 100 0 0 10 0
+   1: 00000000:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000   501        0 2222 1 0 100 0 0 10 0
+   2: 0101A8C0:0BB8 00000000:0000 0A 00000000:00000000 00:00000000 00000000   501        0 3333 1 0 100 0 0 10 0
+   3: 0100007F:144F 0100007F:D431 01 00000000:00000000 00:00000000 00000000   501        0 4444 1 0 100 0 0 10 0
+   4: 0100007F:0050 00000000:0000 0A 00000000:00000000 00:00000000 00000000   501        0 x 1 0 100 0 0 10 0
+   5: short
+";
+        assert_eq!(
+            proc_listen_rows(table),
+            vec![(1111, 5199), (2222, 8080), (0, 80)]
+        );
+        let table6 = "  sl  local_address remote_address st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000000000000000000001000000:1F91 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000   501        0 5555 1 0 100 0 0 10 0
+   1: 00000000000000000000000000000000:1F92 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000   501        0 6666 1 0 100 0 0 10 0
+   2: 000080FE00000000FF005450B6AD1DFE:1F93 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000   501        0 7777 1 0 100 0 0 10 0
+";
+        assert_eq!(proc_listen_rows(table6), vec![(5555, 8081), (6666, 8082)]);
+        assert!(proc_listen_rows("").is_empty());
+    }
+
+    #[test]
+    fn owned_ports_keep_only_the_previews_processes() {
+        let ours = |pid: u32| pid == 10 || pid == 11;
+        let listeners = [(10, 5199), (11, 5199), (11, 24678), (99, 3000), (10, 0)];
+        assert_eq!(owned_ports(&listeners, &ours), vec![5199, 24678]);
+        assert!(owned_ports(&listeners, &|_| false).is_empty());
+        let many: Vec<(u32, u16)> = (1..=20).map(|p| (10, 4000 + p)).collect();
+        assert_eq!(owned_ports(&many, &ours).len(), MAX_LISTENING_PORTS);
+    }
+
+    #[test]
+    fn lsof_output_reads_with_ports() {
+        let text = "p501\nf5\nn127.0.0.1:5199\nf6\nn*:24678\np502\nf7\nn192.168.1.4:3000\nf8\nn[::1]:8080\n";
+        let v4 = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let v6 = IpAddr::V6(Ipv6Addr::LOCALHOST);
+        assert_eq!(
+            parse_lsof_ports(text),
+            vec![
+                (
+                    PortListener {
+                        pid: 501,
+                        addr: ListenAddr::Ip(v4)
+                    },
+                    5199
+                ),
+                (
+                    PortListener {
+                        pid: 501,
+                        addr: ListenAddr::Any
+                    },
+                    24678
+                ),
+                (
+                    PortListener {
+                        pid: 502,
+                        addr: ListenAddr::Ip(v6)
+                    },
+                    8080
+                ),
+            ]
+        );
+        let ours = |pid: u32| pid == 501;
+        let pairs: Vec<(u32, u16)> = parse_lsof_ports(text)
+            .into_iter()
+            .map(|(l, p)| (l.pid, p))
+            .collect();
+        assert_eq!(owned_ports(&pairs, &ours), vec![5199, 24678]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn session_listening_ports_lists_only_the_sessions_own_ports() {
+        // The listener in `serve_once` runs in this test process.
+        let me = std::process::id();
+        let port =
+            serve_once("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        assert!(proc_listeners_of(&[me]).contains(&(me, port)));
+        // Looked up for another process only, this socket is not listed.
+        assert!(!proc_listeners_of(&[1]).iter().any(|&(pid, _)| pid == me));
+        assert!(proc_listeners_of(&[]).is_empty());
+        // A leader whose session holds nothing of ours: pid 0 is never a
+        // session leader, so nothing in this process counts as its own.
+        assert!(!session_listening_ports(0).contains(&port));
+    }
+
+    // Mac test 6.18 on Linux: a server in its own `setsid` session, on a
+    // port nobody named, is found; another session's port is not.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_setsid_server_child_is_found_by_its_session() {
+        use std::os::unix::process::CommandExt;
+        let Ok(python) = which_python() else {
+            eprintln!("python3 not found; skipped");
+            return;
+        };
+        let mut cmd = std::process::Command::new(python);
+        // The child forks a grandchild that listens, as npm -> node does.
+        cmd.args([
+            "-c",
+            "import os,socket,sys,time\nif os.fork()==0:\n s=socket.socket();s.bind(('127.0.0.1',0));s.listen();print(s.getsockname()[1],flush=True);time.sleep(30)\nelse:\n time.sleep(30)",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::null());
+        // SAFETY: setsid in the child before exec, as pty.rs does.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut child = cmd.spawn().unwrap();
+        let mut line = String::new();
+        std::io::BufRead::read_line(
+            &mut std::io::BufReader::new(child.stdout.take().unwrap()),
+            &mut line,
+        )
+        .unwrap();
+        let port: u16 = line.trim().parse().unwrap();
+        let leader = child.id();
+        let found = session_listening_ports(leader);
+        let mine = unsafe { libc::getsid(0) } as u32;
+        let other = session_listening_ports(mine);
+        // SAFETY: kill the whole session's group the child leads.
+        unsafe { libc::kill(-(leader as libc::pid_t), libc::SIGKILL) };
+        let _ = child.wait();
+        assert_eq!(found, vec![port]);
+        assert!(!other.contains(&port));
+    }
+
+    #[cfg(target_os = "linux")]
+    fn which_python() -> Result<&'static str, ()> {
+        ["/usr/bin/python3", "/usr/local/bin/python3"]
+            .into_iter()
+            .find(|p| Path::new(p).exists())
+            .ok_or(())
     }
 }

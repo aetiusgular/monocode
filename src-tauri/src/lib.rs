@@ -679,6 +679,7 @@ pub fn run() {
             preview::preview_free_port,
             preview::preview_probe,
             preview::preview_fetch_script,
+            preview::preview_listening_ports,
             // [lane-4] commands
             fs::git_review_patch,
             git_guard::git_repo_names_commands,
