@@ -818,7 +818,7 @@ import {
   type ResumedWorkspace,
 } from "./model/appLifecycle";
 import { withEmptyTurnNotice as withEmptyTurnNotice_s6 } from "../features/sessions/model/emptyTurn";
-import { providerLocality as providerLocality_s6 } from "../features/model-setup/model/providerLocality";
+import { inlineMentionSource as inlineMentionSource_s6 } from "../features/sessions/model/promptPreparation";
 import { gatewayOnAtFirstTurn as gatewayOnAtFirstTurn_s6 } from "../features/gateway-connectors/model/localDefault";
 // [lane-1] imports
 import { rewindOptions as rewindOptions_l1 } from "../features/rewind/model/rewind";
@@ -7140,11 +7140,20 @@ function Workspace({
         options?.ciRepair?.prompt ??
         (rawCommand ? submittedText : composeNoteMessage(noteCard, promptText));
       // 3.13: only the user's own words are scanned for @file mentions, and
-      // only on a local model route (security review of the Mac fixes).
-      const inline_s6 = {
-        typed: options?.ciRepair ? "" : rawCommand ? submittedText : promptText,
-        local: providerLocality_s6(current.modelProvider) === "local",
-      };
+      // only on a local model route (security review of the Mac fixes). The
+      // route is judged as the privacy panel's model row judges it, after
+      // asking the harness, for the folder the turn runs in.
+      const inlineTyped_s6 = options?.ciRepair
+        ? ""
+        : rawCommand
+          ? submittedText
+          : promptText;
+      const inline_s6 = (turnCwd_s6: string) =>
+        inlineMentionSource_s6(inlineTyped_s6, {
+          ...current,
+          providerAccountId,
+          ...(turnCwd_s6 !== current.cwd ? { worktreeCwd: turnCwd_s6 } : {}),
+        });
 
       const pendingSwitch = pendingComposerSwitch(current);
 
@@ -7219,7 +7228,7 @@ function Workspace({
                 sessionId,
                 cwd: initialWorkCwd,
                 disabledSkills: turnDisabledSkills(current),
-                inline: inline_s6,
+                inline: await inline_s6(initialWorkCwd),
               }),
             };
           },
@@ -7360,7 +7369,7 @@ function Workspace({
               sessionId,
               cwd: initialWorkCwd,
               disabledSkills: turnDisabledSkills(current),
-              inline: inline_s6,
+              inline: await inline_s6(initialWorkCwd),
             });
             await steerHarnessTurn({
               harness: current.harness,
@@ -8030,7 +8039,7 @@ function Workspace({
                   sessionId,
                   cwd: workCwd,
                   disabledSkills: turnDisabledSkills(current),
-                  inline: inline_s6,
+                  inline: await inline_s6(workCwd),
                 });
           const turnPrompt = proposalDraft
             ? options?.orchestrationRetry?.response

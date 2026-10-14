@@ -235,6 +235,32 @@ export async function sessionLocalityNow(
 }
 
 /**
+ * The model route's locality alone, judged as the privacy panel's model row
+ * judges it (`modelRoutePart`), after asking the session's own harness when
+ * the route is not known. A local verdict that rests on a reported route
+ * older than a minute counts as unknown, and so does a probe that fails or
+ * times out. Used where file text may go to the model (3.13): only a local
+ * route gets it. Connectors do not decide this one; the panel's Private does.
+ */
+export async function modelRouteLocalityNow(
+  session: LocalitySession,
+): Promise<Locality> {
+  if (harnessIsHosted(session.harness)) return "hosted";
+  const account = localityAccount(session);
+  const cwd = session.worktreeCwd || session.cwd || "";
+  const picked = session.modelProvider || providerForAccount(account)?.id;
+  if (!picked) await requestHarnessReport(session.harness, account, cwd);
+  const locality = modelRoutePart(session).locality;
+  if (
+    locality === "local" &&
+    !picked &&
+    !harnessReportFresh(session.harness, account, cwd)
+  )
+    return "unknown";
+  return locality;
+}
+
+/**
  * True when a local verdict for this session would rest on what its harness
  * reported more than a minute ago, or never: a home edited to a hosted
  * provider since then would still read as local. The sync views use it to

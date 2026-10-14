@@ -8,6 +8,12 @@ import {
   type SkillTurnContext,
 } from "../../skills/model/skills";
 import { nativeCommandPrompt } from "../../../integrations/harness/core/nativeCommands";
+import { harnessCan } from "../../../integrations/harness/core/capabilities";
+import {
+  isLocal,
+  modelRouteLocalityNow,
+  type LocalitySession,
+} from "../../server-locality/model/locality";
 
 /**
  * What may be scanned for `@file` mentions to inline (3.13). Left out, nothing
@@ -17,6 +23,28 @@ import { nativeCommandPrompt } from "../../../integrations/harness/core/nativeCo
  * leaves the computer this way (security review of the Mac fixes, F1, F2).
  */
 export type InlineMentionSource = { typed: string; local: boolean };
+
+/**
+ * The inline source for one turn. The model route is judged the way the
+ * privacy panel's model row judges it, after asking the harness
+ * (`modelRouteLocalityNow`), so a wrapper-home Codex whose own config names
+ * a loopback provider counts as local even though MonoCode's Models page
+ * does not list it. Hosted and unknown routes get nothing inlined. The
+ * harness is asked only when the typed text mentions a file and the harness
+ * takes inlined files.
+ */
+export async function inlineMentionSource(
+  typed: string,
+  session: LocalitySession,
+): Promise<InlineMentionSource> {
+  if (
+    !typed ||
+    !/(^|\s)@\S/.test(typed) ||
+    !harnessCan(session.harness, "inlineFileMentions")
+  )
+    return { typed, local: false };
+  return { typed, local: isLocal(await modelRouteLocalityNow(session)) };
+}
 
 export async function preparePrompt(
   text: string,
