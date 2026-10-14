@@ -231,8 +231,32 @@ fn entry_names_command(key: &str, value: Option<&str>) -> bool {
         ("pager", _, _) => !is_boolean(value),
         ("alias", _, _) => true,
         ("gpg", _, "program") => true,
+        // Security fix T1: on a partial clone, a read such as `git show`,
+        // `git log -p` or `git blame` fetches a missing object, and that fetch
+        // runs `remote.<name>.uploadpack` or an `ext::` or `fd::` transport
+        // named in the repository's config. A promisor remote or a partial
+        // clone filter therefore counts as naming a command.
+        ("extensions", None, "partialclone") => true,
+        ("remote", Some(_), "promisor") => !is_false(value),
+        ("remote", Some(_), "partialclonefilter" | "uploadpack" | "receivepack" | "vcs") => true,
+        ("remote", Some(_), "url" | "pushurl") => names_transport_command(value),
         _ => false,
     }
+}
+
+/// Whether a config value reads as a boolean false.
+fn is_false(value: Option<&str>) -> bool {
+    matches!(
+        value.map(|value| value.trim().to_ascii_lowercase()),
+        Some(ref value) if matches!(value.as_str(), "false" | "no" | "off" | "0")
+    )
+}
+
+/// Whether a remote URL uses a transport that runs a program it names.
+fn names_transport_command(value: Option<&str>) -> bool {
+    let Some(value) = value else { return false };
+    let value = value.trim().to_ascii_lowercase();
+    value.starts_with("ext::") || value.starts_with("fd::")
 }
 
 /// Whether `git config -z --show-scope --get-regexp` output holds an entry
@@ -278,7 +302,7 @@ pub(crate) fn repo_names_commands(cwd: &Path) -> Result<bool, String> {
             "--includes",
             "--show-scope",
             "--get-regexp",
-            r"^(filter|diff|core|pager|alias|gpg)\.",
+            r"^(filter|diff|core|pager|alias|gpg|remote|extensions)\.",
         ])
         .output()
         .map_err(|error| error.to_string())?;
@@ -790,6 +814,101 @@ mod tests {
             run(&repo.0, &["config", key, value]);
             assert_eq!(repo_names_commands(&repo.0), Ok(true), "{key}");
         }
+    }
+
+    #[test]
+    fn a_partial_clone_or_a_transport_command_is_found() {
+        // Security fix T1: a lazy fetch on a partial clone runs these.
+        for (key, value) in [
+            ("remote.origin.promisor", "true"),
+            ("remote.origin.partialclonefilter", "blob:none"),
+            ("remote.origin.uploadpack", "/tmp/x.sh"),
+            ("remote.origin.url", "ext::sh -c touch% /tmp/x"),
+            ("remote.origin.url", "FD::3"),
+            ("extensions.partialclone", "origin"),
+        ] {
+            let repo = plain_repo("remote-named");
+            run(&repo.0, &["config", key, value]);
+            assert_eq!(repo_names_commands(&repo.0), Ok(true), "{key}={value}");
+        }
+    }
+
+    #[test]
+    fn a_plain_remote_names_nothing() {
+        let repo = plain_repo("remote-plain");
+        for (key, value) in [
+            ("remote.origin.url", "https://github.com/example/repo.git"),
+            ("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"),
+            ("remote.origin.promisor", "false"),
+        ] {
+            run(&repo.0, &["config", key, value]);
+        }
+        assert_eq!(repo_names_commands(&repo.0), Ok(false));
+    }
+
+    #[test]
+    fn a_real_partial_clone_runs_uploadpack_and_the_gate_says_so() {
+        // The reproduction from the review: plain git runs the program a
+        // partial clone's config names on `git show`. The gate must say yes.
+        let server = plain_repo("pc-server");
+        std::fs::write(server.0.join("f.txt"), "hello\n").unwrap();
+        run(&server.0, &["add", "f.txt"]);
+        run(
+            &server.0,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                "one",
+            ],
+        );
+        run(&server.0, &["config", "uploadpack.allowFilter", "true"]);
+        let parent = plain_repo("pc-parent");
+        let clone = parent.0.join("clone");
+        let url = format!("file://{}", server.0.display());
+        let status = Command::new("git")
+            .args(["clone", "-q", "--no-checkout", "--filter=blob:none", &url])
+            .arg(&clone)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let marker = parent.0.join("ran");
+        let script = parent.0.join("up.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ntouch '{}'\nexec git-upload-pack \"$@\"\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        run(
+            &clone,
+            &[
+                "config",
+                "remote.origin.uploadpack",
+                script.to_str().unwrap(),
+            ],
+        );
+        assert_eq!(repo_names_commands(&clone), Ok(true));
+        // Control: plain git really runs it, so the test is not vacuous.
+        let _ = Command::new("git")
+            .current_dir(&clone)
+            .args(["show", "HEAD:f.txt"])
+            .output()
+            .unwrap();
+        assert!(marker.exists(), "plain git did not run uploadpack");
+        // Without the uploadpack line, the promisor flag alone still counts.
+        run(&clone, &["config", "--unset", "remote.origin.uploadpack"]);
+        assert_eq!(repo_names_commands(&clone), Ok(true));
     }
 
     #[test]
