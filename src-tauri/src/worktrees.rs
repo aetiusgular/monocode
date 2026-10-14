@@ -63,6 +63,35 @@ fn git(root: &Path, args: &[&str]) -> Result<String, String> {
     String::from_utf8(output.stdout).map_err(|_| "Git returned a non-UTF-8 path".into())
 }
 
+/// A git read MonoCode makes on its own in a worktree, held by
+/// `git_guard::guard`: no filter, diff driver, hook or transport the
+/// repository names runs, and `status` leaves dirty submodules alone (security
+/// fix V3).
+fn guarded_command(root: &Path, args: &[&str]) -> Result<Command, String> {
+    let (globals, args_guarded) = crate::git_guard::guard(root, args)?;
+    let mut command = Command::new("git");
+    crate::hide_window_console(&mut command);
+    command
+        .args(&globals)
+        .arg("-C")
+        .arg(root)
+        .args(&args_guarded)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0");
+    crate::git_guard::english(&mut command);
+    Ok(command)
+}
+
+fn git_read(root: &Path, args: &[&str]) -> Result<String, String> {
+    let output = guarded_command(root, args)?
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    String::from_utf8(output.stdout).map_err(|_| "Git returned a non-UTF-8 path".into())
+}
+
 fn parse_worktrees(text: &str) -> Vec<Worktree> {
     let mut result = Vec::new();
     let mut current = Worktree::default();
@@ -165,18 +194,24 @@ pub fn git_worktrees(cwd: String, store: State<'_, SessionStore>) -> Result<Work
         let path = Path::new(&tree.path);
         tree.missing = !path.is_dir();
         if !tree.missing {
-            tree.dirty = git(path, &["status", "--porcelain", "--untracked-files=normal"])
-                .ok()
-                .map(|status| !status.is_empty());
-            tree.unpushed = git(path, &["rev-list", "--count", "HEAD", "--not", "--remotes"])
-                .ok()
-                .and_then(|count| count.trim().parse().ok());
+            (tree.dirty, tree.unpushed) = worktree_state(path);
         }
     }
     Ok(Worktrees {
         worktrees,
         default_root,
     })
+}
+
+/// Whether a worktree has changes, and how many commits no remote holds.
+fn worktree_state(path: &Path) -> (Option<bool>, Option<u64>) {
+    let dirty = git_read(path, &["status", "--porcelain", "--untracked-files=normal"])
+        .ok()
+        .map(|status| !status.is_empty());
+    let unpushed = git_read(path, &["rev-list", "--count", "HEAD", "--not", "--remotes"])
+        .ok()
+        .and_then(|count| count.trim().parse().ok());
+    (dirty, unpushed)
 }
 
 /// Where a new worktree goes: under the folder you set, in a subfolder named
@@ -241,7 +276,7 @@ fn worktree_include_candidates(source: &Path) -> Result<Vec<String>, String> {
         _ => return Ok(Vec::new()),
     }
     let include_arg = format!("--exclude-from={}", path_to_js(&include));
-    let listed = git(
+    let listed = git_read(
         source,
         &["ls-files", "-z", "--others", "--ignored", &include_arg],
     )?;
@@ -255,16 +290,7 @@ fn worktree_include_candidates(source: &Path) -> Result<Vec<String>, String> {
     }
     // Keep only what the repository itself ignores: tracked or merely
     // untracked files are already handled by git.
-    let mut command = Command::new("git");
-    crate::hide_window_console(&mut command);
-    let mut child = command
-        .arg("-c")
-        .arg("core.fsmonitor=false")
-        .arg("-C")
-        .arg(source)
-        .args(["check-ignore", "-z", "--stdin"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_OPTIONAL_LOCKS", "0")
+    let mut child = guarded_command(source, &["check-ignore", "-z", "--stdin"])?
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -1622,6 +1648,155 @@ mod tests {
             )
             .unwrap();
         assert!(detached);
+    }
+
+    /// An executable script that touches `marker`, then runs `then`.
+    fn marker_script(path: &Path, marker: &Path, then: &str) {
+        std::fs::write(
+            path,
+            format!("#!/bin/sh\ntouch '{}'\n{then}\n", marker.display()),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    fn plain_status(root: &Path) {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["status", "--porcelain"])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    // Security fix V3: the worktree listing ran `git status` with only
+    // `core.fsmonitor=false`, so a filter the repository names ran.
+    #[test]
+    fn the_worktree_listing_runs_no_filter_the_repository_names() {
+        let repo = repo();
+        let root = repo.0.join("repo");
+        std::fs::write(root.join("a.txt"), "one\n").unwrap();
+        commit_all(&root, "a");
+        let marker = repo.0.join("filter-ran");
+        let script = repo.0.join("clean.sh");
+        marker_script(&script, &marker, "cat");
+        std::fs::write(root.join(".git/info/attributes"), "* filter=mark\n").unwrap();
+        git_checked(
+            &root,
+            &["config", "filter.mark.clean", script.to_str().unwrap()],
+        )
+        .unwrap();
+        // Same size, new time: git has to read the file again.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(root.join("a.txt"), "two\n").unwrap();
+        let (dirty, unpushed) = worktree_state(&root);
+        assert!(
+            !marker.exists(),
+            "the worktree listing ran the clean filter"
+        );
+        assert_eq!(dirty, Some(true));
+        assert_eq!(unpushed, Some(2));
+        // Control: plain git runs it, so the check above is not vacuous.
+        plain_status(&root);
+        assert!(marker.exists(), "plain git status did not run the filter");
+    }
+
+    // Security fix V6: a submodule's own `core.fsmonitor` ran on the worktree
+    // listing's `git status`.
+    #[test]
+    fn the_worktree_listing_runs_no_submodule_fsmonitor() {
+        let repo = repo();
+        let root = repo.0.join("repo");
+        let sub = root.join("s");
+        std::fs::create_dir_all(&sub).unwrap();
+        git_checked(&sub, &["init", "-b", "main"]).unwrap();
+        std::fs::write(sub.join("a.txt"), "x\n").unwrap();
+        commit_all(&sub, "s");
+        commit_all(&root, "add s");
+        let marker = repo.0.join("fsmonitor-ran");
+        let script = repo.0.join("fsmonitor.sh");
+        marker_script(&script, &marker, "exit 1");
+        git_checked(
+            &sub,
+            &["config", "core.fsmonitor", script.to_str().unwrap()],
+        )
+        .unwrap();
+        let (dirty, _) = worktree_state(&root);
+        assert!(
+            !marker.exists(),
+            "the worktree listing ran a submodule fsmonitor"
+        );
+        assert_eq!(dirty, Some(false));
+        plain_status(&root);
+        assert!(
+            marker.exists(),
+            "plain git status did not run the fsmonitor"
+        );
+    }
+
+    // Security fix V3 and V6: a submodule's own filter is not switched off by
+    // the parent's overrides; `--ignore-submodules=dirty` keeps status from
+    // looking inside the submodule at all.
+    #[test]
+    fn the_worktree_listing_runs_no_submodule_filter() {
+        let repo = repo();
+        let root = repo.0.join("repo");
+        let sub = root.join("s");
+        std::fs::create_dir_all(&sub).unwrap();
+        git_checked(&sub, &["init", "-b", "main"]).unwrap();
+        std::fs::write(sub.join("a.txt"), "x\n").unwrap();
+        commit_all(&sub, "s");
+        commit_all(&root, "add s");
+        let marker = repo.0.join("sub-filter-ran");
+        let script = repo.0.join("clean.sh");
+        marker_script(&script, &marker, "cat");
+        std::fs::write(sub.join(".git/info/attributes"), "* filter=sf\n").unwrap();
+        git_checked(
+            &sub,
+            &["config", "filter.sf.clean", script.to_str().unwrap()],
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(sub.join("a.txt"), "y\n").unwrap();
+        let (dirty, _) = worktree_state(&root);
+        assert!(
+            !marker.exists(),
+            "the worktree listing ran a submodule filter"
+        );
+        assert_eq!(dirty, Some(false));
+        plain_status(&root);
+        assert!(marker.exists(), "plain git status did not run the filter");
+    }
+
+    // The include path's `check-ignore` goes through the guard too.
+    #[test]
+    fn worktree_include_still_finds_ignored_files_under_the_guard() {
+        let repo = repo();
+        let root = repo.0.join("repo");
+        std::fs::write(root.join(".gitignore"), ".env\n").unwrap();
+        commit_all(&root, "ignore");
+        std::fs::write(root.join(".env"), "x\n").unwrap();
+        std::fs::write(root.join(".worktreeinclude"), ".env\n").unwrap();
+        let marker = repo.0.join("filter-ran");
+        let script = repo.0.join("clean.sh");
+        marker_script(&script, &marker, "cat");
+        std::fs::write(root.join(".git/info/attributes"), "* filter=mark\n").unwrap();
+        git_checked(
+            &root,
+            &["config", "filter.mark.clean", script.to_str().unwrap()],
+        )
+        .unwrap();
+        assert_eq!(worktree_include_candidates(&root).unwrap(), [".env"]);
+        assert!(!marker.exists());
     }
 
     // Security fix R6: `list` matches git's English message.
