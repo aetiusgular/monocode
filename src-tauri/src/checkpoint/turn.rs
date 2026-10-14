@@ -386,7 +386,26 @@ impl CheckpointStore {
         Ok(active)
     }
 
+    /// The turn's review list, without generated files (Mac retest 7.3).
     pub(super) fn turn_status(
+        &self,
+        session_id: &str,
+        cwd: &str,
+    ) -> Result<Option<CheckpointStatus>, String> {
+        let Some(mut status) = self.turn_status_all(session_id, cwd)? else {
+            return Ok(None);
+        };
+        let Some(review) = self.matching_turn_review(session_id, cwd)? else {
+            return Ok(Some(status));
+        };
+        let hidden = hidden_from_review(Path::new(&review.cwd), &status.files);
+        status.files.retain(|file| !hidden.contains(&file.relative));
+        Ok(Some(status))
+    }
+
+    /// Every file the turn changed, generated ones included. Undo works from
+    /// this list, so it still puts back every file the turn wrote.
+    fn turn_status_all(
         &self,
         session_id: &str,
         cwd: &str,
@@ -499,9 +518,13 @@ impl CheckpointStore {
         let Some(review) = self.matching_turn_review(session_id, cwd)? else {
             return Ok(None);
         };
-        let status = self.turn_status(session_id, cwd)?.unwrap();
+        let status = self.turn_status_all(session_id, cwd)?.unwrap();
         let root = Path::new(&review.cwd);
         let relative = relative.map(resolve_turn_path).transpose()?;
+        // Generated files the review does not show (Mac retest 7.3) are put
+        // back with "Undo all" when they can be; one that cannot (a test run
+        // rewrote it since) is left as it is and does not block the undo.
+        let hidden = hidden_from_review(root, &status.files);
         let selected: Vec<_> = status
             .files
             .iter()
@@ -510,6 +533,7 @@ impl CheckpointStore {
                     .as_ref()
                     .is_none_or(|relative| *relative == file.relative)
             })
+            .filter(|file| relative.is_some() || file.undoable || !hidden.contains(&file.relative))
             .collect();
         if selected.iter().any(|file| !file.undoable) {
             return Err("Cannot safely undo this turn: the workspace was shared, the branch moved, or a recorded file changed afterward".into());
@@ -996,6 +1020,82 @@ fn resolved_turn_paths(
         })
         .map(|change| change.relative.clone())
         .collect())
+}
+
+/// True for Python's bytecode caches: anything in a `__pycache__` folder,
+/// and `.pyc` and `.pyo` files.
+pub(super) fn is_python_cache(relative: &str) -> bool {
+    let lower = relative.to_ascii_lowercase();
+    lower.split('/').any(|part| part == "__pycache__")
+        || lower.ends_with(".pyc")
+        || lower.ends_with(".pyo")
+}
+
+/// Files left out of a turn's review list and its "Changed N files" count
+/// (Mac retest 7.3): Python bytecode caches, which a test run writes beside
+/// the code when the project has no `.gitignore` for them, and files git
+/// ignores (a tracked file that is also ignored, or one a changed ignore
+/// rule now covers). The user did not ask for them and would not review or
+/// commit them. The checkpoint still records them and restoring a turn
+/// still puts them back; only the review list and its count skip them.
+fn hidden_from_review(root: &Path, files: &[CheckpointFile]) -> HashSet<String> {
+    let mut hidden: HashSet<String> = files
+        .iter()
+        .filter(|file| is_python_cache(&file.relative))
+        .map(|file| file.relative.clone())
+        .collect();
+    let rest: Vec<&str> = files
+        .iter()
+        .map(|file| file.relative.as_str())
+        .filter(|relative| !hidden.contains(*relative))
+        .collect();
+    hidden.extend(git_ignored(root, &rest));
+    hidden
+}
+
+/// The paths among `relatives` that git's ignore rules match, tracked or
+/// not. Names go to git on stdin, one per NUL, so none is read as an
+/// option. `check-ignore` refuses literal pathspecs, so that setting is
+/// dropped for this one read, and a name starting with `:` (pathspec magic)
+/// is not asked about. Exit 1 means none match; any other failure hides
+/// nothing.
+fn git_ignored(root: &Path, relatives: &[&str]) -> HashSet<String> {
+    let input: Vec<u8> = relatives
+        .iter()
+        .filter(|relative| !relative.starts_with(':') && !relative.contains('\0'))
+        .flat_map(|relative| relative.bytes().chain(std::iter::once(0)))
+        .collect();
+    if input.is_empty() {
+        return HashSet::new();
+    }
+    let mut command = git_command(root, &["check-ignore", "--no-index", "--stdin", "-z"]);
+    command
+        .env_remove("GIT_LITERAL_PATHSPECS")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    let Ok(mut child) = command.spawn() else {
+        return HashSet::new();
+    };
+    // Write from a thread so a full stdout pipe cannot stall the write.
+    let writer = child.stdin.take().map(|mut stdin| {
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(&input);
+        })
+    });
+    let output = child.wait_with_output();
+    if let Some(writer) = writer {
+        let _ = writer.join();
+    }
+    match output {
+        Ok(output) if output.status.success() => output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+            .filter_map(|path| String::from_utf8(path.to_vec()).ok())
+            .collect(),
+        _ => HashSet::new(),
+    }
 }
 
 fn git_paths(root: &Path, args: &[&str]) -> Result<HashSet<String>, String> {

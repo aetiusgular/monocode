@@ -1071,3 +1071,115 @@ fn a_repository_made_inside_the_folder_mid_turn_is_not_used() {
         "nothing was written to the new repository"
     );
 }
+
+// Mac retest 7.3: a test run wrote `__pycache__/*.pyc` beside the code and
+// the turn header said "Changed 3 files" for one edit.
+#[test]
+fn review_leaves_out_python_caches_and_ignored_files_but_undo_restores_them() {
+    let f = Fixture::new();
+    f.write(".gitignore", "build/\n");
+    f.write("build/kept.txt", "old build\n");
+    run_git(&f.repo, &["add", ".gitignore"]).unwrap();
+    // A tracked file that the ignore rules also match.
+    run_git(&f.repo, &["add", "-f", "build/kept.txt"]).unwrap();
+    run_git(&f.repo, &["commit", "-m", "ignore"]).unwrap();
+    f.store.begin_turn("session", f.cwd(), "pytest").unwrap();
+    f.write("a.txt", "original\nagent change\n");
+    f.write("__pycache__/a.cpython-312.pyc", "bytecode");
+    f.write(
+        "tests/__pycache__/test_a.cpython-312-pytest-8.pyc",
+        "bytecode",
+    );
+    f.write("legacy.pyo", "bytecode");
+    f.write("-dash/__PYCACHE__/x.py", "upper case folder\n");
+    f.write("build/kept.txt", "new build\n");
+    // A name git could read as an option, and one with a space: shown.
+    f.write("--version", "not an option\n");
+    f.write("my notes.txt", "kept in review\n");
+    f.store.finish_turn("session", f.cwd(), "pytest").unwrap();
+    let status = f.store.status("session", f.cwd()).unwrap();
+    let shown: Vec<_> = status
+        .files
+        .iter()
+        .map(|file| file.relative.as_str())
+        .collect();
+    assert_eq!(shown, vec!["--version", "a.txt", "my notes.txt"]);
+    assert!(status.files.iter().all(|file| file.undoable));
+
+    // The checkpoint itself still has every file.
+    let all = f
+        .store
+        .turn_status_all("session", f.cwd())
+        .unwrap()
+        .unwrap();
+    let mut recorded: Vec<_> = all
+        .files
+        .iter()
+        .map(|file| file.relative.as_str())
+        .collect();
+    recorded.sort();
+    assert_eq!(
+        recorded,
+        vec![
+            "--version",
+            "-dash/__PYCACHE__/x.py",
+            "__pycache__/a.cpython-312.pyc",
+            "a.txt",
+            "build/kept.txt",
+            "legacy.pyo",
+            "my notes.txt",
+            "tests/__pycache__/test_a.cpython-312-pytest-8.pyc",
+        ]
+    );
+
+    // Undo all puts back the hidden files too.
+    let after = f.store.undo("session", f.cwd(), None).unwrap();
+    assert!(after.files.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("a.txt")).unwrap(),
+        "original\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("build/kept.txt")).unwrap(),
+        "old build\n"
+    );
+    assert!(!f.repo.join("__pycache__/a.cpython-312.pyc").exists());
+    assert!(!f.repo.join("legacy.pyo").exists());
+}
+
+#[test]
+fn a_hidden_file_rewritten_after_the_turn_does_not_block_undo_all() {
+    let f = Fixture::new();
+    f.store.begin_turn("session", f.cwd(), "pytest").unwrap();
+    f.write("a.txt", "original\nagent change\n");
+    f.write("__pycache__/a.cpython-312.pyc", "bytecode one");
+    f.store.finish_turn("session", f.cwd(), "pytest").unwrap();
+    // A later test run rewrites the cache.
+    f.write("__pycache__/a.cpython-312.pyc", "bytecode two");
+    let status = f.store.status("session", f.cwd()).unwrap();
+    assert_eq!(status.files.len(), 1);
+    assert!(status.files[0].undoable);
+    f.store.undo("session", f.cwd(), None).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("a.txt")).unwrap(),
+        "original\n"
+    );
+    // The cache it could not safely put back is left as it is.
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("__pycache__/a.cpython-312.pyc")).unwrap(),
+        "bytecode two"
+    );
+}
+
+#[test]
+fn python_cache_paths_are_recognised() {
+    assert!(is_python_cache("__pycache__/a.pyc"));
+    assert!(is_python_cache("pkg/__pycache__/mod.cpython-312.pyc"));
+    assert!(is_python_cache("pkg/__pycache__/notes.txt"));
+    assert!(is_python_cache("old.PYC"));
+    assert!(is_python_cache("x/y.pyo"));
+    assert!(!is_python_cache("pycache.py"));
+    assert!(!is_python_cache("my__pycache__/a.py"));
+    assert!(!is_python_cache("a.pyx"));
+    assert!(!is_python_cache("src/main.py"));
+}
