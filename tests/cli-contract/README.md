@@ -18,7 +18,9 @@ npm install --prefix ~/.cache/cli @openai/codex@0.161.0 @anthropic-ai/claude-cod
 node tests/cli-contract/run.mjs --codex ~/.cache/cli/node_modules/.bin/codex --claude ~/.cache/cli/node_modules/.bin/claude
 ```
 
-The temporary homes go under `~/.cache/cli-contract-runs` on Linux, because Codex refuses to create its sandbox helper binaries when `CODEX_HOME` is under `/tmp` ("Refusing to create helper binaries under temporary dir"). On macOS they go in the system temp folder. Set `CLI_CONTRACT_TMP` to move them. Both a Codex installed under `/tmp` and one under `~/.cache` gave the same results on 12 Oct.
+The temporary homes go under `~/.cache/cli-contract-runs` on Linux, because Codex refuses to create its sandbox helper binaries when `CODEX_HOME` is under `/tmp` ("Refusing to create helper binaries under temporary dir"). On macOS they go in the system temp folder. Set `CLI_CONTRACT_TMP` to move them.
+
+Claude Code reads `CLAUDE.md`, `.claude/CLAUDE.md` and `CLAUDE.local.md` from every folder above the project, and in its default mode a project with one of those gets no AGENTS.md. The `agents-md` check finds such files above the temp folder, excludes them through `claudeMdExcludes`, and names them in its result, so it does not depend on where the temp folder is. It also reports, as information, a project reached through a symlink, a `CLAUDE.md` in a parent folder, and `~/.claude/CLAUDE.md` with an account's own `CLAUDE_CONFIG_DIR`. Both a Codex installed under `/tmp` and one under `~/.cache` gave the same results on 12 Oct.
 
 ## Isolation
 

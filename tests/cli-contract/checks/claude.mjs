@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { startFakeMessages, textBlock, systemText } from "../lib/fakeMessages.mjs";
 import { spawn } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { ClaudeSession, writeProjectFile, DUMMY_KEY } from "../lib/claudeDriver.mjs";
 import { makeTempDirs, isolatedEnv } from "../lib/codexDriver.mjs";
 
@@ -181,6 +181,77 @@ async function check6({ claudePath }) {
 }
 
 const AGENTS_ID = "cc-plugin-agents-md@builtin";
+const INSTRUCTION_NAMES = ["CLAUDE.md", path.join(".claude", "CLAUDE.md"), "CLAUDE.local.md"];
+
+/**
+ * Instruction files in the folders above `dir`, up to but not including the
+ * file system root, as Claude Code's ancestor walk looks for them. In the
+ * default mode one of these makes the plugin treat the project as a Claude
+ * project, and AGENTS.md is then left out. A CLAUDE.md in the system temp
+ * folder or above the runs folder fails the check on that machine only
+ * (Mac retest 8.6), so the check finds them and excludes them by setting.
+ */
+export function ancestorInstructionFiles(dir) {
+  const out = [];
+  let d = path.dirname(dir);
+  while (d !== path.parse(d).root) {
+    for (const n of INSTRUCTION_NAMES) {
+      const f = path.join(d, n);
+      try {
+        if (statSync(f).isFile()) out.push(f);
+      } catch {}
+    }
+    d = path.dirname(d);
+  }
+  return out;
+}
+
+/** claudeMdExcludes for the given files, each by its own path and its resolved path. */
+function excludesFor(files) {
+  const all = new Set();
+  for (const f of files) {
+    all.add(f);
+    try {
+      all.add(realpathSync(f));
+    } catch {}
+  }
+  return [...all];
+}
+
+/** One AGENTS.md case: which of the code words reach the first model request. */
+async function agentsCase({ claudePath, files, settings = {}, excludes = [], at, debugFile }) {
+  const fake = await startFakeMessages({ script });
+  const dirs = makeTempDirs("cl-");
+  const work = at ? at(dirs) : dirs.work;
+  mkdirSync(work, { recursive: true });
+  for (const [f, body] of Object.entries(files)) writeProjectFile({ ...dirs, work }, f, body);
+  const merged = excludes.length ? { ...settings, claudeMdExcludes: [...(settings.claudeMdExcludes ?? []), ...excludes] } : settings;
+  const args = debugFile ? ["--debug-file", path.join(dirs.root, "debug.log")] : [];
+  const x = await session({ claudePath, fake, dirs: { ...dirs, work }, settings: merged, args });
+  const r = {};
+  try {
+    await x.s.send("turn-1");
+    const all = JSON.stringify(requestFor(fake, "turn-1").body);
+    Object.assign(r, { agents: all.includes("BANANA"), claude: all.includes("CHERRY"), above: all.includes("PLUM") });
+    // Claude Code heads each instruction file it loads with "Contents of <path>".
+    r.loaded = [...new Set([...all.matchAll(/Contents of ([^\s:]+)/g)].map((m) => m[1]))];
+  } catch (error) {
+    r.error = error.message;
+  } finally {
+    await shut(x);
+    await fake.close();
+  }
+  if (debugFile) {
+    try {
+      r.debug = readFileSync(path.join(dirs.root, "debug.log"), "utf8")
+        .split("\n")
+        .filter((l) => /agents-md|fs\.ancestors|walk_failed|\[CLAUDE\.md\]/.test(l))
+        .map((l) => l.slice(0, 240))
+        .slice(0, 8);
+    } catch {}
+  }
+  return r;
+}
 
 async function checkAgentsMd({ claudePath }) {
   const cases = [
@@ -197,31 +268,74 @@ async function checkAgentsMd({ claudePath }) {
       settings: { enabledPlugins: { [AGENTS_ID]: false } },
     },
   ];
+  // The result must not depend on where the temp folder is: instruction
+  // files above it are this machine's, not the case's.
+  const above = ancestorInstructionFiles(makeTempDirs("cl-probe-").work);
+  const excludes = excludesFor(above);
   const seen = {};
-  for (const k of cases) {
-    const fake = await startFakeMessages({ script });
-    const dirs = makeTempDirs("cl-");
-    for (const [f, body] of Object.entries(k.files)) writeProjectFile(dirs, f, body);
-    const x = await session({ claudePath, fake, dirs, settings: k.settings });
-    try {
-      await x.s.send("turn-1");
-      const all = JSON.stringify(requestFor(fake, "turn-1").body);
-      seen[k.name] = { agents: all.includes("BANANA"), claude: all.includes("CHERRY") };
-    } catch (error) {
-      seen[k.name] = { error: error.message };
-    } finally {
-      await shut(x);
-      await fake.close();
-    }
-  }
+  for (const k of cases) seen[k.name] = await agentsCase({ claudePath, ...k, excludes, debugFile: true });
   const v = Object.values(seen);
   const ok = v[0].agents && !v[1].agents && v[1].claude && v[2].agents && v[2].claude && !v[3].agents;
+
+  // Behaviour notes, reported as information only.
+  const agentsOnly = { "AGENTS.md": "Agents word: BANANA." };
+  const info = {
+    // A project opened through a symlink (macOS /var is a link to /private/var).
+    throughSymlink: await agentsCase({
+      claudePath,
+      files: agentsOnly,
+      excludes,
+      at: (d) => {
+        const link = path.join(d.root, "work-link");
+        symlinkSync(d.work, link);
+        return link;
+      },
+    }),
+    // A CLAUDE.md in a folder above the project, not excluded.
+    claudeMdAbove: await agentsCase({
+      claudePath,
+      files: agentsOnly,
+      excludes,
+      at: (d) => {
+        writeFileSync(path.join(d.root, "CLAUDE.md"), "Above word: PLUM.");
+        return d.work;
+      },
+    }),
+    // A project under HOME with ~/.claude/CLAUDE.md while CLAUDE_CONFIG_DIR
+    // points elsewhere, as for a MonoCode Claude account profile.
+    userClaudeMdWithConfigDir: await agentsCase({
+      claudePath,
+      files: agentsOnly,
+      excludes,
+      at: (d) => {
+        mkdirSync(path.join(d.home, ".claude"), { recursive: true });
+        writeFileSync(path.join(d.home, ".claude", "CLAUDE.md"), "Above word: PLUM.");
+        return path.join(d.home, "proj");
+      },
+    }),
+  };
+  const word = (r) => (r.error ? `error ${r.error}` : r.agents ? "loaded" : "not loaded");
   return {
     status: ok ? "pass" : "fail",
     finding:
-      Object.entries(seen).map(([n, r]) => `${n}: AGENTS.md ${r.error ? `error ${r.error}` : r.agents ? "loaded" : "not loaded"}`).join("; ") +
-      `. Plugin id ${AGENTS_ID}; option set through --settings {"pluginConfigs":{"${AGENTS_ID}":{"options":{"instructionFiles":"claude-md-and-agents-md"}}}}.`,
+      Object.entries(seen).map(([n, r]) => `${n}: AGENTS.md ${word(r)}`).join("; ") +
+      `. Plugin id ${AGENTS_ID}; option set through --settings {"pluginConfigs":{"${AGENTS_ID}":{"options":{"instructionFiles":"claude-md-and-agents-md"}}}}. ` +
+      `Instruction files above the temp folder: ${above.length ? `${above.join(", ")} (excluded through claudeMdExcludes)` : "none"}. ` +
+      `Info: AGENTS.md only, project reached through a symlink: ${word(info.throughSymlink)}; ` +
+      `with a CLAUDE.md in a parent folder: AGENTS.md ${word(info.claudeMdAbove)}, parent CLAUDE.md ${info.claudeMdAbove.above ? "loaded" : "not loaded"}; ` +
+      `project under HOME with ~/.claude/CLAUDE.md and its own CLAUDE_CONFIG_DIR: AGENTS.md ${word(info.userClaudeMdWithConfigDir)}, ~/.claude/CLAUDE.md ${info.userClaudeMdWithConfigDir.above ? "loaded" : "not loaded"}.` +
+      (ok
+        ? ""
+        : ` Instruction files in each request: ${Object.entries(seen)
+            .map(([n, r]) => `${n}: ${r.loaded?.join(", ") || "none"}`)
+            .join("; ")}. ${
+            !v[0].agents && !v[0].error && !(v[0].loaded ?? []).some((f) => /CLAUDE(\.local)?\.md$/i.test(f))
+              ? "No CLAUDE.md reached the first request, so the plugin's own ancestor walk found one that the engine did not load, or the walk failed (the plugin then treats the project as a Claude project). "
+              : ""
+          }Debug log, first case: ${(v[0].debug ?? []).join(" | ") || "none"}`),
+    ancestorInstructionFiles: above,
     seen,
+    info,
   };
 }
 
