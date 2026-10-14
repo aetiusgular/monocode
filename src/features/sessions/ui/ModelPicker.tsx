@@ -25,6 +25,7 @@ import {
   isEffortSettingId,
   loadFavoriteModels,
   loadRecentModelChoices,
+  modelLabelFor,
   saveFavoriteModels,
   showProviderInModelPicker,
   subscribeModels,
@@ -350,10 +351,13 @@ export function ModelPicker({
   const triggerEffortLabel = triggerEffortSetting
     ? settingValueLabel(triggerEffortSetting, values)
     : undefined;
+  // 5.3: a saved model the catalog no longer lists keeps its own name, and
+  // the catalog default's provider is not named for it.
+  const ownModel = modelLabelFor(current, model) === current.name;
   const triggerTitle = [
     HARNESS_TITLE[current.harness],
-    current.provider?.name,
-    current.name,
+    ownModel ? current.provider?.name : undefined,
+    modelLabelFor(current, model),
     triggerEffortLabel,
   ]
     .filter(Boolean)
@@ -691,11 +695,14 @@ export function ModelPicker({
             ? `${triggerLabel} · ${triggerTitle}`
             : `${triggerTitle} · Recent models: right-click or ${MOD}.`
         }
-        aria-label={triggerLabel ?? `${HARNESS_TITLE[current.harness]}${
-          current.provider ? `, ${current.provider.name},` : ""
-        } ${current.name}${
-          triggerEffortLabel ? `, effort ${triggerEffortLabel}` : ""
-        }`}
+        aria-label={
+          triggerLabel ??
+          `${HARNESS_TITLE[current.harness]}${
+            ownModel && current.provider ? `, ${current.provider.name},` : ""
+          } ${modelLabelFor(current, model)}${
+            triggerEffortLabel ? `, effort ${triggerEffortLabel}` : ""
+          }`
+        }
         aria-keyshortcuts={`${MOD}.`}
         aria-expanded={open || recentMenu != null}
         aria-haspopup={hideSettings ? "dialog" : "menu"}
@@ -725,7 +732,8 @@ export function ModelPicker({
         <span
           className={`whitespace-nowrap ${variant === "plain" ? "" : "text-[11px]"}`}
         >
-          {triggerLabel ?? current.name}
+          {/* 5.3: a chat keeps the name of the model it runs on. */}
+          {triggerLabel ?? modelLabelFor(current, model)}
         </span>
         {!triggerLabel && triggerEffortLabel ? (
           <span

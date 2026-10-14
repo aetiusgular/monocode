@@ -462,6 +462,33 @@ export function resolveModel(harness: HarnessId, id?: string): AgentModel {
   return (fallbackId ? findModel(fallbackId) : undefined) ?? available[0];
 }
 
+/**
+ * The label for a chat's own model (Mac finding 5.3). `resolveModel` falls
+ * back to the catalog's default when the catalog no longer lists the saved
+ * id, for example after the Codex path moved to another home. The chat still
+ * runs on its saved id, so its label is the saved model's own id there, not
+ * the default's name. A catalog entry is named only when it is the saved
+ * model, or one `resolveModel` matched by its native id.
+ */
+export function modelLabelFor(resolved: AgentModel, id?: string): string {
+  const requested = id?.trim();
+  if (!requested || resolved.id === requested) return resolved.name;
+  const slug = comparableNativeId(resolved.harness, nativeIdFrom(requested));
+  if (!slug) return resolved.name;
+  const native = comparableNativeId(
+    resolved.harness,
+    resolved.nativeId ?? nativeIdFrom(resolved.id),
+  );
+  if (native && (native.startsWith(slug) || slug.startsWith(native)))
+    return resolved.name;
+  return nativeIdFrom(requested);
+}
+
+/** `modelLabelFor` on this computer's catalog. */
+export function sessionModelLabel(harness: HarnessId, id?: string): string {
+  return modelLabelFor(resolveModel(harness, id), id);
+}
+
 /** Catalog-reported context window for a model id, when known. */
 export function modelContextWindow(id: string): number | undefined {
   const window = findModel(id)?.contextWindow;

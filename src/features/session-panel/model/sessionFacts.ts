@@ -3,7 +3,7 @@ import {
   contextPercent,
   formatTokens,
 } from "../../sessions/model/contextUsage";
-import { resolveModel } from "../../sessions/model/models";
+import { sessionModelLabel } from "../../sessions/model/models";
 import {
   HARNESS_TITLE,
   RUNTIME_MODE_HINT,
@@ -37,7 +37,7 @@ export function sessionFacts(session: FactSource): SessionFact[] {
     { label: "Provider", value: HARNESS_TITLE[session.harness] },
     {
       label: "Model",
-      value: resolveModel(session.harness, session.model).name,
+      value: sessionModelLabel(session.harness, session.model),
       title: session.model,
     },
     {

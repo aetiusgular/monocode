@@ -19,7 +19,7 @@ import {
 import { joinStreamText } from "./streamText";
 import { taskListText } from "../../../features/sessions/model/taskList";
 import { isReviewablePlan } from "../../../features/sessions/model/plan";
-import { resolveModel } from "../../../features/sessions/model/models";
+import { sessionModelLabel } from "../../../features/sessions/model/models";
 import type { HarnessEvent } from "./types";
 import { usageLimitFromError } from "../../../features/sessions/model/usageLimit";
 import { attachToolImages } from "../../../features/tool-images/model/toolImages";
@@ -514,12 +514,12 @@ function userTurnFields(extra?: UserTurnExtra) {
 }
 
 function turnModelFields(session: Session) {
-  const model = resolveModel(session.harness, session.model);
   return {
     turnModel: {
       harness: session.harness,
       id: session.model,
-      name: model.name,
+      // The model the turn runs on, by its saved id (5.3).
+      name: sessionModelLabel(session.harness, session.model),
     },
   };
 }

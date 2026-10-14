@@ -61,7 +61,7 @@ import {
 } from "../../platform/tauri/fs";
 import { IS_MAC, MOD } from "../../platform/tauri/platform";
 import { copyText } from "../../platform/tauri/clipboard";
-import { resolveModel } from "../../features/sessions/model/models";
+import { sessionModelLabel } from "../../features/sessions/model/models";
 import type { OpenFileFn } from "../../features/search/model/search";
 import { sessionDisplayTitle } from "../../features/sessions/model/session";
 import { ParticleText } from "../../shared/ui/ParticleText";
@@ -3339,7 +3339,7 @@ const SessionCard = memo(function SessionCard({
   const model =
     compact && !orchestrationExpanded
       ? null
-      : resolveModel(session.harness, session.model).name;
+      : sessionModelLabel(session.harness, session.model);
   const failed = done && !busy && !!failedError;
   const statusClass = needsApproval
     ? "text-amber-400"
