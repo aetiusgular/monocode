@@ -37,38 +37,62 @@ function storage(): Storage | undefined {
   }
 }
 
-function load(): Record<string, Receipt> {
+/**
+ * Receipts are held in a Map, so a name like `toString` or `__proto__` is
+ * never read as a receipt the object inherited.
+ */
+type Receipts = Map<string, Receipt>;
+
+/**
+ * A chat id a receipt can be kept under. The app receipt is `<id>#app`, so an
+ * id holding `#` could name another chat's app receipt; it gets none.
+ */
+function chatId(sessionId: string): boolean {
+  return (
+    typeof sessionId === "string" && !!sessionId && !sessionId.includes("#")
+  );
+}
+
+/** A chat id, or the app receipt of one (`appReceiptKey`). */
+function receiptKey(key: string): boolean {
+  if (typeof key !== "string") return false;
+  const [id, part, ...rest] = key.split("#");
+  if (rest.length) return false;
+  return chatId(id) && (part === undefined || part === "app");
+}
+
+function load(): Receipts {
+  const out: Receipts = new Map();
   try {
     const raw = storage()?.getItem(KEY);
     const parsed: unknown = raw ? JSON.parse(raw) : {};
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-      return {};
-    const out: Record<string, Receipt> = {};
+      return out;
     for (const [id, value] of Object.entries(parsed)) {
+      if (!receiptKey(id)) continue;
       if (!value || typeof value !== "object") continue;
       const { provider, hash, at, start } = value as Record<string, unknown>;
       if (typeof hash !== "string" || !hash) continue;
-      out[id] = {
+      out.set(id, {
         ...(typeof provider === "string" && provider ? { provider } : {}),
         hash,
         at: typeof at === "number" ? at : 0,
         ...(typeof start === "string" && start ? { start } : {}),
-      };
+      });
     }
     return out;
   } catch {
-    return {};
+    return new Map();
   }
 }
 
-function store(next: Record<string, Receipt>): void {
-  const entries = Object.entries(next);
-  const kept =
+function store(next: Receipts): void {
+  const entries = [...next.entries()];
+  const kept = Object.fromEntries(
     entries.length > RECEIPTS_MAX
-      ? Object.fromEntries(
-          entries.sort((a, b) => b[1].at - a[1].at).slice(0, RECEIPTS_MAX),
-        )
-      : next;
+      ? entries.sort((a, b) => b[1].at - a[1].at).slice(0, RECEIPTS_MAX)
+      : entries,
+  );
   try {
     storage()?.setItem(KEY, JSON.stringify(kept));
   } catch {
@@ -86,7 +110,8 @@ export function preambleDue(
   providerSessionId: string | undefined,
   hash: string,
 ): boolean {
-  const receipt = load()[sessionId];
+  if (!receiptKey(sessionId)) return true;
+  const receipt = load().get(sessionId);
   if (!receipt) return true;
   // The provider id arrives with the first reply, so a receipt made before
   // it belongs to whatever conversation that reply started.
@@ -103,14 +128,14 @@ export function recordPreamble(
   hash: string,
   now = Date.now(),
 ): void {
-  store({
-    ...load(),
-    [sessionId]: {
-      ...(providerSessionId ? { provider: providerSessionId } : {}),
-      hash,
-      at: now,
-    },
+  if (!receiptKey(sessionId)) return;
+  const receipts = load();
+  receipts.set(sessionId, {
+    ...(providerSessionId ? { provider: providerSessionId } : {}),
+    hash,
+    at: now,
   });
+  store(receipts);
 }
 
 /** The receipt for MonoCode's own parts of a chat's preamble. */
@@ -124,11 +149,11 @@ export function appReceiptKey(sessionId: string): string {
  * receipts go, and with them the start hash.
  */
 export function forgetPreamble(sessionId: string): void {
+  if (!chatId(sessionId)) return;
   const receipts = load();
-  const app = appReceiptKey(sessionId);
-  if (!(sessionId in receipts) && !(app in receipts)) return;
-  delete receipts[sessionId];
-  delete receipts[app];
+  const own = receipts.delete(sessionId);
+  const app = receipts.delete(appReceiptKey(sessionId));
+  if (!own && !app) return;
   store(receipts);
 }
 
@@ -138,15 +163,14 @@ export function forgetPreamble(sessionId: string): void {
  * gone, so only MonoCode's own parts go again.
  */
 export function forgetAppReceipt(sessionId: string): void {
+  if (!chatId(sessionId)) return;
   const receipts = load();
-  const app = appReceiptKey(sessionId);
-  if (!(app in receipts)) return;
-  delete receipts[app];
+  if (!receipts.delete(appReceiptKey(sessionId))) return;
   store(receipts);
 }
 
 export function hasPreambleReceipt(sessionId: string): boolean {
-  return sessionId in load();
+  return chatId(sessionId) && load().has(sessionId);
 }
 
 /**
@@ -158,7 +182,8 @@ export function conversationGiven(
   sessionId: string,
   providerSessionId: string | undefined,
 ): boolean {
-  const receipt = load()[sessionId];
+  if (!chatId(sessionId)) return false;
+  const receipt = load().get(sessionId);
   return (
     !!receipt &&
     !!providerSessionId &&
@@ -182,19 +207,20 @@ export function recordInstructions(
   options: { startedNow: boolean; native: boolean },
   now = Date.now(),
 ): void {
+  if (!chatId(sessionId)) return;
   const receipts = load();
-  const prior = receipts[sessionId];
+  const prior = receipts.get(sessionId);
   const switched =
     !!prior?.provider &&
     !!providerSessionId &&
     prior.provider !== providerSessionId;
   if (switched && !options.native && !options.startedNow) {
-    delete receipts[sessionId];
+    receipts.delete(sessionId);
     store(receipts);
     return;
   }
   const kept = options.startedNow || switched ? start : prior?.start;
-  receipts[sessionId] = {
+  receipts.set(sessionId, {
     ...(providerSessionId
       ? { provider: providerSessionId }
       : prior?.provider && !options.startedNow
@@ -203,7 +229,7 @@ export function recordInstructions(
     hash: kept ?? prior?.hash ?? start,
     at: now,
     ...(kept ? { start: kept } : {}),
-  };
+  });
   store(receipts);
 }
 
@@ -217,7 +243,8 @@ export function instructionsStale(
   providerSessionId: string | undefined,
   current: string,
 ): boolean {
-  const receipt = load()[sessionId];
+  if (!chatId(sessionId)) return false;
+  const receipt = load().get(sessionId);
   if (!receipt?.start) return false;
   if (
     providerSessionId &&
