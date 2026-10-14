@@ -820,6 +820,7 @@ import {
 import { withEmptyTurnNotice as withEmptyTurnNotice_s6 } from "../features/sessions/model/emptyTurn";
 import { inlineMentionSource as inlineMentionSource_s6 } from "../features/sessions/model/promptPreparation";
 import { gatewayOnAtFirstTurn as gatewayOnAtFirstTurn_s6 } from "../features/gateway-connectors/model/localDefault";
+import { newChatLike as newChatLike_s6 } from "../features/session-preamble/model/newChatLike";
 // [lane-1] imports
 import { rewindOptions as rewindOptions_l1 } from "../features/rewind/model/rewind";
 import { cutChatTranscript as cutChatTranscript_l1 } from "../features/rewind/model/turnRewind";
@@ -12979,19 +12980,9 @@ function Workspace({
         (session) => session.id === sessionId,
       );
       if (!source) return;
-      const session = {
-        ...newWorkspaceSession(source.cwd, source.runtimeMode),
-        ...newSession(
-          source.harness,
-          source.cwd,
-          source.model,
-          source.runtimeMode,
-          source.modelSettings,
-        ),
-        ...(source.providerAccountId
-          ? { providerAccountId: source.providerAccountId }
-          : {}),
-      };
+      // Carries every switch that narrows the source chat, never one that
+      // widens it; see newChatLike.
+      const session = newChatLike_s6(source);
       const tab = newTab(session.id);
       setSessions((prev) => [...prev, session]);
       appendTab(tab, source.cwd);
