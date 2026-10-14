@@ -57,6 +57,109 @@ export function rangeWithinOneResponse(range: Range, root: HTMLElement): Range {
 const TEXT_BLOCK_SELECTOR =
   "p, li, h1, h2, h3, h4, h5, h6, blockquote, pre, td, th, dt, dd, figcaption";
 
+/** An element whose text the user cannot see, cached per element. */
+function hiddenElement(
+  element: Element,
+  cache: Map<Element, boolean>,
+): boolean {
+  const known = cache.get(element);
+  if (known !== undefined) return known;
+  let hidden = false;
+  if (element instanceof HTMLElement && element.hidden) hidden = true;
+  else if (element.getAttribute("aria-hidden") === "true") hidden = true;
+  else if (element.classList.contains("sr-only")) hidden = true;
+  else {
+    const view = element.ownerDocument.defaultView;
+    const style = view?.getComputedStyle(element);
+    if (style) {
+      if (style.display === "none") hidden = true;
+      else if (style.visibility === "hidden" || style.visibility === "collapse")
+        hidden = true;
+      else if (/^rect\(0(px)?,? 0(px)?,? 0(px)?,? 0(px)?\)$/.test(style.clip))
+        hidden = true;
+      else if (/^inset\(50%\)$/.test(style.clipPath ?? "")) hidden = true;
+    }
+  }
+  cache.set(element, hidden);
+  return hidden;
+}
+
+/** True when a node sits in a closed `<details>` outside its summary. */
+function inClosedDetails(node: Node, stop: Node): boolean {
+  let child: Node = node;
+  let parent = node.parentNode;
+  while (parent && child !== stop) {
+    if (parent instanceof HTMLDetailsElement && !parent.open) {
+      const summary = parent.querySelector(":scope > summary");
+      if (!summary || child !== summary) return true;
+    }
+    child = parent;
+    parent = parent.parentNode;
+  }
+  return false;
+}
+
+/**
+ * The text of a range as the user sees it. `Range.toString()` also returns
+ * the body of a collapsed `<details>` and text hidden by CSS, which the user
+ * never saw selected, and that text must never be saved or sent. Text nodes
+ * under a hidden element or a closed `<details>` (its summary aside) are
+ * left out.
+ */
+export function renderedRangeText(range: Range): string {
+  const rootNode = range.commonAncestorContainer;
+  const doc = rootNode.ownerDocument ?? (rootNode as Document);
+  const cache = new Map<Element, boolean>();
+  const visible = (node: Node) => {
+    if (inClosedDetails(node, doc)) return false;
+    for (
+      let element = node.parentElement;
+      element;
+      element = element.parentElement
+    ) {
+      if (hiddenElement(element, cache)) return false;
+    }
+    return true;
+  };
+  const piece = (node: Text) => {
+    const data = node.data;
+    const start = node === range.startContainer ? range.startOffset : 0;
+    const end = node === range.endContainer ? range.endOffset : data.length;
+    return data.slice(start, end);
+  };
+  if (rootNode.nodeType === Node.TEXT_NODE) {
+    return visible(rootNode) ? piece(rootNode as Text) : "";
+  }
+  const walker = doc.createTreeWalker(rootNode, NodeFilter.SHOW_TEXT);
+  let text = "";
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (!range.intersectsNode(node)) continue;
+    if (visible(node)) text += piece(node as Text);
+  }
+  return text;
+}
+
+/**
+ * True when an element, or an ancestor inside the reply, clips its lines
+ * (`line-clamp`). A collapsed user message shows four lines; growing a
+ * selection there would take lines the user cannot see.
+ */
+function clampedWithin(element: Element, response: Element): boolean {
+  for (
+    let current: Element | null = element;
+    current;
+    current = current.parentElement
+  ) {
+    if ([...current.classList].some((name) => name.startsWith("line-clamp-")))
+      return true;
+    const style = current.ownerDocument.defaultView?.getComputedStyle(current);
+    const clamp = style?.getPropertyValue("-webkit-line-clamp");
+    if (clamp && clamp !== "none") return true;
+    if (current === response) break;
+  }
+  return false;
+}
+
 /**
  * A triple-click selection grown to cover the whole block it was made in,
  * inside one reply (Mac 2.8). Inline code renders as `inline-flex`, and
@@ -65,8 +168,10 @@ const TEXT_BLOCK_SELECTOR =
  * cut at both ends. The block (paragraph, list item, heading, cell) is found
  * from the clicked node, or from the range start when the click is unknown.
  * The result spans both the block and the original range, so a triple-click
- * drag across blocks keeps its extent. Returns null when the click was not in
- * a reply.
+ * drag across blocks keeps its extent. Returns null, and the user's own
+ * selection stands, when the click was not in a reply, when no such block
+ * holds it (a code block header, a summary, a bare div), or when the block
+ * is clamped to fewer lines than it holds.
  */
 export function paragraphRange(
   range: Range,
@@ -80,9 +185,10 @@ export function paragraphRange(
   );
   if (!element || !response || !root.contains(response)) return null;
   const block = element.closest<HTMLElement>(TEXT_BLOCK_SELECTOR);
-  const target = block && response.contains(block) ? block : response;
+  if (!block || !response.contains(block)) return null;
+  if (clampedWithin(block, response)) return null;
   const whole = response.ownerDocument.createRange();
-  whole.selectNodeContents(target);
+  whole.selectNodeContents(block);
   if (whole.compareBoundaryPoints(Range.START_TO_START, range) > 0)
     whole.setStart(range.startContainer, range.startOffset);
   if (whole.compareBoundaryPoints(Range.END_TO_END, range) < 0)
@@ -134,7 +240,7 @@ export function useTranscriptSelection(
       if (paragraphPending) {
         paragraphPending = false;
         const whole = paragraphRange(range, clickedNode, root);
-        if (whole && whole.toString() !== range.toString()) {
+        if (whole && renderedRangeText(whole) !== renderedRangeText(range)) {
           // Show the user the text the menu will act on.
           nativeSelection.removeAllRanges();
           nativeSelection.addRange(whole);
@@ -142,7 +248,7 @@ export function useTranscriptSelection(
         }
       }
       const text = validateTranscriptSelection({
-        text: range.toString(),
+        text: renderedRangeText(range),
         collapsed: range.collapsed,
         anchorResponseId: responseIdForNode(range.startContainer, root),
         focusResponseId: responseIdForNode(range.endContainer, root),
