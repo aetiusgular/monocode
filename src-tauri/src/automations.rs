@@ -126,6 +126,11 @@ pub struct AutomationRun {
     event: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     prompt: Option<String>,
+    /// The schedule that started a scheduled run, copied when the run is made,
+    /// so run history shows what fired and not today's schedule (Mac 2.13).
+    /// Runs stored before this field have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_trigger: Option<AutomationTrigger>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -603,6 +608,38 @@ fn new_run(
         event_kind: None,
         event: None,
         prompt: Some(prompt.to_string()),
+        source_trigger: None,
+    }
+}
+
+/// The time trigger behind a scheduled occurrence: the one the scheduler
+/// named, else a one-time trigger set for that moment, else the only time
+/// trigger. None when it cannot be told apart.
+fn fired_time_trigger(
+    automation: &Automation,
+    trigger_id: Option<&str>,
+    scheduled_for: i64,
+) -> Option<AutomationTrigger> {
+    let times: Vec<&AutomationTrigger> = automation
+        .triggers
+        .as_deref()?
+        .iter()
+        .filter(|trigger| trigger.kind == "time")
+        .collect();
+    if let Some(id) = trigger_id.filter(|id| !id.is_empty()) {
+        if let Some(trigger) = times.iter().find(|trigger| trigger.id == id) {
+            return Some((*trigger).clone());
+        }
+    }
+    if let Some(trigger) = times
+        .iter()
+        .find(|trigger| trigger.schedule_kind == "once" && trigger.at == scheduled_for)
+    {
+        return Some((*trigger).clone());
+    }
+    match times.as_slice() {
+        [only] => Some((*only).clone()),
+        _ => None,
     }
 }
 
@@ -1173,8 +1210,12 @@ pub fn automations_claim_due(
     expected_next_run_at: i64,
     next_run_at: i64,
     now: i64,
+    trigger_id: Option<String>,
 ) -> Result<Option<DueAutomationRun>, String> {
     validate_id(&automation_id, "automation")?;
+    if trigger_id.as_deref().is_some_and(|id| id.len() > 200) {
+        return Err("Invalid automation trigger.".into());
+    }
     if next_run_at <= expected_next_run_at {
         return Err("The following automation occurrence must advance the schedule.".into());
     }
@@ -1206,6 +1247,8 @@ pub fn automations_claim_due(
         now,
         &automation.prompt,
     );
+    run.source_trigger =
+        fired_time_trigger(&automation, trigger_id.as_deref(), expected_next_run_at);
     let grace_ms = automation.missed_run_grace_minutes.saturating_mul(60_000);
     let missed = now.saturating_sub(expected_next_run_at);
     let dispatch = missed <= grace_ms;
@@ -1859,6 +1902,7 @@ mod tests {
                 event_kind: None,
                 event: None,
                 prompt: Some("Run the automation".into()),
+                source_trigger: None,
             };
             write_run(&conn, &run).unwrap();
         }
@@ -1901,6 +1945,7 @@ mod tests {
                 event_kind: None,
                 event: None,
                 prompt: Some("Run the automation".into()),
+                source_trigger: None,
             };
             write_run(&conn, &run).unwrap();
         }
@@ -2184,5 +2229,78 @@ mod tests {
         assert!(!cancel_run(&conn, "no-such-run", at + 6).unwrap());
         let automation = get(&conn, "automation-id").unwrap().unwrap();
         assert_eq!(automation.last_run_status.as_deref(), Some("skipped"));
+    }
+
+    // Mac 2.13: run history showed today's schedule on an older run.
+    #[test]
+    fn a_scheduled_run_keeps_the_trigger_that_fired_it_across_a_reload() {
+        let fired = time_trigger("once", 1_000, 0);
+        let conn = claim_store(vec![fired.clone()], 1_000);
+        let automation = get(&conn, "automation-id").unwrap().unwrap();
+        let mut run = pending_run("run-1", "scheduled", 1_000);
+        run.source_trigger = fired_time_trigger(&automation, Some("t"), 1_000);
+        write_run(&conn, &run).unwrap();
+
+        // The user moves the one-time schedule to the next day.
+        let mut moved = automation.clone();
+        let mut later = fired.clone();
+        later.at = 90_000_000;
+        moved.triggers = Some(vec![later]);
+        write_automation(&conn, &moved).unwrap();
+
+        let runs = list_runs(&conn, "automation-id").unwrap();
+        let kept = runs[0].source_trigger.as_ref().unwrap();
+        assert_eq!(kept.schedule_kind, "once");
+        assert_eq!(kept.at, 1_000);
+    }
+
+    #[test]
+    fn a_run_stored_before_the_field_reads_with_no_trigger() {
+        let conn = claim_store(vec![time_trigger("once", 1_000, 0)], 1_000);
+        conn.execute(
+            "INSERT INTO automation_runs (id, automation_id, created_at, run_json)
+             VALUES ('old', 'automation-id', 5, ?1)",
+            [r#"{"id":"old","automationId":"automation-id","trigger":"scheduled","scheduledFor":5,"createdAt":5,"status":"succeeded"}"#],
+        )
+        .unwrap();
+        let runs = list_runs(&conn, "automation-id").unwrap();
+        assert!(runs[0].source_trigger.is_none());
+        let raw = serde_json::to_value(&runs[0]).unwrap();
+        assert!(raw.get("sourceTrigger").is_none());
+    }
+
+    #[test]
+    fn the_fired_trigger_is_found_by_id_moment_or_as_the_only_one() {
+        let conn = claim_store(
+            vec![
+                AutomationTrigger {
+                    id: "a".into(),
+                    ..time_trigger("once", 1_000, 0)
+                },
+                AutomationTrigger {
+                    id: "b".into(),
+                    ..time_trigger("interval", 0, 30)
+                },
+            ],
+            1_000,
+        );
+        let automation = get(&conn, "automation-id").unwrap().unwrap();
+        let by_id = fired_time_trigger(&automation, Some("b"), 1_000).unwrap();
+        assert_eq!(by_id.id, "b");
+        let by_moment = fired_time_trigger(&automation, None, 1_000).unwrap();
+        assert_eq!(by_moment.id, "a");
+        // Two candidates and nothing to tell them apart: none, not a guess.
+        assert!(fired_time_trigger(&automation, None, 2_000).is_none());
+        let unknown = fired_time_trigger(&automation, Some("gone"), 1_000).unwrap();
+        assert_eq!(unknown.id, "a");
+
+        let single = claim_store(vec![time_trigger("interval", 0, 30)], 1_000);
+        let automation = get(&single, "automation-id").unwrap().unwrap();
+        assert_eq!(
+            fired_time_trigger(&automation, None, 7_000)
+                .unwrap()
+                .schedule_kind,
+            "interval"
+        );
     }
 }

@@ -104,6 +104,11 @@ export type AutomationRun = {
   eventKind?: AutomationTriggerKind;
   event?: string;
   prompt?: string;
+  /**
+   * The schedule that started a scheduled run, stored when the run was made.
+   * Runs from before Mac fix 2.13 have none.
+   */
+  sourceTrigger?: AutomationTrigger;
 };
 
 export type DueAutomationRun = {
@@ -284,6 +289,22 @@ export function nextTriggersRunAt(
   // No time trigger, or only spent one-time ones: a placeholder a year out.
   // The store disables a spent one-time automation, and refuses to claim one.
   return Number.isFinite(next) ? next : after + YEAR_MS;
+}
+
+/**
+ * The time trigger whose schedule lands on `scheduledFor`, so the run made
+ * for it records what fired (Mac 2.13). Null when none or several do.
+ */
+export function firingTriggerId(
+  triggers: readonly AutomationTrigger[],
+  scheduledFor: number,
+): string | null {
+  const firing = triggers.filter(
+    (trigger) =>
+      trigger.kind === "time" &&
+      nextAutomationRunAt(trigger, scheduledFor - 1) === scheduledFor,
+  );
+  return firing.length === 1 ? firing[0]!.id : null;
 }
 
 export function overdueTriggerOccurrences(
@@ -682,6 +703,7 @@ export async function claimDueAutomations(
             expectedNextRunAt: occurrence.scheduledFor,
             nextRunAt: occurrence.nextRunAt,
             now,
+            triggerId: firingTriggerId(triggers, occurrence.scheduledFor),
           },
         );
       } catch {

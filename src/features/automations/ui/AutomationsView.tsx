@@ -866,18 +866,17 @@ function runTriggerMeta(
       label: findTriggerEvent(kind, event)?.label ?? triggerName(kind),
     };
   }
-  const times = draft.triggers.filter((trigger) => trigger.kind === "time");
-  if (times[0]) {
+  // The schedule stored on the run when it fired. A run from before that was
+  // recorded says only that it was scheduled: today's schedule may not be the
+  // one that started it (Mac 2.13).
+  const fired = run.sourceTrigger;
+  if (fired?.kind === "time") {
     return {
       kind: "time",
-      label: `Scheduled · ${automationScheduleLabel(times[0])}`,
+      label: `Scheduled · ${automationScheduleLabel(fired)}`,
     };
   }
-  const first = draft.triggers[0];
-  if (!first) return { kind: "time", label: "Scheduled" };
-  const event =
-    findTriggerEvent(first.kind, first.event)?.label ?? triggerName(first.kind);
-  return { kind: first.kind, label: event };
+  return { kind: "time", label: "Scheduled" };
 }
 
 function AutomationEditor({
