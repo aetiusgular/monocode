@@ -52,6 +52,21 @@ const WRITES: &[&str] = &[
     "worktree",
 ];
 
+/// Subcommands that reach a remote on purpose, on the user's click. They keep
+/// their transports.
+const NETWORK: &[&str] = &[
+    "fetch",
+    "push",
+    "pull",
+    "clone",
+    "ls-remote",
+    "remote",
+    "submodule",
+];
+
+/// Turns off every transport, so a lazy fetch cannot run anything.
+const NO_TRANSPORT: &str = "protocol.allow=never";
+
 /// Subcommands that can run a diff driver. They get `--no-ext-diff`.
 const DIFFS: &[&str] = &["diff", "log", "show"];
 
@@ -431,6 +446,13 @@ fn guard_with(
         "-c".to_string(),
         NO_HOOKS.to_string(),
     ]);
+    // Security fix T1: on a partial clone a read can fetch a missing object,
+    // and the fetch runs the transport the repository's config names
+    // (`remote.<x>.uploadpack`, an `ext::` URL). Calls that are not network
+    // calls get no transport at all, so such a read fails instead.
+    if !subcommand(args).is_some_and(|sub| NETWORK.contains(&sub)) {
+        globals.extend(["-c".to_string(), NO_TRANSPORT.to_string()]);
+    }
     if let Some(sub) = subcommand(args) {
         let mut inserted = Vec::new();
         if DIFFS.contains(&sub) && !args.contains(&"--no-ext-diff") {
@@ -906,6 +928,20 @@ mod tests {
             .output()
             .unwrap();
         assert!(marker.exists(), "plain git did not run uploadpack");
+        // MonoCode's own guarded read refuses the transport, so a lazy fetch
+        // under it runs nothing.
+        std::fs::remove_file(&marker).unwrap();
+        let (globals, rest) = guard(&clone, &["show", "HEAD:f.txt"]).unwrap();
+        assert!(globals.iter().any(|arg| arg == NO_TRANSPORT));
+        let _ = Command::new("git")
+            .current_dir(&clone)
+            .args(&globals)
+            .args(&rest)
+            .output()
+            .unwrap();
+        assert!(!marker.exists(), "a guarded read ran uploadpack");
+        let (fetch_globals, _) = guard(&clone, &["fetch", "origin"]).unwrap();
+        assert!(!fetch_globals.iter().any(|arg| arg == NO_TRANSPORT));
         // Without the uploadpack line, the promisor flag alone still counts.
         run(&clone, &["config", "--unset", "remote.origin.uploadpack"]);
         assert_eq!(repo_names_commands(&clone), Ok(true));
