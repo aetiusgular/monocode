@@ -749,7 +749,11 @@ fn git_command_in(root: &Path, pin: Option<&PinnedRepo>, args: &[&str]) -> Comma
         .env("LC_ALL", "C")
         .env("LANGUAGE", "")
         .env("PATH", crate::harness::gui_search_path())
-        .envs(crate::git_guard::guard_everything_envs(args).iter().copied());
+        .envs(
+            crate::git_guard::guard_everything_envs(args)
+                .iter()
+                .copied(),
+        );
     for name in [
         "GIT_DIR",
         "GIT_WORK_TREE",
