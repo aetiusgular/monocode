@@ -1214,7 +1214,9 @@ function AgentTranscriptComponent({
           // Earlier activity groups have already been followed by prose or
           // more work. Only the last one can still be the live group.
           const foldedAt = lastActivityIndex(items);
-          const initialThinkingAt = initialThinkingIndex(items);
+          // A finished turn is not thinking any more: its reasoning shows as
+          // settled work, not as the live placeholder (Mac 3.7).
+          const initialThinkingAt = settled ? -1 : initialThinkingIndex(items);
           const startedAt =
             userBlock?.startedAt ?? habit?.at ?? turn[0].startedAt;
           const previousTurn = turns[firstVisibleTurn + turnIndex - 1];

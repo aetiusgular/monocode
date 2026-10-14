@@ -4,10 +4,14 @@ import type { Block, Session } from "./session";
 export const EMPTY_TURN_NOTICE =
   "The model finished this turn without a reply. Nothing came back from it, so there is nothing to show. Try again, or try another model.";
 
-/** A block that shows something the model or agent produced. */
+/**
+ * A block that shows something the model or agent produced for the user.
+ * Reasoning alone is not a reply: Codex can end a turn with only a reasoning
+ * item and `last_agent_message: None` (Mac finding 3.7, retest).
+ */
 function isOutput(block: Block): boolean {
-  if (block.role === "system") return false;
-  if (block.role === "assistant" || block.role === "reasoning") {
+  if (block.role === "system" || block.role === "reasoning") return false;
+  if (block.role === "assistant") {
     return block.text.trim().length > 0 || !!block.image;
   }
   return true;

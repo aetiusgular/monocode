@@ -23,11 +23,12 @@ describe("an empty finished turn says so (Mac finding 3.7)", () => {
     expect(next.blocks.at(-1)?.text).toBe(EMPTY_TURN_NOTICE);
   });
 
-  it("leaves a turn with a reply, a tool call or reasoning alone", () => {
+  // Reasoning alone no longer counts as a reply (Mac 3.7 retest); see
+  // emptyTurn.session6p3.test.ts.
+  it("leaves a turn with a reply or a tool call alone", () => {
     for (const block of [
       { id: "a", role: "assistant", text: "ok" },
       { id: "t", role: "tool", text: "" },
-      { id: "r", role: "reasoning", text: "thinking" },
     ] as Block[]) {
       const before = session([user, block]);
       expect(withEmptyTurnNotice(before)).toBe(before);
