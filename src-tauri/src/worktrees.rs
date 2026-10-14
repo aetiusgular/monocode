@@ -83,6 +83,16 @@ fn guarded_command(root: &Path, args: &[&str]) -> Result<Command, String> {
     Ok(command)
 }
 
+/// Deletes a local branch MonoCode made, with no hook the repository names:
+/// `branch -D` runs `reference-transaction`, and the orchestration cleanup
+/// runs with no click (security fix X2).
+fn delete_branch(root: &Path, branch: &str) -> Result<String, String> {
+    git(
+        root,
+        &["-c", crate::git_guard::NO_HOOKS_ARG, "branch", "-D", branch],
+    )
+}
+
 fn git_read(root: &Path, args: &[&str]) -> Result<String, String> {
     let output = guarded_command(root, args)?
         .output()
@@ -643,7 +653,7 @@ fn create_seeded(root: &Path, branch: &str) -> Result<Worktree, String> {
     if let Err(error) = copy_checkout_state(root, Path::new(&tree.path)) {
         let _ = remove(root, Path::new(&tree.path), true);
         if !branch_exists {
-            let _ = git(root, &["branch", "-D", branch]);
+            let _ = delete_branch(root, branch);
         }
         return Err(error);
     }
@@ -744,8 +754,10 @@ fn check_removal(root: &Path, path: &Path, force: bool, has_terminals: bool) -> 
     }
     // Sessions and their agents still exist during preflight. The actual
     // removal below checks them again after the session deletion lifecycle.
+    // Through the guard: `status` runs a clean filter named in
+    // `.git/info/attributes` (security fix X2).
     if !force
-        && !git(
+        && !git_read(
             Path::new(&tree.path),
             &["status", "--porcelain", "--untracked-files=normal"],
         )?
@@ -1005,7 +1017,7 @@ pub fn git_orchestration_worktree_remove(
     let removed = remove_with_sessions(&conn, &root, &path, true, true)?;
     if let Some(branch) = branch {
         if branch.starts_with("mc/orch-") {
-            if let Err(error) = git(Path::new(&removed.project_cwd), &["branch", "-D", &branch]) {
+            if let Err(error) = delete_branch(Path::new(&removed.project_cwd), &branch) {
                 eprintln!("Orchestration worktree removed; temporary branch cleanup will need a retry: {error}");
             }
         }
@@ -1016,26 +1028,28 @@ pub fn git_orchestration_worktree_remove(
 #[tauri::command(async)]
 pub async fn git_orchestration_branch_remove(cwd: String, branch: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let root = expand_home(&cwd);
-        let branch = branch.trim();
-        if !branch.starts_with("mc/orch-") {
-            return Err("Only orchestration temporary branches can be removed here".into());
-        }
-        git(&root, &["check-ref-format", "--branch", branch])?;
-        let branch_ref = format!("refs/heads/{branch}");
-        if git(&root, &["rev-parse", "--verify", &branch_ref]).is_err() {
-            return Ok(());
-        }
-        if list(&root)?
-            .iter()
-            .any(|tree| tree.branch.as_deref() == Some(branch))
-        {
-            return Err("The orchestration branch still has a worktree".into());
-        }
-        git(&root, &["branch", "-D", branch]).map(|_| ())
+        remove_orchestration_branch(&expand_home(&cwd), branch.trim())
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+fn remove_orchestration_branch(root: &Path, branch: &str) -> Result<(), String> {
+    if !branch.starts_with("mc/orch-") {
+        return Err("Only orchestration temporary branches can be removed here".into());
+    }
+    git(root, &["check-ref-format", "--branch", branch])?;
+    let branch_ref = format!("refs/heads/{branch}");
+    if git(root, &["rev-parse", "--verify", &branch_ref]).is_err() {
+        return Ok(());
+    }
+    if list(root)?
+        .iter()
+        .any(|tree| tree.branch.as_deref() == Some(branch))
+    {
+        return Err("The orchestration branch still has a worktree".into());
+    }
+    delete_branch(root, branch).map(|_| ())
 }
 
 #[cfg(test)]
@@ -1813,5 +1827,66 @@ mod tests {
             std::ffi::OsStr::new("LANGUAGE"),
             Some(std::ffi::OsStr::new(""))
         )));
+    }
+
+    #[test]
+    fn removal_preflight_runs_no_clean_filter_the_repository_names() {
+        // Security fix X2: `check_removal` ran `status` through plain git,
+        // which ran a clean filter named in `.git/info/attributes`.
+        let repo = repo();
+        let root = repo.0.join("repo");
+        std::fs::write(root.join("a.txt"), "one\n").unwrap();
+        commit_all(&root, "a");
+        let tree = create(&root, "feature/x2", "main", false, None).unwrap();
+        let path = Path::new(&tree.path);
+        let marker = repo.0.join("clean-ran");
+        git_checked(
+            &root,
+            &[
+                "config",
+                "filter.mark.clean",
+                &format!("touch '{}'; cat", marker.display()),
+            ],
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join(".git/info")).unwrap();
+        std::fs::write(root.join(".git/info/attributes"), "* filter=mark\n").unwrap();
+        // Same content, new time: git has to read the file again.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(path.join("a.txt"), "one\n").unwrap();
+        check_removal(&root, path, false, false).unwrap();
+        assert!(!marker.exists(), "the removal preflight ran a clean filter");
+        // Control: the same status through plain git runs it.
+        git(path, &["status", "--porcelain", "--untracked-files=normal"]).unwrap();
+        assert!(marker.exists(), "the control did not run the clean filter");
+    }
+
+    #[test]
+    fn branch_cleanup_runs_no_reference_transaction_hook() {
+        // Security fix X2: `branch -D` ran `reference-transaction`.
+        let repo = repo();
+        let root = repo.0.join("repo");
+        for branch in ["mc/orch-x2", "mc/orch-control", "feature/x2"] {
+            git_checked(&root, &["branch", branch]).unwrap();
+        }
+        let marker = repo.0.join("hook-ran");
+        marker_script(
+            &root.join(".git/hooks/reference-transaction"),
+            &marker,
+            "exit 0",
+        );
+        remove_orchestration_branch(&root, "mc/orch-x2").unwrap();
+        delete_branch(&root, "feature/x2").unwrap();
+        assert!(!marker.exists(), "branch cleanup ran a repository hook");
+        for branch in ["mc/orch-x2", "feature/x2"] {
+            assert!(git(
+                &root,
+                &["rev-parse", "--verify", &format!("refs/heads/{branch}")]
+            )
+            .is_err());
+        }
+        // Control: plain `branch -D` runs the hook.
+        git(&root, &["branch", "-D", "mc/orch-control"]).unwrap();
+        assert!(marker.exists(), "the control did not run the hook");
     }
 }
