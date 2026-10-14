@@ -267,6 +267,9 @@ fn entry_names_command(key: &str, value: Option<&str>) -> bool {
         ("protocol", _, "allow") => {
             !value.is_some_and(|value| value.trim().eq_ignore_ascii_case("never"))
         }
+        // Security fix V2: `url.<base>.insteadOf` can turn a plain remote URL
+        // into an `ext::` one, which the remote's own URL does not show.
+        ("url", Some(_), "insteadof" | "pushinsteadof") => true,
         _ => false,
     }
 }
@@ -317,7 +320,7 @@ const READ_HOOKS: &[&str] = &["post-index-change"];
 /// Whether a read-only git command run in `cwd` could run a command the
 /// repository itself names: a filter or diff driver, `core.fsmonitor`, a
 /// pager, an alias, a gpg program, a hooks path, a transport a lazy fetch
-/// could use (a promisor remote, a protocol allowed), or a hook
+/// could use (a promisor remote, a protocol allowed, a URL rewrite), or a hook
 /// git runs when it refreshes the index. `Err` when git could not answer, which callers treat
 /// as a yes.
 pub(crate) fn repo_names_commands(cwd: &Path) -> Result<bool, String> {
@@ -330,7 +333,7 @@ pub(crate) fn repo_names_commands(cwd: &Path) -> Result<bool, String> {
             "--includes",
             "--show-scope",
             "--get-regexp",
-            r"^(filter|diff|core|pager|alias|gpg|remote|extensions|protocol)\.",
+            r"^(filter|diff|core|pager|alias|gpg|remote|extensions|protocol|url)\.",
         ])
         .output()
         .map_err(|error| error.to_string())?;
@@ -1056,6 +1059,67 @@ mod tests {
         let repo = plain_repo("protocol-never");
         run(&repo.0, &["config", "protocol.ext.allow", "never"]);
         assert_eq!(repo_names_commands(&repo.0), Ok(false));
+    }
+
+    #[test]
+    fn an_insteadof_rewrite_to_ext_is_found() {
+        // Security fix V2: `url.<base>.insteadOf` turns a plain remote URL
+        // into an `ext::` one, which the gate never saw.
+        let repo = plain_repo("insteadof");
+        let marker = repo.0.with_extension("ext-ran");
+        let script = marker_script(
+            &std::env::temp_dir(),
+            &format!(
+                "monocode-ext-{}-{}.sh",
+                std::process::id(),
+                repo.0.file_name().unwrap().to_string_lossy()
+            ),
+            &marker,
+            "exit 1",
+        );
+        run(
+            &repo.0,
+            &["remote", "add", "origin", "https://example.invalid/r.git"],
+        );
+        run(
+            &repo.0,
+            &[
+                "config",
+                &format!("url.ext::{} .insteadOf", script.display()),
+                "https://example.invalid/",
+            ],
+        );
+        run(&repo.0, &["config", "protocol.ext.allow", "always"]);
+        // Control: plain git really runs the program.
+        let out = Command::new("git")
+            .current_dir(&repo.0)
+            .args(["ls-remote", "origin"])
+            .output()
+            .unwrap();
+        assert!(
+            marker.exists(),
+            "plain git did not run the ext:: rewrite: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let _ = std::fs::remove_file(&marker);
+        assert_eq!(repo_names_commands(&repo.0), Ok(true));
+        // Without the protocol line the rewrite alone still counts.
+        run(&repo.0, &["config", "--unset", "protocol.ext.allow"]);
+        assert_eq!(repo_names_commands(&repo.0), Ok(true));
+        let push = plain_repo("pushinsteadof");
+        run(
+            &push.0,
+            &[
+                "config",
+                "url.ext::sh.pushInsteadOf",
+                "https://example.invalid/",
+            ],
+        );
+        assert_eq!(repo_names_commands(&push.0), Ok(true));
+        // A guarded read refuses ext even when the repository allows it.
+        let (globals, _) = guard(&repo.0, &["show", "HEAD"]).unwrap();
+        assert!(globals.iter().any(|arg| arg == "protocol.ext.allow=never"));
+        let _ = std::fs::remove_file(script);
     }
 
     #[test]
