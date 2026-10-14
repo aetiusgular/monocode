@@ -194,10 +194,15 @@ describe("git rules and the repository's own commands (R2)", () => {
   it("the whole-tool Always is not checked", async () => {
     answers.git_repo_names_commands = true;
     const { events, turn } = await startTurn({ always: ["Bash"] });
+    // The launch asks once for its git ask rule (Mac test 10.1); answering
+    // the request must not ask again.
+    const atStart = calls.length;
     askBash("r1", "git status");
     expect(await answer("r1")).toMatchObject({ behavior: "allow" });
     expect(cards(events)).toHaveLength(0);
-    expect(calls.some(([c]) => c === "git_repo_names_commands")).toBe(false);
+    expect(
+      calls.slice(atStart).some(([c]) => c === "git_repo_names_commands"),
+    ).toBe(false);
     await finish(turn);
   });
 });

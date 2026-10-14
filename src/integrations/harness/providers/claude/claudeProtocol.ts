@@ -98,6 +98,18 @@ export type ClaudeCliSettings = {
   // [lane-3] cli-settings
   // [lane-4] cli-settings
   // [lane-5] cli-settings
+  /**
+   * Launch-time permission rules. Only `ask` is passed, and only the git rule
+   * (Mac test 10.1, `claudeGitAsk.ts`): Claude Code merges these with the
+   * user's own rules, and an ask rule wins over an allow rule.
+   */
+  permissions?: { ask?: string[] };
+  /**
+   * `false` drops the git status section of Claude Code's system prompt and
+   * the `git status` and `git log` it runs at start to fill it, which run a
+   * repository's filters. Set with the git ask rule only.
+   */
+  includeGitInstructions?: boolean;
 };
 
 /**

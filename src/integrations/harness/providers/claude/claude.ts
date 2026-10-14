@@ -82,6 +82,7 @@ import {
   type ClaudeControlRequest,
 } from "./claudeProtocol";
 import { existingDirs } from "../../core/existingDirs";
+import { CLAUDE_GIT_ASK_RULE, claudeGitAskNeeded } from "./claudeGitAsk";
 import { readClaudeLastEntry } from "./claudeLastEntry";
 import { toolRules, type ToolRules } from "../../core/toolRules";
 import { noteReportedMcpServers } from "../../../../features/session-tools/model/reportedMcpServers";
@@ -391,7 +392,10 @@ export async function sendClaudeTurn(input: SendTurnInput): Promise<void> {
 export async function compactClaudeContext(
   input: CompactContextInput,
 ): Promise<void> {
-  const settingsKey = settingsKeyFor(input);
+  const { settingsKey } = await launchSettingsKey(
+    input,
+    await existingDirs(input.extraDirs),
+  );
   let live = liveByThread.get(input.sessionId);
   if (!live || live.cwd !== input.cwd || live.settingsKey !== settingsKey) {
     live = await ensureLive(input);
@@ -725,7 +729,10 @@ async function ensureLive(
   input: HarnessSessionInput,
   initTimeoutMs: number = INIT_TIMEOUT_MS,
 ): Promise<Live> {
-  const settingsKey = settingsKeyFor(input);
+  // Claude Code checks each folder at startup; one that is gone stays off
+  // the command line instead of failing the launch.
+  const extraDirs = await existingDirs(input.extraDirs);
+  const { settingsKey, gitAsk } = await launchSettingsKey(input, extraDirs);
   const planning = input.intent === "plan";
   const existing = liveByThread.get(input.sessionId);
   if (
@@ -787,10 +794,9 @@ async function ensureLive(
     input,
     canResume ? resume?.sessionId : undefined,
     claudeSessionId,
-    // Claude Code checks each folder at startup; one that is gone stays off
-    // the command line instead of failing the launch.
-    await existingDirs(input.extraDirs),
+    extraDirs,
     resumeAt,
+    gitAsk,
   );
   if (
     lastEntryByThread.get(input.sessionId)?.providerSessionId !==
@@ -2385,6 +2391,27 @@ function writeJson(
   return writeChild(sessionId, JSON.stringify(payload));
 }
 
+/**
+ * The launch settings key with the git ask rule's state folded in. Read
+ * before every turn: a repository that starts naming a command mid-chat
+ * changes the key, so the process restarts on the same conversation with the
+ * rule (Mac test 10.1, `claudeGitAsk.ts`).
+ */
+async function launchSettingsKey(
+  input: HarnessSessionInput,
+  extraDirs: string[],
+): Promise<{ settingsKey: string; gitAsk: boolean }> {
+  const gitAsk = await claudeGitAskNeeded({
+    cwd: input.cwd,
+    extraDirs,
+    runtimeMode: input.runtimeMode,
+  });
+  return {
+    settingsKey: `${settingsKeyFor(input)}:git-ask=${gitAsk ? 1 : 0}`,
+    gitAsk,
+  };
+}
+
 function settingsKeyFor(input: HarnessSessionInput): string {
   return `${input.providerAccountId ?? "default"}:${claudeSettingsKey({
     model: nativeModelId(input.model),
@@ -2509,6 +2536,7 @@ function launchOptions(
   sessionId: string,
   addDirs: string[],
   resumeSessionAt?: string,
+  gitAsk = false,
 ): {
   model?: string;
   effort?: string;
@@ -2545,6 +2573,12 @@ function launchOptions(
   }
   if (!loadClaudeHooks()) {
     settings.disableAllHooks = true;
+  }
+  // Mac test 10.1: in a repository whose config names a command, every git
+  // command reaches the card, Claude Code's own read-only ones included.
+  if (gitAsk) {
+    settings.permissions = { ask: [CLAUDE_GIT_ASK_RULE] };
+    settings.includeGitInstructions = false;
   }
   // Plugins switched off for the chat: `false` under `enabledPlugins` in
   // `--settings`, which Claude Code applies above the user, project and local

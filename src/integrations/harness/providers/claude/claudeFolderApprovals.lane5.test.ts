@@ -184,7 +184,11 @@ describe("Claude Code always rule for file tools, held to the chat's folders", (
     ask("r1", "Bash", { command: "ls /" });
     expect((await answer("r1")).behavior).toBe("allow");
     expect(cards(events)).toHaveLength(0);
-    expect(disk).not.toHaveBeenCalled();
+    // The launch's git check (Mac test 10.1) is the only Rust call; the
+    // folder check never runs for this rule.
+    expect(
+      disk.mock.calls.filter(([cmd]) => cmd !== "git_repo_names_commands"),
+    ).toEqual([]);
     await finish(turn);
   });
 

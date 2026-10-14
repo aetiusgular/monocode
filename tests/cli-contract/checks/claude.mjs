@@ -9,6 +9,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { ClaudeSession, writeProjectFile, DUMMY_KEY } from "../lib/claudeDriver.mjs";
 import { makeTempDirs, isolatedEnv } from "../lib/codexDriver.mjs";
+import { checkGitAsk } from "./claudeGitAsk.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const STUB_MCP = path.join(HERE, "..", "lib", "stubMcp.mjs");
@@ -447,5 +448,6 @@ export const claudeChecks = [
   { id: "check-6", title: "Claude Code --resume with --fork-session and --resume-session-at", flag: "capabilities: claude fork \"atTurn\", rewind \"anyTurn\"", run: check6 },
   { id: "agents-md", title: "Claude Code AGENTS.md plugin and its option", flag: "#27", run: checkAgentsMd },
   { id: "tool-search", title: "Claude Code ENABLE_TOOL_SEARCH with an MCP server", flag: "#42 loading mode", run: checkToolSearch },
+  { id: "git-ask", title: "Claude Code asks before git with Bash(git:*) in --settings, also for its read-only git commands", flag: "Mac test 10.1: claudeGitAsk.ts", run: checkGitAsk },
   { id: "prompt-suggestions", title: "Claude Code --prompt-suggestions without --print", flag: "capabilities: claude promptSuggestions", run: checkPromptSuggestions },
 ];
