@@ -254,6 +254,7 @@ import {
   tabGroupProject,
 } from "../features/workspace/model/tabGroups";
 import { type WindowTransferPayload } from "./model/windowTransfer";
+import { bootSessionsToBind as bootSessionsToBind_s6 } from "./model/windowTransfer";
 import {
   confirmCloseTerminal,
   confirmCloseTerminals,
@@ -1784,7 +1785,9 @@ function Workspace({
   const enqueueHarnessEvent = harnessEvents.enqueue;
 
   useEffect(() => {
-    if (resumed?.sessions.length) bindResumedSessions(resumed.sessions);
+    // A moved chat is bound like a restored one, so it resumes (Mac 4.14).
+    const bootSessions_s6 = bootSessionsToBind_s6(windowTransfer, resumed);
+    if (bootSessions_s6.length) bindResumedSessions(bootSessions_s6);
     const stopBridge = startHarnessBridge();
     const reap = () => {
       if (isAppQuitting()) return;
@@ -1813,7 +1816,7 @@ function Workspace({
       stopBridge();
       harnessEvents.cancelScheduled();
     };
-  }, [resumed, readProjectReturnMemory, harnessEvents]);
+  }, [windowTransfer, resumed, readProjectReturnMemory, harnessEvents]);
 
   useEffect(() => {
     let cancelled = false;

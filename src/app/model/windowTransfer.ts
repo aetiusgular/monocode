@@ -1,4 +1,7 @@
-import { leafIds, type WorkspaceTab } from "../../features/workspace/model/layout";
+import {
+  leafIds,
+  type WorkspaceTab,
+} from "../../features/workspace/model/layout";
 import type { ProjectTerminalDock } from "../../features/projects/model/projectTerminal";
 import type { Session } from "../../features/sessions/model/session";
 
@@ -29,7 +32,9 @@ export function collectWindowTransfer(
     for (const id of leafIds(tab.layout)) sessionIds.add(id);
   }
 
-  const movingSessions = sessions.filter((session) => sessionIds.has(session.id));
+  const movingSessions = sessions.filter((session) =>
+    sessionIds.has(session.id),
+  );
   const dirtyInTabs = new Set<string>();
   for (const tab of movingTabs) {
     for (const pane of [...tab.editorPanes, ...(tab.terminalPanes ?? [])]) {
@@ -51,6 +56,21 @@ export function collectWindowTransfer(
     dirtyFileIds: [...dirtyInTabs],
     ...(projectTerminals.length > 0 ? { projectTerminals } : {}),
   };
+}
+
+/**
+ * The chats a new window binds to their provider conversations before its
+ * first turn (Mac 4.14). A window keeps which conversation each chat resumes
+ * in its own memory, so a moved chat arrives with none; without this its
+ * first prompt started a new Claude Code conversation (`--session-id`) or a
+ * new Codex thread instead of resuming its own. A moved chat is bound the way
+ * a chat restored after a restart is.
+ */
+export function bootSessionsToBind(
+  windowTransfer: Pick<WindowTransferPayload, "sessions"> | null | undefined,
+  resumed: { sessions: Session[] } | null | undefined,
+): Session[] {
+  return windowTransfer?.sessions ?? resumed?.sessions ?? [];
 }
 
 /** Whether a tab can move to a window of its own, and if not, why. */
