@@ -13098,6 +13098,7 @@ function Workspace({
           },
           stage: (json) => invoke("stage_window_transfer", { payload: json }),
           openWindow: () => invoke("open_new_window"),
+          unstage: () => invoke("clear_window_transfer"),
           closeTabs: (ids) => onCloseTabs(ids, stay, { confirmed: true }),
         });
       },

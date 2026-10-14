@@ -55,6 +55,19 @@ pub fn take_window_transfer(
     Ok(take_fresh(&mut slot, Instant::now()))
 }
 
+/// Drop a staged payload nobody took. The source window calls this when the
+/// new window fails to open, so a New Window opened later cannot take tabs
+/// that stayed where they were.
+#[tauri::command]
+pub fn clear_window_transfer(state: State<'_, WindowTransferState>) -> Result<(), String> {
+    clear(&mut *state.0.lock().map_err(|err| err.to_string())?);
+    Ok(())
+}
+
+fn clear(slot: &mut Option<(String, Instant)>) {
+    *slot = None;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,5 +99,16 @@ mod tests {
 
         let mut empty = None;
         assert_eq!(take_fresh(&mut empty, now), None);
+    }
+
+    #[test]
+    fn a_cleared_payload_is_never_taken() {
+        let now = Instant::now();
+        let mut slot = Some(("{}".to_string(), now));
+        clear(&mut slot);
+        assert_eq!(take_fresh(&mut slot, now), None);
+        let mut empty = None;
+        clear(&mut empty);
+        assert!(empty.is_none());
     }
 }

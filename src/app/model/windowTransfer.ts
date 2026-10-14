@@ -184,13 +184,20 @@ export type PopOutSteps = {
   /** Hand the payload to the next window that opens. */
   stage: (json: string) => Promise<void>;
   openWindow: () => Promise<void>;
+  /**
+   * Drop a staged payload nobody took. Without it a New Window opened in the
+   * next minute would take the tabs that stayed here, and two windows would
+   * drive the same provider conversations.
+   */
+  unstage?: () => Promise<void>;
   /** Take the tabs out of this window without asking again. */
   closeTabs: (tabIds: string[]) => void;
 };
 
 /**
  * Stop, then hand over, then open, then close here. A failure before the
- * window opens leaves the tabs where they were; their chats start again on
+ * window opens clears the handed-over payload and leaves the tabs where they
+ * were; their chats start again on
  * their next turn, bound to the same provider session.
  */
 export async function popOutTabs(steps: PopOutSteps): Promise<PopOutCheck> {
@@ -202,6 +209,8 @@ export async function popOutTabs(steps: PopOutSteps): Promise<PopOutCheck> {
     await steps.stage(JSON.stringify(payload));
     await steps.openWindow();
   } catch (err) {
+    // A failed stage may still have left a payload; clear it either way.
+    await steps.unstage?.().catch(() => undefined);
     return {
       ok: false,
       reason: `Could not open a new window: ${err instanceof Error ? err.message : String(err)}`,
