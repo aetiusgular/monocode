@@ -8,14 +8,25 @@ import { addProjectMemory, type MemoryAddResult } from "./projectMemory";
 import { projectName } from "../../../shared/lib/paths";
 
 /**
+ * The longest selection "Remember this" saves, in characters once spaces are
+ * folded. It leaves room in one memory entry for the local mark.
+ */
+export const REMEMBER_MAX = MEMORY_ENTRY_MAX - 20;
+
+/**
  * #36 "Remember this": the user saves a selection or a reply to the
  * project's memory. It is the user's own click, so it is saved at once, not
- * proposed. What a local session showed stays local only.
+ * proposed. What a local session showed stays local only. The text is saved
+ * whole or not at all: a selection longer than REMEMBER_MAX is refused with
+ * the limit named, never cut (Mac 2.8).
  */
 export function rememberableText(text: string): string {
   const flat = text.replace(/\s+/g, " ").trim();
-  if (flat.length <= MEMORY_ENTRY_MAX - 20) return flat;
-  return `${flat.slice(0, MEMORY_ENTRY_MAX - 21).trimEnd()}…`;
+  if (flat.length > REMEMBER_MAX)
+    throw new Error(
+      `This selection is ${flat.length.toLocaleString("en-US")} characters. A memory entry holds at most ${REMEMBER_MAX.toLocaleString("en-US")}, so nothing was saved.`,
+    );
+  return flat;
 }
 
 export async function rememberText(

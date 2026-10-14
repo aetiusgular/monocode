@@ -1,5 +1,8 @@
 export const SELECTABLE_AGENT_RESPONSE_ATTR = "data-selectable-agent-response";
 
+/** Marks the selection menu, so a press on it is not a new selection. */
+export const TRANSCRIPT_SELECTION_MENU_ATTR = "data-transcript-selection-menu";
+
 export type TranscriptSelection = {
   text: string;
   rect: DOMRect;

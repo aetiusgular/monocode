@@ -5,7 +5,10 @@ import {
 } from "../../../shared/ui/icons";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Popover } from "../../../shared/ui/Popover";
-import { type TranscriptSelection } from "../model/transcriptSelection";
+import {
+  TRANSCRIPT_SELECTION_MENU_ATTR,
+  type TranscriptSelection,
+} from "../model/transcriptSelection";
 
 type Props = {
   selection: TranscriptSelection | null;
@@ -52,13 +55,15 @@ export function TranscriptSelectionMenu({
       }}
       role="toolbar"
       aria-label="Selected text actions"
+      {...{ [TRANSCRIPT_SELECTION_MENU_ATTR]: "" }}
       className="p-1"
     >
       <div className="flex min-w-36 flex-col items-stretch gap-0.5">
         {onAddToChat ? (
           <SelectionAction
             label="Add to chat"
-            onSelect={() => onAddToChat(selection.text)}
+            text={selection.text}
+            onSelect={onAddToChat}
             onDismiss={onDismiss}
           >
             <MessageSquarePlus
@@ -71,7 +76,8 @@ export function TranscriptSelectionMenu({
         {onAddToNotes ? (
           <SelectionAction
             label="Add to notes"
-            onSelect={() => onAddToNotes(selection.text)}
+            text={selection.text}
+            onSelect={onAddToNotes}
             onDismiss={onDismiss}
           >
             <FilePlusCorner
@@ -84,7 +90,9 @@ export function TranscriptSelectionMenu({
         {onRemember ? (
           <SelectionAction
             label="Remember this"
-            onSelect={() => onRemember(selection.text)}
+            failure="Could not remember this."
+            text={selection.text}
+            onSelect={onRemember}
             onDismiss={onDismiss}
           >
             <StickyNote
@@ -99,30 +107,44 @@ export function TranscriptSelectionMenu({
   );
 }
 
+/**
+ * One menu action. It acts on the text the menu showed when it was pressed,
+ * never on a fresh read of the page's selection (Mac 2.8).
+ */
 function SelectionAction({
   label,
+  failure = "Could not save note.",
+  text,
   children,
   onSelect,
   onDismiss,
 }: {
   label: string;
+  failure?: string;
+  text: string;
   children: ReactNode;
-  onSelect: () => void | Promise<void>;
+  onSelect: (text: string) => void | Promise<void>;
   onDismiss: () => void;
 }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const pressed = useRef<string | null>(null);
   return (
     <>
       <button
         type="button"
         disabled={pending}
+        onPointerDown={() => {
+          pressed.current = text;
+        }}
         onMouseDown={(event) => event.preventDefault()}
         onClick={async () => {
+          const acted = pressed.current ?? text;
+          pressed.current = null;
           setPending(true);
           setError(null);
           try {
-            const result = onSelect();
+            const result = onSelect(acted);
             if (result) await result;
             window.getSelection()?.removeAllRanges();
             onDismiss();
@@ -142,7 +164,7 @@ function SelectionAction({
           role="alert"
           className="max-w-xs px-2.5 py-1 text-xs text-content/70"
         >
-          Could not save note. {error}
+          {failure} {error}
         </span>
       )}
     </>

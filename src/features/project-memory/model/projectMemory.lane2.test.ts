@@ -292,12 +292,13 @@ describe("#36: app actions in a regular session", () => {
 });
 
 describe("#36: Remember this", () => {
-  it("saves a selection at once, cut to one entry", async () => {
+  it("saves a selection at once, and refuses one too long for an entry", async () => {
     await rememberText(project, "  The API\nlives in server/  ", {
       harness: "codex",
     });
     expect(memory()).toContain("The API lives in server/");
-    expect(rememberableText("x".repeat(5000)).length).toBeLessThanOrEqual(1000);
+    // Mac 2.8: a long selection is refused whole, never cut.
+    expect(() => rememberableText("x".repeat(5000))).toThrow("at most 980");
     await expect(
       rememberText("~", "x", { harness: "codex" }),
     ).rejects.toThrow();
