@@ -76,6 +76,7 @@ fn guarded_command(root: &Path, args: &[&str]) -> Result<Command, String> {
         .arg("-C")
         .arg(root)
         .args(&args_guarded)
+        .envs(crate::git_guard::guard_envs(args).iter().copied())
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0");
     crate::git_guard::english(&mut command);

@@ -71,7 +71,19 @@ const NO_TRANSPORT: &str = "protocol.allow=never";
 /// `protocol.allow`, so a repository's `protocol.file.allow=always` beats
 /// `NO_TRANSPORT`. A command-line `-c` beats the repository for the same key,
 /// so each one is also set to `never` (security fix V1).
-const PROTOCOLS: &[&str] = &["file", "ext", "fd", "ssh", "git", "http", "https"];
+/// `ftp` and `ftps` are among them (security fix X1). A repository can allow
+/// any other name, which `parse_repo_drivers` reads and the guard refuses.
+const PROTOCOLS: &[&str] = &[
+    "file", "ext", "fd", "ssh", "git", "http", "https", "ftp", "ftps",
+];
+
+/// Environment for a guarded call that is not a network call. Git reads
+/// `GIT_ALLOW_PROTOCOL` before any `protocol.*` config, so one inherited from
+/// the user's environment beats every `-c`; the empty list allows no
+/// transport. `GIT_NO_LAZY_FETCH` stops a partial clone's lazy fetch where
+/// git knows it (2.45 and later). Security fix X1.
+const NO_TRANSPORT_ENVS: &[(&str, &str)] =
+    &[("GIT_ALLOW_PROTOCOL", ""), ("GIT_NO_LAZY_FETCH", "1")];
 
 /// Subcommands that can run a diff driver. They get `--no-ext-diff`.
 const DIFFS: &[&str] = &["diff", "log", "show"];
@@ -95,12 +107,13 @@ pub(crate) fn is_write(args: &[&str]) -> bool {
     subcommand(args).is_some_and(|sub| WRITES.contains(&sub))
 }
 
-/// Driver names a repository's own config defines, from
+/// Driver and protocol names a repository's own config defines, from
 /// `git config -z --show-scope --get-regexp` output.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct RepoDrivers {
     pub filters: Vec<String>,
     pub diffs: Vec<String>,
+    pub protocols: Vec<String>,
 }
 
 /// Parses `-z --show-scope` output: `scope\0key\nvalue\0` per entry. Keeps
@@ -120,15 +133,24 @@ pub(crate) fn parse_repo_drivers(raw: &[u8]) -> Result<RepoDrivers, String> {
             continue;
         }
         let key = entry.split('\n').next().unwrap_or("");
-        let (list, rest) = if let Some(rest) = key.strip_prefix("filter.") {
-            (&mut drivers.filters, rest)
+        // `filter.<name>.<variable>`; a name may hold dots, the variable not.
+        // `protocol.allow` has no name and is left to `NO_TRANSPORT`.
+        let (list, name) = if let Some(rest) = key.strip_prefix("filter.") {
+            (
+                &mut drivers.filters,
+                rest.rsplit_once('.').map(|(name, _)| name),
+            )
         } else if let Some(rest) = key.strip_prefix("diff.") {
-            (&mut drivers.diffs, rest)
+            (
+                &mut drivers.diffs,
+                rest.rsplit_once('.').map(|(name, _)| name),
+            )
+        } else if let Some(rest) = key.strip_prefix("protocol.") {
+            (&mut drivers.protocols, rest.strip_suffix(".allow"))
         } else {
             continue;
         };
-        // `filter.<name>.<variable>`; a name may hold dots, the variable not.
-        let Some((name, _variable)) = rest.rsplit_once('.') else {
+        let Some(name) = name else {
             continue;
         };
         if name.is_empty() {
@@ -203,7 +225,7 @@ fn repo_drivers(root: &Path, envs: &[(&str, &std::ffi::OsStr)]) -> Result<RepoDr
             "--includes",
             "--show-scope",
             "--get-regexp",
-            r"^(filter|diff)\.",
+            r"^(filter|diff|protocol)\.",
         ])
         .output()
         .map_err(|error| error.to_string())?;
@@ -444,6 +466,36 @@ pub(crate) fn guard_everything_pinned(
     guard_with(root, args, Mode::Everything, envs)
 }
 
+/// Whether a call in `mode` gets no transport: every call but a network one,
+/// and in `Mode::Auto` every call but a write the user clicked too.
+fn holds_transports(args: &[&str], mode: Mode) -> bool {
+    match subcommand(args) {
+        None => false,
+        Some(sub) if NETWORK.contains(&sub) => false,
+        Some(_) => !(mode == Mode::Auto && is_write(args)),
+    }
+}
+
+/// Environment to set on a command built from `guard` output for the same
+/// `args`. Empty for network calls and the writes `guard` leaves alone,
+/// which keep the user's environment.
+pub(crate) fn guard_envs(args: &[&str]) -> &'static [(&'static str, &'static str)] {
+    if holds_transports(args, Mode::Auto) {
+        NO_TRANSPORT_ENVS
+    } else {
+        &[]
+    }
+}
+
+/// `guard_envs` for a command built from `guard_everything_pinned` output.
+pub(crate) fn guard_everything_envs(args: &[&str]) -> &'static [(&'static str, &'static str)] {
+    if holds_transports(args, Mode::Everything) {
+        NO_TRANSPORT_ENVS
+    } else {
+        &[]
+    }
+}
+
 fn guard_with(
     root: &Path,
     args: &[&str],
@@ -455,7 +507,8 @@ fn guard_with(
     if subcommand(args).is_none() || (mode == Mode::Auto && is_write(args)) {
         return Ok((globals, rest));
     }
-    globals.extend(override_args(&repo_drivers(root, envs)?));
+    let drivers = repo_drivers(root, envs)?;
+    globals.extend(override_args(&drivers));
     globals.extend([
         "-c".to_string(),
         "log.showSignature=false".to_string(),
@@ -470,6 +523,13 @@ fn guard_with(
         globals.extend(["-c".to_string(), NO_TRANSPORT.to_string()]);
         for protocol in PROTOCOLS {
             globals.extend(["-c".to_string(), format!("protocol.{protocol}.allow=never")]);
+        }
+        // Security fix X1: a repository's `protocol.<name>.allow` for a name
+        // not listed above beats `protocol.allow=never` for that name.
+        for protocol in &drivers.protocols {
+            if !PROTOCOLS.contains(&protocol.as_str()) {
+                globals.extend(["-c".to_string(), format!("protocol.{protocol}.allow=never")]);
+            }
         }
     }
     if let Some(sub) = subcommand(args) {
@@ -1212,5 +1272,112 @@ mod tests {
             std::ffi::OsStr::new("LANGUAGE"),
             Some(std::ffi::OsStr::new(""))
         )));
+    }
+
+    /// A `git-remote-<name>` helper that touches `marker`, in a folder of its
+    /// own, and a PATH that finds it first. The PATH is set on each command
+    /// only, never on the test process.
+    fn fake_remote_helper(dir: &Path, name: &str, marker: &Path) -> std::ffi::OsString {
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        marker_script(&bin, &format!("git-remote-{name}"), marker, "exit 1");
+        let mut paths = vec![bin];
+        if let Some(path) = std::env::var_os("PATH") {
+            paths.extend(std::env::split_paths(&path));
+        }
+        std::env::join_paths(paths).unwrap()
+    }
+
+    #[test]
+    fn a_repository_protocol_allow_for_another_name_does_not_beat_the_guard() {
+        // Security fix X1 (a): `protocol.<name>.allow=always` for a name not
+        // in `PROTOCOLS` let a lazy fetch start `git-remote-<name>`.
+        let (_server, parent, clone) = partial_clone("x1a");
+        let marker = parent.0.join("helper-ran");
+        let path = fake_remote_helper(&parent.0, "mcx", &marker);
+        run(&clone, &["config", "remote.origin.url", "mcx::somewhere"]);
+        run(&clone, &["config", "protocol.mcx.allow", "always"]);
+        let (globals, rest) = guard(&clone, &["show", "HEAD:f.txt"]).unwrap();
+        let _ = Command::new("git")
+            .current_dir(&clone)
+            .args(&globals)
+            .args(&rest)
+            .envs(guard_envs(&["show"]).iter().copied())
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        assert!(!marker.exists(), "a guarded read ran git-remote-mcx");
+        // Control: the same read with only the fixed protocol list runs it.
+        let mut control = vec!["-c".to_string(), NO_TRANSPORT.to_string()];
+        for protocol in ["file", "ext", "fd", "ssh", "git", "http", "https"] {
+            control.extend(["-c".to_string(), format!("protocol.{protocol}.allow=never")]);
+        }
+        let _ = Command::new("git")
+            .current_dir(&clone)
+            .args(&control)
+            .args(["show", "HEAD:f.txt"])
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        assert!(marker.exists(), "the control did not run git-remote-mcx");
+    }
+
+    #[test]
+    fn ftp_and_ftps_are_refused_too() {
+        let repo = repo("ftp");
+        let (globals, _) = guard(&repo.0, &["show", "HEAD"]).unwrap();
+        for protocol in ["ftp", "ftps"] {
+            assert!(
+                globals.contains(&format!("protocol.{protocol}.allow=never")),
+                "{protocol}"
+            );
+        }
+    }
+
+    #[test]
+    fn repository_protocol_names_are_read_and_bad_ones_refused() {
+        let raw = b"local\0protocol.mcx.allow\nalways\0worktree\0protocol.a.b.allow\nuser\0global\0protocol.gl.allow\nalways\0local\0protocol.allow\nalways\0";
+        let drivers = parse_repo_drivers(raw).unwrap();
+        assert_eq!(drivers.protocols, ["mcx", "a.b"]);
+        assert!(parse_repo_drivers(b"local\0protocol.a=b.allow\nalways\0").is_err());
+        assert!(parse_repo_drivers(b"local\0protocol.a\x1bb.allow\nalways\0").is_err());
+    }
+
+    #[test]
+    fn an_inherited_git_allow_protocol_does_not_beat_the_guard() {
+        // Security fix X1 (b): `GIT_ALLOW_PROTOCOL` beats every `-c`.
+        let (_server, parent, clone) = partial_clone("x1b");
+        let marker = parent.0.join("ran");
+        let script = marker_script(&parent.0, "up.sh", &marker, "exec git-upload-pack \"$@\"");
+        run(
+            &clone,
+            &[
+                "config",
+                "remote.origin.uploadpack",
+                script.to_str().unwrap(),
+            ],
+        );
+        let (globals, rest) = guard(&clone, &["show", "HEAD:f.txt"]).unwrap();
+        let _ = Command::new("git")
+            .current_dir(&clone)
+            .env("GIT_ALLOW_PROTOCOL", "file")
+            .args(&globals)
+            .args(&rest)
+            .envs(guard_envs(&["show", "HEAD:f.txt"]).iter().copied())
+            .output()
+            .unwrap();
+        assert!(!marker.exists(), "a guarded read ran uploadpack");
+        // Control: the guard's arguments alone, with the inherited variable.
+        let _ = Command::new("git")
+            .current_dir(&clone)
+            .env("GIT_ALLOW_PROTOCOL", "file")
+            .args(&globals)
+            .args(&rest)
+            .output()
+            .unwrap();
+        assert!(marker.exists(), "the control did not run uploadpack");
+        // Network calls keep the user's environment.
+        assert!(guard_envs(&["fetch", "origin"]).is_empty());
+        assert!(guard_envs(&["--literal-pathspecs", "push"]).is_empty());
     }
 }
