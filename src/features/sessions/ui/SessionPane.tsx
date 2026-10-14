@@ -140,6 +140,7 @@ import {
 } from "../../session-import/model/pickUp";
 import type { HarnessSessionRow as HarnessSessionRow_l1 } from "../../session-import/model/types";
 // [lane-2] imports
+import { StaleInstructionsLine as StaleInstructionsLine_s6 } from "../../session-preamble/ui/StaleInstructionsLine";
 import { useSuggestedPrompts as useSuggestedPrompts_l2 } from "../../suggested-prompts/hooks/useSuggestedPrompts";
 // [lane-3] imports
 import { VerifyCard as VerifyCard_l3 } from "../../verify/ui/VerifyCard";
@@ -300,6 +301,8 @@ export type SessionPaneProps = {
   /** #45: harness session ids already bound to a chat, to that chat's id. */
   pickUpBound_l1?: (harness: Session["harness"]) => ReadonlyMap<string, string>;
   // [lane-2] props
+  /** Finding 2.2: a new chat in the same project, harness, model and account. */
+  onNewChatLike_s6?: (sessionId: string) => void;
   // [lane-3] props
   // [lane-4] props
   // [lane-5] props
@@ -415,6 +418,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onPickUpSession_l1,
   pickUpBound_l1,
   // [lane-2] destructure
+  onNewChatLike_s6,
   // [lane-3] destructure
   // [lane-4] destructure
   // [lane-5] destructure
@@ -1004,6 +1008,17 @@ const LocalSessionPane = memo(function LocalSessionPane({
       // [lane-2] composer-props
       suggestedPrompts={suggestions_l2.prompts}
       onDismissSuggestedPrompts={suggestions_l2.dismiss}
+      // Finding 2.2: one line above the input when this chat's instructions
+      // changed after it started. Changes apply to new chats only.
+      children={
+        <StaleInstructionsLine_s6
+          session={session}
+          project={session.cwd}
+          onNewChat={
+            onNewChatLike_s6 ? () => onNewChatLike_s6(session.id) : undefined
+          }
+        />
+      }
       // [lane-3] composer-props
       // [lane-4] composer-props
       sessionUsed_l4={sessionWasUsed_l4(session)}
@@ -1500,6 +1515,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
           onShowInChat={showInChat}
           // [lane-1] panel-props
           // [lane-2] panel-props
+          onNewChatLike_s6={
+            onNewChatLike_s6 ? () => onNewChatLike_s6(session.id) : undefined
+          }
           // [lane-3] panel-props
           // [lane-4] panel-props
           // [lane-5] panel-props

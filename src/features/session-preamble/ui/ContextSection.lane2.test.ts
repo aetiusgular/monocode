@@ -37,7 +37,6 @@ const report: PreambleReport = {
 function render(props: Partial<Parameters<typeof ContextSectionView>[0]> = {}) {
   const calls = {
     memoryOff: [] as boolean[],
-    resend: 0,
     accept: [] as string[],
     reject: [] as string[],
   };
@@ -47,9 +46,7 @@ function render(props: Partial<Parameters<typeof ContextSectionView>[0]> = {}) {
         report,
         memoryOff: false,
         proposals: [],
-        resent: false,
         onMemoryOff: (off) => calls.memoryOff.push(off),
-        onResend: () => calls.resend++,
         onAccept: (id) => calls.accept.push(id),
         onReject: (id) => calls.reject.push(id),
         ...props,
@@ -63,12 +60,13 @@ describe("F2: the Context section", () => {
   it("says how it went and what did not fit (corner case 1)", () => {
     render();
     const text = container.textContent ?? "";
-    expect(text).toContain("Sent ahead of the last message");
+    expect(text).toContain("Sent ahead of the message");
     expect(text).toContain("3,000 of 3,276 characters, about 750 tokens");
     expect(text).toContain("Project memory: 12 entries did not fit");
   });
 
-  it("switches memory off for the chat and asks to send again", () => {
+  // Session 6 third pass: "Send instructions again" is gone (finding 2.2).
+  it("switches memory off for the chat and offers no resend", () => {
     const calls = render();
     act(() =>
       (
@@ -76,12 +74,8 @@ describe("F2: the Context section", () => {
       ).click(),
     );
     expect(calls.memoryOff).toEqual([true]);
-    act(() =>
-      (
-        container.querySelector("[data-context-resend]") as HTMLButtonElement
-      ).click(),
-    );
-    expect(calls.resend).toBe(1);
+    expect(container.querySelector("[data-context-resend]")).toBeNull();
+    expect(container.textContent).not.toContain("Send instructions again");
   });
 
   it("shows memory waiting for a click, marked local", () => {

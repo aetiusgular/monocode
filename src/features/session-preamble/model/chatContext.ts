@@ -79,8 +79,16 @@ export type PreambleReport = Pick<
   BuiltPreamble,
   "chars" | "budget" | "included" | "omitted" | "overBudget"
 > & {
-  /** How it went: by message, natively at launch, or not at all (unchanged). */
-  channel: "message" | "native" | "unchanged" | "none";
+  /**
+   * How it went: the whole note by message, MonoCode's own parts by message
+   * ("app"), natively at launch, or not at all (unchanged).
+   */
+  channel: "message" | "app" | "native" | "unchanged" | "none";
+  /**
+   * Finding 2.2: your instructions or project notes changed after this
+   * chat's conversation started. They apply to new chats only.
+   */
+  stale?: boolean;
   at: number;
 };
 
@@ -100,6 +108,11 @@ export function reportPreamble(
   report: PreambleReport,
 ): void {
   reports.set(sessionId, report);
+  notify();
+}
+
+/** Re-render the Context section and the stale line after a receipt. */
+export function notifyChatContext(): void {
   notify();
 }
 

@@ -236,23 +236,24 @@ export function buildPreamble(
 }
 
 /**
- * Why the message channel carries the text this turn. "changed": the user
- * edited it after this conversation got an earlier version. "current": the
- * conversation has no version it can be sure of (a harness with no native
- * channel, a failed launch file, a compaction, a new provider session, or
- * "Send instructions again").
+ * What a message note carries. "current": instruction content on a harness
+ * with no native channel, on the first turn of a provider conversation or
+ * after a compaction MonoCode saw (also the first turn of a Claude Code chat
+ * whose launch file could not be written). "app": only MonoCode's own parts
+ * (app access, preview status) reaching a running chat. Finding 2.2 (13 Oct):
+ * changed instructions apply to new chats only, so no note says the user
+ * changed them.
  */
-export type MessageBlockKind = "changed" | "current";
+export type MessageBlockKind = "current" | "app";
 
 export const MESSAGE_NOTE_START =
   "[Note from MonoCode, the app I run this chat in. It adds this on my behalf.]";
 export const MESSAGE_NOTE_END = "[End of note.]";
 
 const MESSAGE_LEAD: Record<MessageBlockKind, string> = {
-  changed:
-    "I changed my instructions for this chat in MonoCode. What follows replaces what I gave you earlier in this chat. Where the two differ, follow this version.",
   current:
     "These are my current instructions for this chat, set in MonoCode. They replace any earlier version you were given.",
+  app: "This is MonoCode's note about app access and preview servers for this chat.",
 };
 
 /**
@@ -260,8 +261,8 @@ const MESSAGE_LEAD: Record<MessageBlockKind, string> = {
  * message by the user's app. Finding 2.2: a block in made-up tags that said
  * "the user did not type it" read as a prompt injection to Claude Sonnet 5,
  * which kept the earlier instructions. So this has no tags that look like
- * system or harness markup, says in the first person what changed, and is
- * fenced from the user's own text by a first and a last line.
+ * system or harness markup and is fenced from the user's own text by a
+ * first and a last line.
  * `text` is the body built in the "plain" style.
  */
 export function preambleBlock(

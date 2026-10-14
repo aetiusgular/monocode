@@ -21,6 +21,7 @@ import type { Block, Session } from "../../sessions/model/session";
 import {
   chatContextPrefs,
   forgetChatContext,
+  notifyChatContext,
   reportPreamble,
 } from "./chatContext";
 import {
@@ -30,12 +31,18 @@ import {
   preambleBlockOverhead,
   preambleBudget,
   preambleWindow,
+  type MessageBlockKind,
   type PreamblePart,
+  type PreamblePartId,
 } from "./preamble";
 import {
+  appReceiptKey,
+  conversationGiven,
+  forgetAppReceipt,
   forgetPreamble,
-  preambleChanged,
+  instructionsStale,
   preambleDue,
+  recordInstructions,
   recordPreamble,
 } from "./receipts";
 
@@ -49,10 +56,17 @@ import {
  *   Code keeps the first system prompt on `--resume` and Codex ignores new
  *   developer instructions on a loaded thread.
  * - A plain note in the user's voice ahead of the message (`preambleBlock`),
- *   for every other harness and for every change after a conversation has
- *   started. Finding 2.2: it uses no system-like tags. A receipt per provider session
- *   means the text goes once, and again only when it changes, the provider
- *   session changes, or a compaction is seen.
+ *   for a harness with no native channel: on the first turn of each provider
+ *   conversation and after a compaction MonoCode saw, never because the
+ *   text changed.
+ *
+ * Finding 2.2 (13 Oct, the user's decision): changed instructions apply to
+ * new chats only. Once a conversation has started, instruction content
+ * (your instructions, project notes, memory) is never sent into it again by
+ * message. The chat records a hash of the instructions and notes it started
+ * with, and shows a line when they changed since. MonoCode's own parts (app
+ * access, the preview status line) are not instructions: they still reach a
+ * running chat when new or changed, in a note that says what it is.
  *
  * Monos keep their own preamble; this is for regular sessions.
  */
@@ -83,8 +97,6 @@ export type PreparedPreamble = {
   commit(providerSessionId: string | undefined): void;
 };
 
-const NOTHING: PreparedPreamble = { messageBlock: "", commit: () => {} };
-
 /** Status rows that mean the provider's context was compacted. */
 const COMPACTED = /\bcompact(?:ed|ing|ion)\b/i;
 
@@ -102,16 +114,62 @@ const seenCompactions = new Map<string, number>();
 
 /**
  * A compaction MonoCode can see restarts the provider's context from a
- * summary, so the next turn sends the preamble again.
+ * summary. A native channel keeps the instructions (Claude Code's system
+ * prompt survives it, session 9 check 2), so only MonoCode's own parts go
+ * again. Without one, the note went in a message and is gone, so the whole
+ * note goes again. The first prompt after a restart only counts what is
+ * there (corner case 16).
  */
 function noteCompactions(
   sessionId: string,
   blocks: readonly Block[] | undefined,
+  nativeChannel: boolean,
 ) {
   const count = compactionCount(blocks);
   const seen = seenCompactions.get(sessionId);
   seenCompactions.set(sessionId, count);
-  if (seen !== undefined && count > seen) forgetPreamble(sessionId);
+  if (seen === undefined || count <= seen) return;
+  if (nativeChannel) forgetAppReceipt(sessionId);
+  else forgetPreamble(sessionId);
+}
+
+/** Instruction content: what changes only reach new chats. */
+const INSTRUCTION_IDS: ReadonlySet<PreamblePartId> = new Set([
+  "instructions",
+  "project-notes",
+  "memory",
+]);
+
+/**
+ * The hash a chat records at start and compares later: your instructions and
+ * the project's notes. Memory is left out, so a memory change alone does not
+ * raise the stale line.
+ */
+export function instructionsHash(parts: readonly PreamblePart[]): string {
+  return buildPreamble(
+    parts.filter(
+      (part) => part.id === "instructions" || part.id === "project-notes",
+    ),
+    Number.MAX_SAFE_INTEGER,
+  ).hash;
+}
+
+/** Fit `parts` into the budget as a plain note of `kind`. */
+function messageNote(
+  parts: readonly PreamblePart[],
+  budget: number,
+  kind: MessageBlockKind,
+) {
+  const plain = buildPreamble(
+    parts,
+    Math.max(0, budget - preambleBlockOverhead(kind)),
+    "plain",
+  );
+  return {
+    block: plain.text ? preambleBlock(plain.text, kind) : "",
+    included: plain.included,
+    omitted: plain.omitted,
+  };
 }
 
 async function safe<T>(load: () => Promise<T>, fallback: T): Promise<T> {
@@ -166,35 +224,34 @@ export async function prepareSessionPreamble(
   request: PreambleRequest,
 ): Promise<PreparedPreamble> {
   const { session } = request;
-  noteCompactions(session.id, session.blocks);
+  const channel = harnessCapabilities(session.harness).instructions;
+  const nativeChannel = channel === "system" || channel === "session";
+  noteCompactions(session.id, session.blocks, nativeChannel);
   const parts = await gatherPreambleParts(request);
+  const appParts = parts.filter((part) => !INSTRUCTION_IDS.has(part.id));
+  const start = instructionsHash(parts);
+  const app = buildPreamble(appParts, Number.MAX_SAFE_INTEGER).hash;
   const budget = preambleBudget(
     preambleWindow(session.harness, modelBudgetWindow(session.model)),
   );
   const built = buildPreamble(parts, budget);
+  const firstTurn = !session.providerSessionId;
+  const stale =
+    !firstTurn &&
+    instructionsStale(session.id, session.providerSessionId, start);
   const report = {
     chars: built.chars,
     budget: built.budget,
     included: built.included,
     omitted: built.omitted,
     overBudget: built.overBudget,
+    stale,
     at: Date.now(),
   };
-  if (!built.text) {
-    // Nothing to tell. A receipt for the empty text means text added later
-    // is sent.
-    reportPreamble(session.id, { ...report, channel: "none" });
-    return {
-      ...NOTHING,
-      commit: (provider) => recordPreamble(session.id, provider, built.hash),
-    };
-  }
 
-  const channel = harnessCapabilities(session.harness).instructions;
-  const firstTurn = !session.providerSessionId;
   let preambleFile: string | undefined;
   let developerInstructions: string | undefined;
-  if (channel === "system") {
+  if (built.text && channel === "system") {
     preambleFile = await safe(
       () =>
         invoke<string>("session_preamble_write", {
@@ -203,61 +260,89 @@ export async function prepareSessionPreamble(
         }),
       undefined,
     );
-  } else if (channel === "session") {
+  } else if (built.text && channel === "session") {
     developerInstructions = nativePreambleText(built.text);
   }
   const native = !!(preambleFile || developerInstructions);
-  // A new conversation gets it natively when it can. Anything after that,
-  // or a harness with no native channel, gets it in the message when due.
-  const byMessage = firstTurn
-    ? !native
-    : preambleDue(session.id, session.providerSessionId, built.hash);
-  // The message channel prints the parts as plain text in a note, fitted to
-  // the budget with the note's own lines counted. The receipt keeps the hash
-  // of the full text, so a change is seen the same way on every channel.
+  // The whole text goes when this provider conversation starts: natively
+  // when it can, else as the note. A harness with no native channel also
+  // sends the note to a conversation that has not had it (a new one, or one
+  // compacted), never because the text changed. A Claude Code chat whose
+  // launch file failed gets the note on its first turn only.
+  const startsNow = firstTurn
+    ? true
+    : !nativeChannel &&
+      !conversationGiven(session.id, session.providerSessionId);
+  const fullByMessage = startsNow && !native && !!built.text;
+  // MonoCode's own parts reach a running chat when new or changed.
+  const appByMessage =
+    !startsNow &&
+    appParts.length > 0 &&
+    preambleDue(appReceiptKey(session.id), session.providerSessionId, app);
+
   let messageBlock = "";
-  let sent = report;
-  if (byMessage) {
-    const kind = preambleChanged(
-      session.id,
-      session.providerSessionId,
-      built.hash,
-    )
-      ? "changed"
-      : "current";
-    const plain = buildPreamble(
-      parts,
-      Math.max(0, budget - preambleBlockOverhead(kind)),
-      "plain",
-    );
-    messageBlock = plain.text ? preambleBlock(plain.text, kind) : "";
+  let sent: typeof report = report;
+  if (fullByMessage || appByMessage) {
+    const note = fullByMessage
+      ? messageNote(parts, budget, "current")
+      : messageNote(appParts, budget, "app");
+    messageBlock = note.block;
     sent = {
       ...report,
       chars: messageBlock.length,
-      included: plain.included,
-      omitted: plain.omitted,
+      included: note.included,
+      omitted: note.omitted,
       overBudget: messageBlock.length > budget,
     };
   }
   reportPreamble(session.id, {
     ...sent,
-    channel: byMessage
-      ? "message"
-      : firstTurn && native
-        ? "native"
-        : "unchanged",
+    channel: !built.text
+      ? "none"
+      : fullByMessage
+        ? "message"
+        : appByMessage
+          ? "app"
+          : startsNow && native
+            ? "native"
+            : "unchanged",
   });
   return {
     messageBlock,
     ...(preambleFile ? { preambleFile } : {}),
     ...(developerInstructions ? { developerInstructions } : {}),
-    commit: (provider) => recordPreamble(session.id, provider, built.hash),
+    commit: (provider) => {
+      recordInstructions(session.id, provider, start, {
+        startedNow: startsNow,
+        native: nativeChannel,
+      });
+      recordPreamble(appReceiptKey(session.id), provider, app);
+      notifyChatContext();
+    },
   };
 }
 
-/** "Send instructions again": the next turn carries the preamble by message. */
-export function resendPreamble(sessionId: string): void {
-  forgetPreamble(sessionId);
+/**
+ * Whether the open chat's instructions or project notes changed after its
+ * provider conversation started (finding 2.2). Reads the current text, so a
+ * save in Settings shows at once, before the next turn.
+ */
+export async function instructionsStaleNow(
+  session: Pick<Session, "id" | "providerSessionId">,
+  project: string | undefined,
+): Promise<boolean> {
+  if (!session.providerSessionId) return false;
+  const [global, notes] = await Promise.all([
+    safe(() => readGlobalContext("instructions.md"), undefined),
+    project
+      ? safe(() => readProjectContext(project, "notes.md"), undefined)
+      : undefined,
+  ]);
+  return instructionsStale(
+    session.id,
+    session.providerSessionId,
+    instructionsHash(instructionParts(global?.text, notes?.text)),
+  );
 }
 
 /** A deleted chat leaves no receipt, switch or launch file behind. */

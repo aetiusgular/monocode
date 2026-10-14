@@ -1,9 +1,15 @@
 /**
- * F2 receipts: what each provider session has already been given. The text
- * goes once, and again only when it changes or the provider session changes:
- * a new conversation, a harness or model switch that starts one, a compaction
- * MonoCode saw, or "Send instructions again". The Mono mechanism
- * (`planAgentContext`, `recordAgentContext`) works the same way.
+ * F2 receipts: what each provider session has already been given.
+ *
+ * Two receipts per chat. The chat's own id holds the instruction content
+ * (global instructions, project notes, memory) and `start`, the hash of the
+ * instructions and project notes the provider conversation was given when it
+ * started. Finding 2.2 (13 Oct): changed instructions apply to new chats
+ * only, so `start` stays for the life of that conversation and the open chat
+ * shows a line when the current text differs. `appReceiptKey` holds MonoCode's
+ * own parts (app access, preview status), which still reach a running chat
+ * when they are new or change. The Mono mechanism (`planAgentContext`,
+ * `recordAgentContext`) is separate.
  */
 
 const KEY = "monocode.preambleReceipts";
@@ -15,6 +21,12 @@ type Receipt = {
   provider?: string;
   hash: string;
   at: number;
+  /**
+   * Instruction receipts only: the hash of the instructions and project
+   * notes the conversation started with. Absent when MonoCode does not know
+   * (a receipt from before 13 Oct, or storage that was cleared).
+   */
+  start?: string;
 };
 
 function storage(): Storage | undefined {
@@ -34,12 +46,13 @@ function load(): Record<string, Receipt> {
     const out: Record<string, Receipt> = {};
     for (const [id, value] of Object.entries(parsed)) {
       if (!value || typeof value !== "object") continue;
-      const { provider, hash, at } = value as Record<string, unknown>;
+      const { provider, hash, at, start } = value as Record<string, unknown>;
       if (typeof hash !== "string" || !hash) continue;
       out[id] = {
         ...(typeof provider === "string" && provider ? { provider } : {}),
         hash,
         at: typeof at === "number" ? at : 0,
+        ...(typeof start === "string" && start ? { start } : {}),
       };
     }
     return out;
@@ -100,15 +113,35 @@ export function recordPreamble(
   });
 }
 
+/** The receipt for MonoCode's own parts of a chat's preamble. */
+export function appReceiptKey(sessionId: string): string {
+  return `${sessionId}#app`;
+}
+
 /**
- * Forget what was sent, so the next turn sends it again: after a compaction,
- * or when the user asks for "Send instructions again". Also when the chat is
- * deleted.
+ * Forget what was sent, so the next turn sends it again: after a compaction
+ * on a harness with no native channel, or when the chat is deleted. Both
+ * receipts go, and with them the start hash.
  */
 export function forgetPreamble(sessionId: string): void {
   const receipts = load();
-  if (!(sessionId in receipts)) return;
+  const app = appReceiptKey(sessionId);
+  if (!(sessionId in receipts) && !(app in receipts)) return;
   delete receipts[sessionId];
+  delete receipts[app];
+  store(receipts);
+}
+
+/**
+ * After a compaction on a harness with a native channel: the instructions
+ * stay in the system prompt, but app access went in a message and may be
+ * gone, so only MonoCode's own parts go again.
+ */
+export function forgetAppReceipt(sessionId: string): void {
+  const receipts = load();
+  const app = appReceiptKey(sessionId);
+  if (!(app in receipts)) return;
+  delete receipts[app];
   store(receipts);
 }
 
@@ -117,19 +150,80 @@ export function hasPreambleReceipt(sessionId: string): boolean {
 }
 
 /**
- * Whether this provider session was already given another version of the
- * text: the user changed it mid-conversation. False when there is no
- * receipt, the receipt belongs to another provider session, or the text is
- * the same.
+ * Whether this provider conversation already got the chat's instruction
+ * content. A receipt made before the first reply belongs to whatever
+ * conversation that reply started.
  */
-export function preambleChanged(
+export function conversationGiven(
   sessionId: string,
   providerSessionId: string | undefined,
-  hash: string,
 ): boolean {
   const receipt = load()[sessionId];
-  if (!receipt || !providerSessionId) return false;
-  const sameSession =
-    receipt.provider == null || receipt.provider === providerSessionId;
-  return sameSession && receipt.hash !== hash;
+  return (
+    !!receipt &&
+    !!providerSessionId &&
+    (receipt.provider == null || receipt.provider === providerSessionId)
+  );
+}
+
+/**
+ * Record a turn the provider accepted, for the instruction content.
+ * `startedNow`: this turn gave the conversation its instructions (a new
+ * conversation, or a harness with no native channel after a compaction).
+ * A reply from another provider conversation than the receipt names also
+ * means a new one started: with a native channel it got the current text at
+ * launch; without one it got nothing, so the receipt goes and the next turn
+ * sends the note. Otherwise the start hash is kept as it was.
+ */
+export function recordInstructions(
+  sessionId: string,
+  providerSessionId: string | undefined,
+  start: string,
+  options: { startedNow: boolean; native: boolean },
+  now = Date.now(),
+): void {
+  const receipts = load();
+  const prior = receipts[sessionId];
+  const switched =
+    !!prior?.provider &&
+    !!providerSessionId &&
+    prior.provider !== providerSessionId;
+  if (switched && !options.native && !options.startedNow) {
+    delete receipts[sessionId];
+    store(receipts);
+    return;
+  }
+  const kept = options.startedNow || switched ? start : prior?.start;
+  receipts[sessionId] = {
+    ...(providerSessionId
+      ? { provider: providerSessionId }
+      : prior?.provider && !options.startedNow
+        ? { provider: prior.provider }
+        : {}),
+    hash: kept ?? prior?.hash ?? start,
+    at: now,
+    ...(kept ? { start: kept } : {}),
+  };
+  store(receipts);
+}
+
+/**
+ * Whether the instructions or project notes changed after this chat's
+ * provider conversation started. False when MonoCode does not know what it
+ * started with, or the receipt belongs to another conversation.
+ */
+export function instructionsStale(
+  sessionId: string,
+  providerSessionId: string | undefined,
+  current: string,
+): boolean {
+  const receipt = load()[sessionId];
+  if (!receipt?.start) return false;
+  if (
+    providerSessionId &&
+    receipt.provider &&
+    receipt.provider !== providerSessionId
+  )
+    return false;
+  return receipt.start !== current;
 }

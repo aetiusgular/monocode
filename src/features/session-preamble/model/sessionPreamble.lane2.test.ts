@@ -25,7 +25,6 @@ import { setChatMemoryOff, preambleReport } from "./chatContext";
 import {
   compactionCount,
   prepareSessionPreamble,
-  resendPreamble,
   type PreambleSession,
 } from "./sessionPreamble";
 
@@ -87,7 +86,9 @@ describe("F2: channel by capability", () => {
     expect(preambleReport("s1")?.channel).toBe("native");
   });
 
-  it("Codex: later turns send nothing until the text changes", async () => {
+  // Session 6 third pass (finding 2.2, 13 Oct): changed instructions apply
+  // to new chats only, so a change is not sent into a running thread.
+  it("Codex: later turns send nothing, also after the text changes", async () => {
     const first = await prepareSessionPreamble({
       session: session(),
       project,
@@ -107,9 +108,9 @@ describe("F2: channel by capability", () => {
       project,
       commandFirst: false,
     });
-    // A loaded thread ignores new developer instructions, so it goes by message.
-    expect(third.messageBlock).toContain("Answer in full paragraphs.");
-    expect(preambleReport("s1")?.channel).toBe("message");
+    expect(third.messageBlock).toBe("");
+    expect(preambleReport("s1")?.channel).toBe("unchanged");
+    expect(preambleReport("s1")?.stale).toBe(true);
   });
 
   it("Claude Code: a new conversation gets the launch file", async () => {
@@ -229,26 +230,36 @@ describe("F2: what goes in", () => {
 });
 
 describe("F2: sending again", () => {
-  it("after Send instructions again", async () => {
+  // Session 6 third pass: "Send instructions again" is gone. A new provider
+  // conversation gets the current text natively instead.
+  it("a new provider conversation gets the current text natively", async () => {
     const first = await prepareSessionPreamble({
-      session: session({ providerSessionId: "t" }),
+      session: session(),
       project,
       commandFirst: false,
     });
     first.commit("t");
-    resendPreamble("s1");
-    const again = await prepareSessionPreamble({
-      session: session({ providerSessionId: "t" }),
+    files.set("global::instructions.md", "Answer in full paragraphs.");
+    const fresh = await prepareSessionPreamble({
+      session: session({ providerSessionId: undefined }),
       project,
       commandFirst: false,
     });
-    expect(again.messageBlock).toContain("short declaratives");
+    expect(fresh.messageBlock).toBe("");
+    expect(fresh.developerInstructions).toContain("Answer in full paragraphs.");
   });
 
-  it("after a compaction MonoCode saw", async () => {
+  // Session 6 third pass: a native channel keeps the instructions through a
+  // compaction, so only a harness with no native channel sends them again.
+  it("after a compaction MonoCode saw, on a harness with no native channel", async () => {
     const before: Block[] = [{ id: "u", role: "user", text: "hi" }];
     const first = await prepareSessionPreamble({
-      session: session({ providerSessionId: "t", blocks: before }),
+      session: session({
+        harness: "cursor",
+        model: "cursor:auto",
+        providerSessionId: "t",
+        blocks: before,
+      }),
       project,
       commandFirst: false,
     });
@@ -259,7 +270,12 @@ describe("F2: sending again", () => {
     ];
     expect(compactionCount(after)).toBe(1);
     const again = await prepareSessionPreamble({
-      session: session({ providerSessionId: "t", blocks: after }),
+      session: session({
+        harness: "cursor",
+        model: "cursor:auto",
+        providerSessionId: "t",
+        blocks: after,
+      }),
       project,
       commandFirst: false,
     });

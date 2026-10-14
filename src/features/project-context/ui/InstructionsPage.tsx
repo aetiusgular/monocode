@@ -18,6 +18,10 @@ import { ProjectChoice, useProjectChoice } from "./ProjectChoice";
 
 const NOTE = "text-[11px] leading-4 text-content/45";
 
+/** Finding 2.2: changes reach new chats only. */
+export const INSTRUCTIONS_APPLY_TEXT =
+  "A change applies to new chats. Open chats keep what they started with.";
+
 /**
  * Files a harness reads by itself, shown read only so the page lists
  * everything an agent is told. The default homes only: a named Codex
@@ -113,6 +117,9 @@ export function InstructionsPage({
         {preambleBudget(200_000).toLocaleString("en-US")} for a large one.
         Memory is cut first, your instructions last. Each chat&apos;s Context
         section shows what did not fit.
+      </p>
+      <p data-instructions-new-chats className={NOTE}>
+        {INSTRUCTIONS_APPLY_TEXT}
       </p>
       <ContextTextCard
         id="instructions-global"

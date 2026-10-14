@@ -12958,6 +12958,36 @@ function Workspace({
   // [lane-2] app-late
   const launchAutomationRef_l2 = useRef(launchAutomation);
   launchAutomationRef_l2.current = launchAutomation;
+  // Finding 2.2: changed instructions apply to new chats only. The stale
+  // line's "New chat with these" opens one in the same project with the same
+  // harness, model, settings and account, the way "New chat" does.
+  const onNewChatLike_s6 = useCallback(
+    (sessionId: string) => {
+      const source = sessionsRef.current.find(
+        (session) => session.id === sessionId,
+      );
+      if (!source) return;
+      const session = {
+        ...newWorkspaceSession(source.cwd, source.runtimeMode),
+        ...newSession(
+          source.harness,
+          source.cwd,
+          source.model,
+          source.runtimeMode,
+          source.modelSettings,
+        ),
+        ...(source.providerAccountId
+          ? { providerAccountId: source.providerAccountId }
+          : {}),
+      };
+      const tab = newTab(session.id);
+      setSessions((prev) => [...prev, session]);
+      appendTab(tab, source.cwd);
+      setActiveTabId(tab.id);
+      setComposerFocused(true);
+    },
+    [appendTab],
+  );
   // [lane-3] app-late
   // #38a: verify after turns that changed files while a preview runs, and
   // stop a deleted chat's preview.
@@ -13136,6 +13166,7 @@ function Workspace({
     onPickUpSession_l1,
     pickUpBound_l1,
     // [lane-2] pane-props
+    onNewChatLike_s6,
     // [lane-3] pane-props
     // [lane-4] pane-props
     // [lane-5] pane-props

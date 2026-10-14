@@ -8,7 +8,11 @@ import {
   type PreambleReport,
 } from "../model/chatContext";
 import { CHARS_PER_TOKEN } from "../model/preamble";
-import { resendPreamble } from "../model/sessionPreamble";
+import { projectName } from "../../../shared/lib/paths";
+import {
+  StaleInstructionsView,
+  useInstructionsStale,
+} from "./StaleInstructionsLine";
 import {
   acceptProposal,
   loadProposals,
@@ -26,7 +30,8 @@ import {
 } from "../../project-context/model/projectContext";
 
 const CHANNEL_TEXT: Record<PreambleReport["channel"], string> = {
-  message: "Sent ahead of the last message",
+  message: "Sent ahead of the message",
+  app: "Given at the start. App access sent ahead of the message",
   native: "Given at launch",
   unchanged: "Already with the agent",
   none: "Nothing to send",
@@ -42,6 +47,14 @@ export function preambleSummary(report: PreambleReport | undefined): string {
     : `${CHANNEL_TEXT[report.channel]}. ${size}.`;
 }
 
+/**
+ * Finding 2.2: memory reaches new chats, like changed instructions. An open
+ * chat keeps what it started with.
+ */
+export function acceptedNote(project: string): string {
+  return `Remembered. New chats in ${projectName(project)} get it.`;
+}
+
 export function omittedLines(report: PreambleReport | undefined): string[] {
   return (report?.omitted ?? []).map((entry) =>
     entry.lines
@@ -54,9 +67,14 @@ type ViewProps = {
   report: PreambleReport | undefined;
   memoryOff: boolean;
   proposals: readonly MemoryProposal[];
-  resent: boolean;
+  /**
+   * Finding 2.2: your instructions or project notes changed after this chat
+   * started. They apply to new chats only.
+   */
+  stale?: boolean;
+  /** Opens a new chat like this one. Absent: no button. */
+  onNewChat?: () => void;
   onMemoryOff: (off: boolean) => void;
-  onResend: () => void;
   onAccept: (id: string) => void;
   onReject: (id: string) => void;
   /** Absent when the chat cannot suggest (no session, memory off). */
@@ -74,9 +92,9 @@ export function ContextSectionView({
   report,
   memoryOff,
   proposals,
-  resent,
+  stale = false,
+  onNewChat,
   onMemoryOff,
-  onResend,
   onAccept,
   onReject,
   onSuggest,
@@ -93,6 +111,7 @@ export function ContextSectionView({
         <p data-context-summary className="text-content/70">
           {preambleSummary(report)}
         </p>
+        {stale ? <StaleInstructionsView onNewChat={onNewChat} /> : null}
         {report?.overBudget ? (
           <p data-context-over className="text-amber-600 dark:text-amber-400">
             App access alone is over this model's budget.
@@ -114,14 +133,6 @@ export function ContextSectionView({
           />
           Use project memory in this chat
         </label>
-        <button
-          type="button"
-          data-context-resend
-          className="self-start rounded-md px-2 py-1 text-content/75 hover:bg-content/8 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
-          onClick={onResend}
-        >
-          {resent ? "Goes with the next message" : "Send instructions again"}
-        </button>
         {onSuggest && !memoryOff ? (
           <button
             type="button"
@@ -191,18 +202,20 @@ export function ContextSection({
   sessionId,
   project,
   session,
+  onNewChat,
 }: {
   sessionId: string;
   project: string | undefined;
-  /** The chat itself, for Suggest memories. */
-  session?: SuggestSession;
+  /** The chat itself, for Suggest memories and the stale line. */
+  session?: SuggestSession & { providerSessionId?: string };
+  /** Finding 2.2: opens a new chat in this project with this harness. */
+  onNewChat?: () => void;
 }) {
   const [suggesting, setSuggesting] = useState(false);
   const [suggestNote, setSuggestNote] = useState<string>();
   useChatContextVersion();
   const [proposals, setProposals] = useState<MemoryProposal[]>([]);
   const [hasContext, setHasContext] = useState(false);
-  const [resent, setResent] = useState(false);
   const refresh = useCallback(() => {
     void (async () => {
       const read = async (load: () => Promise<{ text: string | null }>) => {
@@ -234,26 +247,37 @@ export function ContextSection({
     return subscribeProjectContext(refresh);
   }, [refresh]);
   useEffect(() => {
-    setResent(false);
     setSuggestNote(undefined);
   }, [sessionId]);
+  const stale = useInstructionsStale(
+    session?.providerSessionId
+      ? { id: sessionId, providerSessionId: session.providerSessionId }
+      : undefined,
+    project,
+  );
   const report = preambleReport(sessionId);
   const memoryOff = chatContextPrefs(sessionId).memoryOff === true;
-  if (!hasContext && !report?.chars && !proposals.length && !memoryOff)
+  if (
+    !hasContext &&
+    !report?.chars &&
+    !proposals.length &&
+    !memoryOff &&
+    !stale
+  )
     return null;
   return (
     <ContextSectionView
       report={report}
       memoryOff={memoryOff}
       proposals={proposals}
-      resent={resent}
+      stale={stale}
+      onNewChat={onNewChat}
       onMemoryOff={(off) => setChatMemoryOff(sessionId, off)}
-      onResend={() => {
-        resendPreamble(sessionId);
-        setResent(true);
-      }}
       onAccept={(id) => {
-        if (project) void acceptProposal(project, id).finally(refresh);
+        if (!project) return;
+        void acceptProposal(project, id)
+          .then(() => setSuggestNote(acceptedNote(project)))
+          .finally(refresh);
       }}
       onReject={(id) => {
         if (project) void rejectProposal(project, id).finally(refresh);

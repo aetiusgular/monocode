@@ -60,6 +60,7 @@ type PanelSession = Pick<
   | "busy"
   | "backgroundItems"
   // [lane-2] panel-session
+  | "providerSessionId"
   | "id"
   | "providerAccountId"
   | "modelSettings"
@@ -79,6 +80,8 @@ type PanelActions = {
   onShowInChat: (blockId: string) => void;
   // [lane-1] panel-actions
   // [lane-2] panel-actions
+  /** Finding 2.2: a new chat like this one, for the Context section. */
+  onNewChatLike_s6?: () => void;
   // [lane-3] panel-actions
   // [lane-4] panel-actions
   // [lane-5] panel-actions
@@ -97,6 +100,7 @@ export function SessionPanel({
   onShowInChat,
   // [lane-1] wrapper-destructure
   // [lane-2] wrapper-destructure
+  onNewChatLike_s6,
   // [lane-3] wrapper-destructure
   // [lane-4] wrapper-destructure
   // [lane-5] wrapper-destructure
@@ -122,6 +126,7 @@ export function SessionPanel({
       onShowInChat={onShowInChat}
       // [lane-1] view-props
       // [lane-2] view-props
+      onNewChatLike_s6={onNewChatLike_s6}
       // [lane-3] view-props
       // [lane-4] view-props
       // [lane-5] view-props
@@ -148,6 +153,7 @@ export function SessionPanelView({
   onShowInChat,
   // [lane-1] view-destructure
   // [lane-2] view-destructure
+  onNewChatLike_s6,
   // [lane-3] view-destructure
   // [lane-4] view-destructure
   // [lane-5] view-destructure
@@ -321,6 +327,7 @@ export function SessionPanelView({
             sessionId={session.id}
             project={session.cwd}
             session={session}
+            onNewChat={onNewChatLike_s6}
           />
           {/* [lane-3] sections */}
           <PreviewServerSection_l3
