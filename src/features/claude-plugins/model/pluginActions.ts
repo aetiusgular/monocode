@@ -17,6 +17,7 @@ import {
   type PluginCall,
 } from "./pluginManage";
 import { refreshPlugins } from "./plugins";
+import { withFallbackMessage } from "./pluginStatus";
 import { runClaudePlugin } from "./runClaudePlugin";
 
 function message(err: unknown): string {
@@ -59,7 +60,9 @@ export function installPlugin(
   accountId: string | undefined,
   acceptHash?: string,
 ): Promise<ManageResult> {
-  return change(pluginInstallCall(id, scope, cwd, acceptHash), accountId);
+  return change(pluginInstallCall(id, scope, cwd, acceptHash), accountId).then(
+    (result) => withFallbackMessage(result, `Installed ${id}.`),
+  );
 }
 
 export function updatePlugin(
@@ -67,7 +70,9 @@ export function updatePlugin(
   accountId: string | undefined,
   acceptHash?: string,
 ): Promise<ManageResult> {
-  return change(pluginUpdateCall(plugin, acceptHash), accountId);
+  return change(pluginUpdateCall(plugin, acceptHash), accountId).then(
+    (result) => withFallbackMessage(result, `Updated ${plugin.name}.`),
+  );
 }
 
 export function uninstallPlugin(
@@ -75,7 +80,9 @@ export function uninstallPlugin(
   deleteData: boolean,
   accountId: string | undefined,
 ): Promise<ManageResult> {
-  return change(pluginUninstallCall(plugin, deleteData), accountId);
+  return change(pluginUninstallCall(plugin, deleteData), accountId).then(
+    (result) => withFallbackMessage(result, `Uninstalled ${plugin.name}.`),
+  );
 }
 
 export async function listMarketplaces(
@@ -111,19 +118,25 @@ export function addMarketplace(
   source: string,
   accountId: string | undefined,
 ): Promise<ManageResult> {
-  return change(asCall(marketplaceAddArgs(source)), accountId);
+  return change(asCall(marketplaceAddArgs(source)), accountId).then((result) =>
+    withFallbackMessage(result, `Added marketplace ${source}.`),
+  );
 }
 
 export function updateMarketplace(
   name: string,
   accountId: string | undefined,
 ): Promise<ManageResult> {
-  return change(asCall(marketplaceUpdateArgs(name)), accountId);
+  return change(asCall(marketplaceUpdateArgs(name)), accountId).then((result) =>
+    withFallbackMessage(result, `Updated marketplace ${name}.`),
+  );
 }
 
 export function removeMarketplace(
   name: string,
   accountId: string | undefined,
 ): Promise<ManageResult> {
-  return change(asCall(marketplaceRemoveArgs(name)), accountId);
+  return change(asCall(marketplaceRemoveArgs(name)), accountId).then((result) =>
+    withFallbackMessage(result, `Removed marketplace ${name}.`),
+  );
 }

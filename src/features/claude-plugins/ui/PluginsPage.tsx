@@ -21,10 +21,12 @@ import {
   type PluginContents,
 } from "../model/plugins";
 import {
+  InstalledStatusLine,
   InstallPluginForm,
   MarketplacesSection,
   PluginRowActions,
 } from "./PluginManager";
+import { clearPluginStatus } from "../model/pluginStatus";
 
 const NOTE = "text-[11px] leading-4 text-content/45";
 
@@ -173,6 +175,11 @@ export function PluginsPage({ cwd }: { cwd: string }) {
     [state.plugins],
   );
   const hasSynced = plugins.some((plugin) => plugin.scope === "synced");
+  // A result belongs to the account and the visit it came from (Mac 4.12).
+  useEffect(() => {
+    clearPluginStatus();
+    return () => clearPluginStatus();
+  }, [accountId]);
   return (
     <div className="flex flex-col gap-3" data-plugins-page>
       <div className="flex flex-wrap items-center gap-2">
@@ -241,6 +248,7 @@ export function PluginsPage({ cwd }: { cwd: string }) {
           })}
         </ul>
       )}
+      <InstalledStatusLine />
       <InstallPluginForm cwd={cwd || undefined} accountId={accountId} />
       <MarketplacesSection accountId={accountId} />
       {hasSynced ? (

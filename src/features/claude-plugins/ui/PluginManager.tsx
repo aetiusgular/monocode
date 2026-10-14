@@ -20,6 +20,11 @@ import {
   type Marketplace,
   type ShownCommand,
 } from "../model/pluginManage";
+import {
+  clearPluginStatus,
+  reportPluginStatus,
+  usePluginStatus,
+} from "../model/pluginStatus";
 
 const NOTE = "text-[11px] leading-4 text-content/45";
 const BUTTON =
@@ -29,7 +34,7 @@ const DANGER =
 const FIELD =
   "h-7 min-w-0 rounded-md border border-content/10 bg-transparent px-2 text-[12px] text-content";
 
-function ResultLine({ result }: { result: ManageResult | null }) {
+export function ResultLine({ result }: { result: ManageResult | null }) {
   if (!result || result.ok === false) {
     return result ? (
       <p role="alert" className="text-[11px] leading-4 text-red-400">
@@ -117,7 +122,6 @@ export function PluginRowActions({
   accountId: string | undefined;
 }) {
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<ManageResult | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [deleteData, setDeleteData] = useState(false);
   const [shown, setShown] = useState<ShownCommand | null>(null);
@@ -127,7 +131,8 @@ export function PluginRowActions({
     setBusy(true);
     const next = await task();
     setBusy(false);
-    setResult(next);
+    // The line shows under the installed list, which outlives this row.
+    reportPluginStatus("installed", next);
     setShown(next.ok === false && next.shownCommand ? next.shownCommand : null);
     return next;
   };
@@ -199,17 +204,25 @@ export function PluginRowActions({
           busy={busy}
           onCancel={() => {
             setShown(null);
-            setResult(null);
+            clearPluginStatus("installed");
           }}
           onAccept={() =>
             void run(() => updatePlugin(plugin, accountId, shown.sha256))
           }
         />
-      ) : (
-        <ResultLine result={result} />
-      )}
+      ) : null}
     </div>
   );
+}
+
+/** The latest update or uninstall result, under the installed list. */
+export function InstalledStatusLine() {
+  const result = usePluginStatus("installed");
+  return result ? (
+    <div data-plugin-status="installed">
+      <ResultLine result={result} />
+    </div>
+  ) : null;
 }
 
 const SCOPE_CHOICES: { value: InstallScope; label: string }[] = [
@@ -232,7 +245,7 @@ export function InstallPluginForm({
   const [pick, setPick] = useState("");
   const [scope, setScope] = useState<InstallScope>("user");
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<ManageResult | null>(null);
+  const result = usePluginStatus("install");
   const [shown, setShown] = useState<ShownCommand | null>(null);
 
   const load = useCallback(async () => {
@@ -260,7 +273,7 @@ export function InstallPluginForm({
     setBusy(true);
     const next = await installPlugin(pick, scope, cwd, accountId, acceptHash);
     setBusy(false);
-    setResult(next);
+    reportPluginStatus("install", next);
     setShown(next.ok === false && next.shownCommand ? next.shownCommand : null);
     if (next.ok) void load();
   };
@@ -349,7 +362,7 @@ export function InstallPluginForm({
           busy={busy}
           onCancel={() => {
             setShown(null);
-            setResult(null);
+            clearPluginStatus("install");
           }}
           onAccept={() => void install(shown.sha256)}
         />
@@ -369,7 +382,7 @@ export function MarketplacesSection({
   const [list, setList] = useState<Marketplace[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [result, setResult] = useState<ManageResult | null>(null);
+  const result = usePluginStatus("marketplaces");
   const [source, setSource] = useState("");
   const [confirmAdd, setConfirmAdd] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
@@ -391,7 +404,7 @@ export function MarketplacesSection({
     setBusy(key);
     const next = await task();
     setBusy(null);
-    setResult(next);
+    reportPluginStatus("marketplaces", next);
     await load();
     return next;
   };
