@@ -284,3 +284,27 @@ it.skipIf(process.platform === "win32")(
     ).rejects.toThrow();
   },
 );
+
+it("lists a range's commits as subjects only, whatever this machine's log config says", async () => {
+  const { commands, repo } = fixture();
+  const { cwd, git, write } = repo();
+  git("remote", "add", "origin", "https://github.com/acme/widget.git");
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+  git("checkout", "-q", "-b", "feature");
+  // Mac test 4.4: a hash, a decoration or colour would reach the PR title.
+  git("config", "log.decorate", "short");
+  git("config", "color.ui", "always");
+  write("chosen.txt", "new\n");
+  git("commit", "-q", "-am", "Add a retest line");
+  write("other.txt", "new\n");
+  git("commit", "-q", "-am", "added tests");
+  const range = (await commands.run("git_range_context", { cwd })) as {
+    commitSummary: string;
+    subjectsOnly?: boolean;
+    head: string;
+  };
+  expect(range.commitSummary.trim()).toBe("added tests\nAdd a retest line");
+  expect(range.subjectsOnly).toBe(true);
+  expect(range.head).toBe("feature");
+});

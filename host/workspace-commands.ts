@@ -751,11 +751,13 @@ export class WorkspaceCommands {
     const base = `origin/${index.defaultBranch}`;
     const head = index.branch ?? "HEAD";
     const [commitSummary, diffSummary, diffPatch] = await Promise.all([
-      this.gitCommand(cwd, ["log", "--oneline", `${base}..HEAD`]),
+      // Subjects only, as the app's own range gives them: no hash, no
+      // decoration or colour from this machine's git config.
+      this.gitCommand(cwd, ["log", "--no-decorate", "--no-color", "--format=%s", `${base}..HEAD`]),
       this.gitCommand(cwd, ["diff", "--stat", `${base}...HEAD`]),
       this.gitCommand(cwd, ["diff", "--no-ext-diff", `${base}...HEAD`]),
     ]);
-    return { base: index.defaultBranch, head, commitSummary, diffSummary, diffPatch };
+    return { base: index.defaultBranch, head, commitSummary, diffSummary, diffPatch, subjectsOnly: true };
   }
 
   private async gitBranches(cwd: unknown) {

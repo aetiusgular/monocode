@@ -9,10 +9,10 @@ export function prContentFromRange(
   range: GitRangeContext,
 ): PrContent & { base: string; head: string } {
   const commits = range.commitSummary.trim();
-  const firstCommit = commits
-    .split(/\r?\n/, 1)[0]
-    ?.replace(/^[0-9a-f]+\s+/i, "")
-    .trim();
+  // `commitSummary` is `git log --format=%s`: subjects only, newest first, no
+  // hash. Mac test 4.4: stripping a leading hash cut "Add" (all hex letters)
+  // from "Add a retest line to the README".
+  const firstCommit = commits.split(/\r?\n/, 1)[0]?.trim();
   const title = firstCommit || `Changes on ${range.head}`;
   const body = [
     commits && `## Commits\n\n${commits}`,

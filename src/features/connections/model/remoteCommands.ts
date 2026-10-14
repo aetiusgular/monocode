@@ -137,6 +137,26 @@ export async function runRemoteCommand(
     const root = String(hostArgs.cwd).replace(/[\\/]+$/, "");
     return { ...diff, path: fromHost(`${root}/${diff.path}`) };
   }
+  // This computer gives a range's commits as subjects only (`--format=%s`),
+  // and callers take the first line as a PR title. A host that says
+  // `subjectsOnly` does the same. An older host sends `git log --oneline`
+  // ("<hash> <subject>"), so its hashes go here, where that shape is known,
+  // and a subject such as "Add a line" keeps its first word (Mac test 4.4).
+  if (command === "git_range_context" && result && typeof result === "object") {
+    const { subjectsOnly, ...range } = result as {
+      subjectsOnly?: unknown;
+      commitSummary?: unknown;
+    };
+    if (subjectsOnly === true || typeof range.commitSummary !== "string")
+      return range;
+    return {
+      ...range,
+      commitSummary: range.commitSummary
+        .split("\n")
+        .map((line) => line.replace(/^[0-9a-f]{4,40} /, ""))
+        .join("\n"),
+    };
+  }
   if (command === "git_commit_files" && Array.isArray(result)) {
     const root = String(hostArgs.cwd).replace(/[\\/]+$/, "");
     return result.map((file: { path: string }) => ({

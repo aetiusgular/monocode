@@ -14,7 +14,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeLocal }));
 
 import { runRemoteCommand } from "./remoteCommands";
 import { parseRemotePath, remotePath } from "./remoteProjects";
-import { gitCommit, gitLocateFiles, gitStagedContext, listDir, readBinaryFile, readTextFile, statFiles, writeTextFile } from "../../../platform/tauri/fs";
+import { gitCommit, gitLocateFiles, gitRangeContext, gitStagedContext, listDir, readBinaryFile, readTextFile, statFiles, writeTextFile } from "../../../platform/tauri/fs";
 
 beforeEach(() => {
   remoteRequest.mockReset();
@@ -174,4 +174,35 @@ it("refuses what the host cannot do and explains outdated hosts", async () => {
     runRemoteCommand("list_dir", { path: "remote://env/home/me" }),
   ).rejects.toThrow("Update MonoCode Host");
   expect(remoteRequest).toHaveBeenCalledTimes(1);
+});
+
+it("keeps a host's subjects as they are when the host says so", async () => {
+  remoteRequest.mockResolvedValueOnce({
+    base: "main",
+    head: "feature",
+    commitSummary: "added tests\nbeef up the parser",
+    diffSummary: "",
+    diffPatch: "",
+    subjectsOnly: true,
+  });
+  const range = await gitRangeContext("remote://env/home/me/repo");
+  expect(range.commitSummary).toBe("added tests\nbeef up the parser");
+  expect(range).not.toHaveProperty("subjectsOnly");
+});
+
+it("gives an older host's range as subjects, as this computer does (Mac test 4.4)", async () => {
+  remoteRequest.mockResolvedValueOnce({
+    base: "main",
+    head: "feature",
+    commitSummary: "3f2a9c1 Add a retest line\nbeef123 Fix the parser",
+    diffSummary: " a.txt | 1 +",
+    diffPatch: "",
+  });
+  const range = await gitRangeContext("remote://env/home/me/repo");
+  expect(range.commitSummary).toBe("Add a retest line\nFix the parser");
+  expect(range.diffSummary).toBe(" a.txt | 1 +");
+  expect(remoteRequest).toHaveBeenLastCalledWith("machine", "workspace.run", {
+    command: "git_range_context",
+    args: { cwd: "/home/me/repo" },
+  });
 });

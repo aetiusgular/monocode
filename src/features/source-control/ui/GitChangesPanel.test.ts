@@ -471,7 +471,7 @@ describe("GitChangesPanel remote pull request", () => {
     vi.mocked(gitRangeContext).mockResolvedValue({
       base: "main",
       head: "feature/pull",
-      commitSummary: "abc123 Fix remote flow\ndef456 Add coverage",
+      commitSummary: "Fix remote flow\nAdd coverage",
       diffSummary: "2 files changed, 4 insertions(+)\n",
       diffPatch: "",
     });

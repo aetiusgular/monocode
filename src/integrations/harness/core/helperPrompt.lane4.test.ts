@@ -9,7 +9,7 @@ const { stagedContext, rangeContext } = vi.hoisted(() => ({
   rangeContext: vi.fn(async (_cwd: string) => ({
     base: "main",
     head: "feature",
-    commitSummary: "abc123 Add the thing\ndef456 Fix the thing",
+    commitSummary: "Add the thing\nFix the thing",
     diffSummary: "a.txt | 1 +",
     diffPatch: "LOCAL_ONLY_DIFF",
   })),
