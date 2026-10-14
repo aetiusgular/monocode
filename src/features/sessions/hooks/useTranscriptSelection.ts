@@ -57,6 +57,20 @@ export function rangeWithinOneResponse(range: Range, root: HTMLElement): Range {
 const TEXT_BLOCK_SELECTOR =
   "p, li, h1, h2, h3, h4, h5, h6, blockquote, pre, td, th, dt, dd, figcaption";
 
+/**
+ * KaTeX draws visible math as `.katex-html` marked aria-hidden, and keeps a
+ * MathML copy for screen readers clipped out of sight. Inside a `.katex`
+ * element the drawn copy counts as shown and the MathML copy as hidden, so
+ * selected math is kept once (security fix X3).
+ */
+function katexPart(element: Element): "html" | "mathml" | null {
+  const inKatex = element.parentElement?.closest(".katex");
+  if (!inKatex) return null;
+  if (element.classList.contains("katex-html")) return "html";
+  if (element.classList.contains("katex-mathml")) return "mathml";
+  return null;
+}
+
 /** An element whose text the user cannot see, cached per element. */
 function hiddenElement(
   element: Element,
@@ -65,8 +79,11 @@ function hiddenElement(
   const known = cache.get(element);
   if (known !== undefined) return known;
   let hidden = false;
+  const katex = katexPart(element);
   if (element instanceof HTMLElement && element.hidden) hidden = true;
-  else if (element.getAttribute("aria-hidden") === "true") hidden = true;
+  else if (katex === "mathml") hidden = true;
+  else if (katex !== "html" && element.getAttribute("aria-hidden") === "true")
+    hidden = true;
   else if (element.classList.contains("sr-only")) hidden = true;
   else {
     const view = element.ownerDocument.defaultView;
