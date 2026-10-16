@@ -422,6 +422,9 @@ type Props = {
     permissionsProfile?: string;
     gatewayOn?: string[];
   }) => void;
+  // [w3-a] props
+  // [w3-b] props
+  // [w3-c] props
 };
 
 const NO_DISABLED_MCP_SERVERS: string[] = [];
