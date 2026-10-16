@@ -1755,7 +1755,8 @@ function useDiffIndex(
   return { index, reload };
 }
 
-function cachedIndex(cwd: string | undefined): GitDiffIndex | null {
+/** The last Git status read for a checkout, shared so other views open on it. */
+export function cachedIndex(cwd: string | undefined): GitDiffIndex | null {
   if (!cwd || cwd === "~") return null;
   return indexByCwd.get(cwd) ?? null;
 }
@@ -1787,7 +1788,12 @@ function changedFilePaths(prev: GitDiffIndex, next: GitDiffIndex): string[] {
   return paths;
 }
 
-function sameIndex(prev: GitDiffIndex | null, next: GitDiffIndex): boolean {
+export function rememberIndex(cwd: string, index: GitDiffIndex | null) {
+  if (index) indexByCwd.set(cwd, index);
+  else indexByCwd.delete(cwd);
+}
+
+export function sameIndex(prev: GitDiffIndex | null, next: GitDiffIndex): boolean {
   if (!prev) return false;
   if (
     prev.branch !== next.branch ||

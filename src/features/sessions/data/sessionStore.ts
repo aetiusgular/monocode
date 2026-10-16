@@ -8,6 +8,7 @@ import {
 import { codexCommandPresentation } from "../../../integrations/harness/providers/codex/codexProtocol";
 import { recoverCursorSubagents } from "../../../integrations/harness/providers/cursor/cursorSubagents";
 import { persistableAttachment } from "../model/attachments";
+import { ARTIFACT_KINDS } from "../../artifacts/artifacts";
 import type { ContextUsage } from "../model/contextUsage";
 import { sanitizeDisabledMcpServers } from "../../session-tools/model/connectors";
 import { sanitizeGatewayOn } from "../../gateway-connectors/model/localDefault";
@@ -1146,7 +1147,7 @@ function sanitizeBlock(
     const cards = block.artifactCards.flatMap((card) => {
       if (
         !card ||
-        card.kind !== "document" ||
+        !ARTIFACT_KINDS.includes(card.kind) ||
         typeof card.id !== "string" ||
         !isPersistableId(card.id) ||
         typeof card.title !== "string" ||
@@ -1156,7 +1157,7 @@ function sanitizeBlock(
       return [
         {
           id: card.id,
-          kind: "document" as const,
+          kind: card.kind,
           title: card.title.slice(0, 200),
           ...(typeof card.summary === "string" && card.summary.trim()
             ? { summary: card.summary.slice(0, 280) }
