@@ -114,11 +114,17 @@ export function readableLine(line: string, asBreak = false): string {
   );
 }
 
-function readsAs(line: string, pattern: RegExp): boolean {
-  return (
-    pattern.test(readableLine(line)) || pattern.test(readableLine(line, true))
-  );
-}
+/**
+ * In MonoCode's own note body the words may also run together or be joined
+ * by `-`, `_` or `.` (security review P1): the body is the user's saved text
+ * and memory an agent proposed, where code is rare and a closed note is not.
+ * Read with every invisible character dropped. Single optional characters
+ * only, so matching stays linear.
+ */
+const START_TIGHT =
+  /[\p{Ps}\p{Pi}(<] ?note ?[-.]? ?from ?[-.]? ?mono ?[-.]? ?code(?![a-z0-9])/u;
+const END_TIGHT =
+  /[\p{Ps}\p{Pi}(<] ?end ?[-.]? ?of ?[-.]? ?(?:the ?[-.]? ?)?note(?![a-z0-9])/u;
 
 /** A mark spelled over more lines than this is not read as one (N6). */
 const MARK_LINES_MAX = 4;
@@ -148,9 +154,16 @@ export function withoutFence(
   const start = anywhere ? START_ANYWHERE : START_LINE;
   const end = anywhere ? END_ANYWHERE : END_LINE;
   const lines = text.split("\n");
-  const out = lines.map((line) => {
-    if (readsAs(line, start)) return endWith(line, START_REMOVED);
-    if (readsAs(line, end)) return endWith(line, END_REMOVED);
+  // Each line is read once each way (security review P4).
+  const dropped = lines.map((line) => readableLine(line));
+  const spaced = lines.map((line) => readableLine(line, true));
+  const out = lines.map((line, index) => {
+    const a = dropped[index]!;
+    const b = spaced[index]!;
+    if (start.test(a) || start.test(b) || (anywhere && START_TIGHT.test(a)))
+      return endWith(line, START_REMOVED);
+    if (end.test(a) || end.test(b) || (anywhere && END_TIGHT.test(a)))
+      return endWith(line, END_REMOVED);
     return line;
   });
   if (isNoteMark(mark)) {
@@ -158,8 +171,8 @@ export function withoutFence(
     // split over lines is found too.
     let hex = "";
     const lineOf: number[] = [];
-    lines.forEach((line, index) => {
-      const digits = hexReading(readableLine(line));
+    dropped.forEach((seen, index) => {
+      const digits = hexReading(seen);
       hex += digits;
       for (let i = 0; i < digits.length; i++) lineOf.push(index);
     });
