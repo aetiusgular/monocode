@@ -3,13 +3,19 @@
 //! forms and loads from any host. Two channels are outside a content policy:
 //! a WebRTC peer connection (its STUN host lookup can carry data) and DNS
 //! prefetch. The prelude turns off DNS prefetch and removes the WebRTC
-//! constructors before any script of the page runs, and the page cannot get
-//! them back: it has no other frame or worker to take them from.
+//! constructors before any script of the page runs. A nested frame would
+//! bring a fresh window with its own constructors; `frame-src 'none'` does
+//! not stop an `about:srcdoc` frame, so the prelude removes every nested
+//! frame element as soon as it appears and hides the windows of any that
+//! slip through (security review M2). This is best effort in the page: the
+//! Mac test checks that no peer connection can be opened.
 
 /// A meta tag and one script, inserted before anything else in the page.
 pub const NO_NETWORK_PRELUDE: &str = concat!(
     r#"<meta http-equiv="x-dns-prefetch-control" content="off">"#,
-    r#"<script>(function(){var w=window,n=["RTCPeerConnection","webkitRTCPeerConnection","RTCDataChannel","RTCRtpSender","RTCRtpReceiver","RTCRtpTransceiver","RTCIceCandidate","RTCIceTransport","RTCSessionDescription","RTCCertificate"];for(var i=0;i<n.length;i++){try{Object.defineProperty(w,n[i],{value:undefined,writable:false,configurable:false});}catch(e){}}try{Object.defineProperty(navigator,"mediaDevices",{value:undefined,configurable:false});}catch(e){}})();</script>"#
+    r#"<script>(function(){var w=window,n=["RTCPeerConnection","webkitRTCPeerConnection","RTCDataChannel","RTCRtpSender","RTCRtpReceiver","RTCRtpTransceiver","RTCIceCandidate","RTCIceTransport","RTCSessionDescription","RTCCertificate"];for(var i=0;i<n.length;i++){try{Object.defineProperty(w,n[i],{value:undefined,writable:false,configurable:false});}catch(e){}}try{Object.defineProperty(navigator,"mediaDevices",{value:undefined,configurable:false});}catch(e){}"#,
+    r#"try{var F="iframe,frame,object,embed,fencedframe,portal",rm=Element.prototype.remove,qa=Element.prototype.querySelectorAll,mt=Element.prototype.matches;var kill=function(x){if(!x||x.nodeType!==1)return;if(mt.call(x,F)){rm.call(x);return;}var q=qa.call(x,F);for(var j=0;j<q.length;j++)rm.call(q[j]);};new MutationObserver(function(ms){for(var a=0;a<ms.length;a++){var ad=ms[a].addedNodes;for(var b=0;b<ad.length;b++)kill(ad[b]);}}).observe(document,{childList:true,subtree:true});"#,
+    r#"[HTMLIFrameElement,HTMLFrameElement,HTMLObjectElement,HTMLEmbedElement].forEach(function(C){if(!C)return;["contentWindow","contentDocument"].forEach(function(k){try{Object.defineProperty(C.prototype,k,{get:function(){return null;},configurable:false});}catch(e){}});});}catch(e){}})();</script>"#
 );
 
 /// `body` with `prelude` first: after a leading doctype, so the page keeps
@@ -40,13 +46,23 @@ fn after_leading_doctype(body: &str) -> Option<usize> {
     while at < bytes.len() && bytes[at].is_ascii_whitespace() {
         at += 1;
     }
-    let rest = &body[at..];
-    if rest.len() < 9 || !rest[..9].eq_ignore_ascii_case("<!doctype") {
+    // Compared as bytes: a page whose ninth byte falls inside a multi-byte
+    // character must not panic the scheme handler (security review M1).
+    let rest = &bytes[at..];
+    if !rest
+        .get(..9)
+        .is_some_and(|start| start.eq_ignore_ascii_case(b"<!doctype"))
+    {
         return None;
     }
-    // A doctype has no markup inside it; `<` before `>` means it is not one.
-    let end = rest.find('>')?;
-    if rest[1..end].contains('<') {
+    let end = rest.iter().position(|&byte| byte == b'>')?;
+    // Printable ASCII only, and no markup: anything else, such as an escape
+    // that switches a decoder's character set, puts the prelude first
+    // (security review M7).
+    if !rest[1..end]
+        .iter()
+        .all(|&byte| (0x20..0x7f).contains(&byte) && byte != b'<')
+    {
         return None;
     }
     Some(at + end + 1)
@@ -125,6 +141,42 @@ mod tests {
             with_first_prelude("<!DOCTYPE html", P),
             "<script>P</script><!DOCTYPE html"
         );
+    }
+
+    #[test]
+    fn a_multi_byte_character_near_the_start_does_not_panic() {
+        // M1: byte 9 inside a multi-byte character.
+        for page in [
+            "<!-- Café menu -->\n<!DOCTYPE html><html>",
+            "<!-- 日本語 -->\n<html>",
+            "    \u{3000}<!doctype html>",
+            "<!doctyp\u{e9} html>",
+            "日本",
+        ] {
+            assert!(with_first_prelude(page, P).starts_with(P), "{page}");
+        }
+    }
+
+    #[test]
+    fn a_doctype_with_control_or_non_ascii_bytes_puts_it_first() {
+        // M7: an escape that would switch a decoder's character set.
+        assert!(with_first_prelude("<!doctype html\u{1b}$B>x", P).starts_with(P));
+        assert!(with_first_prelude("<!doctype htm\u{e9}>x", P).starts_with(P));
+        assert_eq!(
+            with_first_prelude("<!DOCTYPE html PUBLIC \"-//W3C//DTD\">x", P),
+            "<!DOCTYPE html PUBLIC \"-//W3C//DTD\"><script>P</script>x"
+        );
+    }
+
+    #[test]
+    fn the_prelude_removes_nested_frames_and_hides_their_windows() {
+        // M2: an about:srcdoc frame would bring its own constructors.
+        assert!(NO_NETWORK_PRELUDE.contains("MutationObserver"));
+        assert!(NO_NETWORK_PRELUDE.contains("iframe,frame,object,embed"));
+        assert!(NO_NETWORK_PRELUDE.contains("contentWindow"));
+        // One script element: nothing of the page can run between parts.
+        assert_eq!(NO_NETWORK_PRELUDE.matches("<script>").count(), 1);
+        assert_eq!(NO_NETWORK_PRELUDE.matches("</script>").count(), 1);
     }
 
     #[test]

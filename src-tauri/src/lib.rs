@@ -286,7 +286,11 @@ pub fn run() {
                 .build(),
         )
         .register_uri_scheme_protocol(artifacts::HTML_SCHEME, |ctx, request| {
-            artifacts::serve_html(ctx.app_handle(), &request)
+            // A panic here would abort the app (security review M1).
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                artifacts::serve_html(ctx.app_handle(), &request)
+            }))
+            .unwrap_or_else(|_| scheme_failure())
         })
         .manage(harness::HarnessHost::new())
         .manage(pty::PtyHost::new())
@@ -328,7 +332,10 @@ pub fn run() {
         .plugin(sandbox_frame::navigation_guard())
         .register_uri_scheme_protocol(sandbox_frame::SCHEME, |ctx, request| {
             let store = ctx.app_handle().state::<sandbox_frame::FrameStore>();
-            sandbox_frame::respond(&store, &request)
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                sandbox_frame::respond(&store, &request)
+            }))
+            .unwrap_or_else(|_| scheme_failure())
         })
         .invoke_handler(tauri::generate_handler![
             remote::remote_machines,
@@ -772,6 +779,16 @@ fn reap_harness_children(handle: &tauri::AppHandle) {
 #[cfg(all(debug_assertions, target_os = "macos"))]
 pub fn ensure_macos_dev_bundle() {
     macos::ensure_dev_bundle();
+}
+
+/// What a frame scheme answers when its handler panicked: an empty error,
+/// never a crash of the app (security review M1).
+fn scheme_failure() -> tauri::http::Response<Vec<u8>> {
+    tauri::http::Response::builder()
+        .status(500)
+        .header("Content-Type", "text/plain; charset=utf-8")
+        .body(Vec::new())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
