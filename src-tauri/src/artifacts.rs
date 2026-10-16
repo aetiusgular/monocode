@@ -192,13 +192,16 @@ pub fn artifacts_upsert(
 /// Scheme that serves `html` artifacts to the sandboxed frames that show them.
 pub const HTML_SCHEME: &str = "monoartifact";
 
-/// The page may run inline scripts and load public styles, scripts, images and
-/// fonts, but it cannot fetch, frame, submit forms or leave its sandbox, even
-/// if something opens its URL outside a sandboxed frame.
+/// The page may run inline scripts and styles, but it loads nothing from the
+/// network: no script, style, image, font or media from any host, no fetch,
+/// no frame, no form. The fork keeps no new outbound call from the app, so a
+/// visual that needs a library must inline it. Even opened outside a
+/// sandboxed frame, the page stays sandboxed.
 const HTML_CSP: &str = "sandbox allow-scripts; default-src 'none'; \
-    script-src 'unsafe-inline' https:; style-src 'unsafe-inline' https:; \
-    img-src data: blob: https:; font-src data: https:; media-src data: blob: https:; \
-    worker-src blob:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'";
+    script-src 'unsafe-inline'; style-src 'unsafe-inline'; \
+    img-src data: blob:; font-src data:; media-src data: blob:; \
+    worker-src blob:; connect-src 'none'; frame-src 'none'; child-src 'none'; \
+    manifest-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'";
 
 /// Runs first in every page: applies the theme the app posts, reports the
 /// content height so the frame can fit it, and hands web links to the app.
@@ -349,6 +352,32 @@ mod tests {
         let artifact = get_artifact(&conn, &note.id).unwrap().unwrap();
         assert_eq!(artifact.kind, ArtifactKind::Html);
         assert_eq!(serde_json::to_value(artifact).unwrap()["kind"], "html");
+    }
+
+    #[test]
+    fn html_artifacts_reach_no_host() {
+        // Every source list is local only: no scheme, host or wildcard that
+        // reaches the network (corner case 10).
+        for directive in HTML_CSP.split(';').map(str::trim) {
+            for source in directive.split_whitespace().skip(1) {
+                assert!(
+                    matches!(
+                        source,
+                        "'none'" | "'unsafe-inline'" | "data:" | "blob:" | "allow-scripts"
+                    ),
+                    "{directive} allows {source}"
+                );
+            }
+        }
+        for needed in [
+            "connect-src 'none'",
+            "frame-src 'none'",
+            "form-action 'none'",
+            "object-src 'none'",
+        ] {
+            assert!(HTML_CSP.contains(needed), "missing {needed}");
+        }
+        assert!(HTML_CSP.starts_with("sandbox allow-scripts;"));
     }
 
     #[test]

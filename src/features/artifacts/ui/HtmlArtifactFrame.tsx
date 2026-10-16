@@ -1,6 +1,10 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { htmlArtifactUrl } from "../artifacts";
+import {
+  artifactLinkTarget,
+  confirmArtifactLink,
+} from "../model/artifactLinks";
 
 type FrameTheme = { scheme: "dark" | "light"; vars: Record<string, string> };
 
@@ -91,6 +95,8 @@ export function HtmlArtifactFrame({
   themeRef.current = theme;
   const [ready, setReady] = useState(false);
   const [contentHeight, setContentHeight] = useState<number | null>(null);
+  // One question at a time: a page that posts links in a loop gets one dialog.
+  const askingRef = useRef(false);
   const postTheme = () =>
     frameRef.current?.contentWindow?.postMessage(
       { type: "monocode:theme", ...themeRef.current },
@@ -117,14 +123,18 @@ export function HtmlArtifactFrame({
         if (typeof height === "number" && Number.isFinite(height))
           setContentHeight(Math.max(MIN_HEIGHT, Math.ceil(height)));
       } else if (data.type === "monocode:open-link") {
-        const url = (data as { url?: unknown }).url;
-        // Only a link the reader just clicked: the frame holds focus then.
-        if (
-          typeof url === "string" &&
-          /^https?:\/\//i.test(url) &&
-          document.activeElement === frame
-        )
-          void openUrl(url).catch(() => undefined);
+        const url = artifactLinkTarget((data as { url?: unknown }).url);
+        // Only while the frame holds focus, as after a click in it, and only
+        // after you confirm the address: the page's script can post too.
+        if (!url || document.activeElement !== frame || askingRef.current)
+          return;
+        askingRef.current = true;
+        void confirmArtifactLink(url)
+          .then((open) => (open ? openUrl(url) : undefined))
+          .catch(() => undefined)
+          .finally(() => {
+            askingRef.current = false;
+          });
       }
     };
     window.addEventListener("message", receive);
