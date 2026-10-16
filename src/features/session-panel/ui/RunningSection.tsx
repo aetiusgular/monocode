@@ -18,8 +18,8 @@ import {
 } from "../../../shared/ui/icons";
 import type { BackgroundItem } from "../../../integrations/harness/core/background";
 import {
-  listHarnessBackgroundTasks_l1,
-  stopHarnessBackgroundTask_l1,
+  listHarnessBackgroundTasks,
+  stopHarnessBackgroundTask,
 } from "../../../integrations/harness/core/registry";
 import {
   clearOwnedProcess,
@@ -87,7 +87,7 @@ function usePolledBackground(
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const tick = async () => {
-      const next = await listHarnessBackgroundTasks_l1(harness, sessionId);
+      const next = await listHarnessBackgroundTasks(harness, sessionId);
       if (stopped) return;
       setItems(next);
       if (next === null && !busy) return;
@@ -189,7 +189,7 @@ export function RunningSection({
         const ok =
           row.stop === "monocode"
             ? await stopOwnedProcess(row.id)
-            : await stopHarnessBackgroundTask_l1(harness, sessionId, row.id);
+            : await stopHarnessBackgroundTask(harness, sessionId, row.id);
         if (!ok) {
           release();
           setErrors((prev) =>

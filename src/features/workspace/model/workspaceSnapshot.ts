@@ -478,7 +478,7 @@ function sanitizeStub(raw: unknown): WorkspaceSessionStub | null {
   const disabledPlugins = sanitizeDisabledPlugins(value.disabledPlugins);
   const modelProvider = sanitizeModelProvider(value.modelProvider);
   const gatewayOn = sanitizeGatewayOn(value.gatewayOn);
-  const permissionsProfile_l5 = sanitizeModelProvider(value.permissionsProfile);
+  const permissionsProfile = sanitizeModelProvider(value.permissionsProfile);
   return {
     id: value.id,
     cwd:
@@ -514,7 +514,7 @@ function sanitizeStub(raw: unknown): WorkspaceSessionStub | null {
     ...(disabledPlugins ? { disabledPlugins } : {}),
     ...(modelProvider ? { modelProvider } : {}),
     ...(gatewayOn ? { gatewayOn } : {}),
-    ...(permissionsProfile_l5 ? { permissionsProfile: permissionsProfile_l5 } : {}),
+    ...(permissionsProfile ? { permissionsProfile } : {}),
   };
 }
 

@@ -20,6 +20,7 @@ import type {
   ApprovalDecision,
   UserQuestionReply,
 } from "../../../integrations/harness";
+import type { ApprovalOptions } from "../../tool-access/model/networkApproval";
 import type { EditorNavigationTarget } from "../../search/model/search";
 import {
   layoutLeaves,
@@ -139,7 +140,7 @@ type Shared = {
     sessionId: string,
     requestId: number,
     decision: ApprovalDecision,
-    options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
+    options?: ApprovalOptions,
   ) => void;
   onQuestionReply: (
     sessionId: string,
@@ -194,17 +195,17 @@ type Shared = {
   onNewTerminal: (sessionId: string) => void;
   onTerminalMetaChange?: (fileId: string, patch: TerminalMetaPatch) => void;
   transcriptPool?: TranscriptPool;
-  onRewindChat_l1?: (sessionId: string, blockId: string) => Promise<void>;
-  onForkTurn_l1?: (sessionId: string, blockId: string) => Promise<void>;
-  onPickUpSession_l1?: (
+  onRewindChat?: (sessionId: string, blockId: string) => Promise<void>;
+  onForkTurn?: (sessionId: string, blockId: string) => Promise<void>;
+  onPickUpSession?: (
     sessionId: string,
     row: import("../../session-import/model/types").HarnessSessionRow,
   ) => Promise<void>;
-  pickUpBound_l1?: (
+  pickUpBound?: (
     harness: import("../../sessions/model/session").HarnessId,
   ) => ReadonlyMap<string, string>;
   /** Finding 2.2: a new chat in the same project, harness, model and account. */
-  onNewChatLike_s6?: (sessionId: string) => void;
+  onNewChatLike?: (sessionId: string) => void;
 };
 
 type Props = Shared & { layout: LayoutNode };
@@ -295,11 +296,11 @@ function PaneTreeComponent({
   onNewTerminal,
   onTerminalMetaChange,
   transcriptPool,
-  onRewindChat_l1,
-  onForkTurn_l1,
-  onPickUpSession_l1,
-  pickUpBound_l1,
-  onNewChatLike_s6,
+  onRewindChat,
+  onForkTurn,
+  onPickUpSession,
+  pickUpBound,
+  onNewChatLike,
 }: Props) {
   const treeRef = useRef<HTMLDivElement>(null);
   const layoutRef = useRef(layout);
@@ -592,11 +593,11 @@ function PaneTreeComponent({
                   onNewTerminal={onNewTerminal}
                   onPaneDragStart={onPaneDragStart}
                   transcriptPool={transcriptPool}
-                  onRewindChat_l1={onRewindChat_l1}
-                  onForkTurn_l1={onForkTurn_l1}
-                  onPickUpSession_l1={onPickUpSession_l1}
-                  pickUpBound_l1={pickUpBound_l1}
-                  onNewChatLike_s6={onNewChatLike_s6}
+                  onRewindChat={onRewindChat}
+                  onForkTurn={onForkTurn}
+                  onPickUpSession={onPickUpSession}
+                  pickUpBound={pickUpBound}
+                  onNewChatLike={onNewChatLike}
                 />
               ) : null}
             </div>

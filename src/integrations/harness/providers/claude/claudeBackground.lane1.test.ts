@@ -29,7 +29,7 @@ const {
   cancelClaudeTurn,
   sendClaudeTurn,
   stopClaudeSession,
-  stopClaudeBackgroundTask_l1,
+  stopClaudeBackgroundTask,
   __claudeTestReset,
 } = await import("./claude");
 
@@ -190,16 +190,16 @@ describe("claude Running items", () => {
     await startTurn("s1");
     taskStarted("b1", "local_bash", "Run the test suite");
     taskStarted("b2", "local_bash", "Serve the docs");
-    await expect(stopClaudeBackgroundTask_l1("s1", "b2")).resolves.toBe(true);
+    await expect(stopClaudeBackgroundTask("s1", "b2")).resolves.toBe(true);
     expect(stopRequests()).toEqual(["b2"]);
   });
 
   it("refuses a task or session it does not know", async () => {
-    await expect(stopClaudeBackgroundTask_l1("nope", "b1")).resolves.toBe(
+    await expect(stopClaudeBackgroundTask("nope", "b1")).resolves.toBe(
       false,
     );
     await startTurn("s1");
-    await expect(stopClaudeBackgroundTask_l1("s1", "missing")).resolves.toBe(
+    await expect(stopClaudeBackgroundTask("s1", "missing")).resolves.toBe(
       false,
     );
     expect(stopRequests()).toEqual([]);

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { listHarnessSessions_l1 } from "../../../integrations/harness/core/registry";
+import { listHarnessSessions } from "../../../integrations/harness/core/registry";
 import { HARNESS_TITLE } from "../../sessions/model/session";
 import {
   Popover,
@@ -32,13 +32,13 @@ type ListState =
 export function PickUpSessionPopover({
   anchor,
   target,
-  list = listHarnessSessions_l1,
+  list = listHarnessSessions,
   onDismiss,
 }: {
   anchor: PopoverAnchor;
   target: PickUpTarget;
   /** Test seam. */
-  list?: typeof listHarnessSessions_l1;
+  list?: typeof listHarnessSessions;
   onDismiss: (reason: PopoverDismissReason | "picked") => void;
 }) {
   const { harness, cwd, providerAccountId } = target;

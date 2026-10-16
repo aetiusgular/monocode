@@ -204,8 +204,8 @@ import {
   useRemoteProjectSessions,
 } from "../../features/connections/model/connections";
 import { parseRemotePath, remotePath, remoteProjectFor } from "../../features/connections/model/remoteProjects";
-import { exportConversationFromMenu as exportConversationFromMenu_l3 } from "../../features/conversation-export/model/exportConversation";
-import type { HelperTarget as HelperTarget_l4 } from "../../integrations/harness/core/helperPrompt";
+import { exportConversationFromMenu } from "../../features/conversation-export/model/exportConversation";
+import type { HelperTarget } from "../../integrations/harness/core/helperPrompt";
 
 const MIN_WIDTH = 260;
 const MAX_WIDTH = 560;
@@ -309,7 +309,7 @@ type Props = {
   selectedDiffPath?: string;
   selectedDiffKind?: GitFileDiffKind;
   selectedCommitSha?: string;
-  textHarness?: HarnessId | HelperTarget_l4;
+  textHarness?: HarnessId | HelperTarget;
   recents?: RecentProject[];
   busyProjectPaths?: Iterable<string>;
   liveAgents?: LiveAgent[];
@@ -1366,7 +1366,7 @@ function SidebarComponent({
       return;
     }
     if (id === "export-markdown") {
-      void exportConversationFromMenu_l3(sessionId);
+      void exportConversationFromMenu(sessionId);
       return;
     }
     if (id === "delete") {

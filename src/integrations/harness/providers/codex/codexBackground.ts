@@ -4,7 +4,7 @@ import {
   type BackgroundItem,
 } from "../../core/background";
 import { asRecord, stringField } from "./codexProtocol";
-import { codexLiveThread_l1 } from "./codex";
+import { codexLiveThread } from "./codex";
 
 /** The one call these helpers make on a Codex app-server connection. */
 export type CodexRequester = {
@@ -127,7 +127,7 @@ export async function terminateCodexBackgroundTerminal(
 export async function listCodexBackgroundTasks(
   sessionId: string,
 ): Promise<BackgroundItem[] | null> {
-  const live = codexLiveThread_l1(sessionId);
+  const live = codexLiveThread(sessionId);
   if (!live) return null;
   return listCodexBackgroundTerminals(live.rpc, live.threadId);
 }
@@ -137,7 +137,7 @@ export async function stopCodexBackgroundTask(
   sessionId: string,
   processId: string,
 ): Promise<boolean> {
-  const live = codexLiveThread_l1(sessionId);
+  const live = codexLiveThread(sessionId);
   if (!live) return false;
   return terminateCodexBackgroundTerminal(live.rpc, live.threadId, processId);
 }

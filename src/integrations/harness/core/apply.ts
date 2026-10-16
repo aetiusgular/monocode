@@ -242,7 +242,7 @@ export function applyHarnessEvent(
     case "background.items": {
       if (event.items.length === 0) {
         if (!session.backgroundItems) return session;
-        const { backgroundItems: _cleared_l1, ...rest } = session;
+        const { backgroundItems: _clearedItems, ...rest } = session;
         return rest;
       }
       return { ...session, backgroundItems: event.items };

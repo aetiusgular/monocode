@@ -90,9 +90,9 @@ describe("Remember this confirms in the chat", () => {
   });
 
   it("renders as a status line", async () => {
-    const { RememberNotice_s6 } = await import("../ui/AgentTranscript");
+    const { RememberNotice } = await import("../ui/AgentTranscript");
     const html = renderToStaticMarkup(
-      createElement(RememberNotice_s6, { text: "Remembered for my proj." }),
+      createElement(RememberNotice, { text: "Remembered for my proj." }),
     );
     expect(html).toContain('role="status"');
     expect(html).toContain("Remembered for my proj.");

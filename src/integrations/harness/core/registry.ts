@@ -15,6 +15,7 @@ import type {
   CompactContextInput,
   HarnessEvent,
   HarnessMcpServer,
+  HarnessSessionInput,
   HarnessToolAccess,
   ListMcpServersInput,
   RewindLastTurnInput,
@@ -22,13 +23,13 @@ import type {
   SendTurnInput,
   SteerTurnInput,
 } from "./types";
-import type { BackgroundItem as BackgroundItem_l1 } from "./background";
-import type { HarnessSessionInput as HarnessSessionInput_l1 } from "./types";
+import type { ApprovalOptions } from "../../../features/tool-access/model/networkApproval";
+import type { BackgroundItem } from "./background";
 import type {
-  HarnessSessionRow as HarnessSessionRow_l1,
-  ImportedHistory as ImportedHistory_l1,
-  ListSessionsInput as ListSessionsInput_l1,
-  ReadSessionInput as ReadSessionInput_l1,
+  HarnessSessionRow,
+  ImportedHistory,
+  ListSessionsInput,
+  ReadSessionInput,
 } from "../../../features/session-import/model/types";
 
 export type TitleInput = {
@@ -82,7 +83,7 @@ export type HarnessAdapter = {
      * Extra choices on an allow. Only Codex reads `networkAmendment`, and
      * only when it matches a host rule Codex proposed; others ignore it.
      */
-    options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
+    options?: ApprovalOptions,
   ): void;
   respondQuestion?(
     sessionId: string,
@@ -147,7 +148,7 @@ export type HarnessAdapter = {
    * What the harness runs beside the turn, for harnesses that are asked
    * rather than reporting it as events. Null when the call is unavailable.
    */
-  listBackgroundTasks?(sessionId: string): Promise<BackgroundItem_l1[] | null>;
+  listBackgroundTasks?(sessionId: string): Promise<BackgroundItem[] | null>;
   /**
    * Copies the source chat's conversation into a new one for `newSessionId`,
    * up to `boundary` when given (the harness's own turn or entry id). Returns
@@ -155,7 +156,7 @@ export type HarnessAdapter = {
    * chat binds its own id on its first start.
    */
   forkSession?(input: {
-    source: HarnessSessionInput_l1;
+    source: HarnessSessionInput;
     providerSessionId: string;
     newSessionId: string;
     boundary?: string;
@@ -164,9 +165,9 @@ export type HarnessAdapter = {
    * #45: the sessions the harness recorded for a folder, outside MonoCode
    * or not, newest first. Read only.
    */
-  listSessions?(input: ListSessionsInput_l1): Promise<HarnessSessionRow_l1[]>;
+  listSessions?(input: ListSessionsInput): Promise<HarnessSessionRow[]>;
   /** #45: a listed session's earlier turns, as text, where the harness can replay them. */
-  readSessionTurns?(input: ReadSessionInput_l1): Promise<ImportedHistory_l1>;
+  readSessionTurns?(input: ReadSessionInput): Promise<ImportedHistory>;
 };
 
 const adapters = new Map<HarnessId, HarnessAdapter>();
@@ -442,7 +443,7 @@ export function respondHarnessApproval(
   sessionId: string,
   requestId: number,
   decision: ApprovalDecision,
-  options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
+  options?: ApprovalOptions,
 ): void {
   const adapter = getHarness(harness);
   if (!adapter) return;
@@ -701,7 +702,7 @@ export async function stopHarnessTextPrompts(): Promise<void> {
  * Stops one background item. Not queued behind the turn: the turn is what
  * keeps running while the item does.
  */
-export async function stopHarnessBackgroundTask_l1(
+export async function stopHarnessBackgroundTask(
   harness: HarnessId,
   sessionId: string,
   itemId: string,
@@ -712,10 +713,10 @@ export async function stopHarnessBackgroundTask_l1(
 }
 
 /** Forks a chat natively. Throws when the harness has no native fork. */
-export function forkHarnessSession_l1(
+export function forkHarnessSession(
   harness: HarnessId,
   input: {
-    source: HarnessSessionInput_l1;
+    source: HarnessSessionInput;
     providerSessionId: string;
     newSessionId: string;
     boundary?: string;
@@ -732,10 +733,10 @@ export function forkHarnessSession_l1(
 }
 
 /** The harness's own list, or null when it has none to ask. */
-export async function listHarnessBackgroundTasks_l1(
+export async function listHarnessBackgroundTasks(
   harness: HarnessId,
   sessionId: string,
-): Promise<BackgroundItem_l1[] | null> {
+): Promise<BackgroundItem[] | null> {
   const adapter = adapters.get(harness);
   if (!adapter?.listBackgroundTasks) return null;
   try {
@@ -747,15 +748,15 @@ export async function listHarnessBackgroundTasks_l1(
 }
 
 /** #45: whether the harness can list the sessions it keeps for a folder. */
-export function harnessListsSessions_l1(harness: HarnessId): boolean {
+export function harnessListsSessions(harness: HarnessId): boolean {
   return typeof adapters.get(harness)?.listSessions === "function";
 }
 
 /** #45: the harness's own sessions for the folder. Throws on failure. */
-export async function listHarnessSessions_l1(
+export async function listHarnessSessions(
   harness: HarnessId,
-  input: ListSessionsInput_l1,
-): Promise<HarnessSessionRow_l1[]> {
+  input: ListSessionsInput,
+): Promise<HarnessSessionRow[]> {
   const adapter = adapters.get(harness);
   if (!adapter?.listSessions) {
     throw new Error(`${harness} cannot list its sessions`);
@@ -767,10 +768,10 @@ export async function listHarnessSessions_l1(
  * #45: a listed session's earlier turns, or null where the harness cannot
  * replay them. Throws when it can and the call failed.
  */
-export async function readHarnessSessionTurns_l1(
+export async function readHarnessSessionTurns(
   harness: HarnessId,
-  input: ReadSessionInput_l1,
-): Promise<ImportedHistory_l1 | null> {
+  input: ReadSessionInput,
+): Promise<ImportedHistory | null> {
   const adapter = adapters.get(harness);
   if (!adapter?.readSessionTurns) return null;
   return adapter.readSessionTurns(input);

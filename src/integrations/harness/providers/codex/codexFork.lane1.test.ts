@@ -27,7 +27,7 @@ vi.mock("../../../../platform/tauri/fs", () => ({
 const {
   sendCodexTurn,
   stopCodexSession,
-  forkCodexSession_l1,
+  forkCodexSession,
   __codexTestReset,
 } = await import("./codex");
 const { listCodexBackgroundTasks, stopCodexBackgroundTask } = await import(
@@ -96,7 +96,7 @@ afterEach(async () => {
 describe("Codex fork", () => {
   it("forks through a turn with thread/fork and returns the new thread", async () => {
     await finishedTurn();
-    const forked = forkCodexSession_l1({ source: input, boundary: "turn_1" });
+    const forked = forkCodexSession({ source: input, boundary: "turn_1" });
     await waitFor(() => !!request("thread/fork"), "thread/fork");
     expect(request("thread/fork")!.params).toEqual({
       threadId: "thr_1",
@@ -108,7 +108,7 @@ describe("Codex fork", () => {
 
   it("forks the whole thread without a boundary", async () => {
     await finishedTurn();
-    const forked = forkCodexSession_l1({ source: input });
+    const forked = forkCodexSession({ source: input });
     await waitFor(() => !!request("thread/fork"), "thread/fork");
     expect(request("thread/fork")!.params).toEqual({ threadId: "thr_1" });
     reply(request("thread/fork")!.id as number, { thread: { id: "thr_2" } });
@@ -117,7 +117,7 @@ describe("Codex fork", () => {
 
   it("fails rather than binding the fork to its own source", async () => {
     await finishedTurn();
-    const forked = forkCodexSession_l1({ source: input });
+    const forked = forkCodexSession({ source: input });
     await waitFor(() => !!request("thread/fork"), "thread/fork");
     reply(request("thread/fork")!.id as number, { thread: { id: "thr_1" } });
     await expect(forked).rejects.toThrow("did not return a new thread");
@@ -125,7 +125,7 @@ describe("Codex fork", () => {
 
   it("passes a refused fork on, for the approximate fallback", async () => {
     await finishedTurn();
-    const forked = forkCodexSession_l1({ source: input, boundary: "turn_1" });
+    const forked = forkCodexSession({ source: input, boundary: "turn_1" });
     await waitFor(() => !!request("thread/fork"), "thread/fork");
     replyError(request("thread/fork")!.id as number, "thread is not paginated", -32000);
     await expect(forked).rejects.toThrow("not paginated");
@@ -133,7 +133,7 @@ describe("Codex fork", () => {
 
   it("refuses an ephemeral chat", async () => {
     await expect(
-      forkCodexSession_l1({ source: { ...input, ephemeral: true } }),
+      forkCodexSession({ source: { ...input, ephemeral: true } }),
     ).rejects.toThrow("no Codex thread");
   });
 });

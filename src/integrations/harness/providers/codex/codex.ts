@@ -51,7 +51,12 @@ import {
   codexQuestions,
   codexQuestionResponse,
 } from "./codexQuestions";
-import { codexMcpConfirmation } from "./codexElicitation";
+import {
+  codexElicitationContent,
+  codexElicitationForm,
+  codexElicitationSignIn,
+  codexMcpConfirmation,
+} from "./codexElicitation";
 import { snapshotRemainder } from "../../core/streamText";
 import { ruleDecision, toolRules, type ToolRules } from "../../core/toolRules";
 import { CODEX_COMMAND_TOOL } from "../../../../features/tool-access/model/toolAccess";
@@ -67,31 +72,27 @@ import type {
   SendTurnInput,
   SteerTurnInput,
 } from "../../core/types";
-import { codexMcpResultImages as codexMcpResultImages_l5 } from "../../../../features/browser-tools/model/codexMcpImages";
-import { keepToolResultImages as keepToolResultImages_l5 } from "../../../../features/tool-images/data/toolImageStore";
+import type { ApprovalOptions } from "../../../../features/tool-access/model/networkApproval";
+import { codexMcpResultImages } from "../../../../features/browser-tools/model/codexMcpImages";
+import { keepToolResultImages } from "../../../../features/tool-images/data/toolImageStore";
 import {
-  codexElicitationContent as codexElicitationContent_l5,
-  codexElicitationForm as codexElicitationForm_l5,
-  codexElicitationSignIn as codexElicitationSignIn_l5,
-} from "./codexElicitation";
-import {
-  chatFolders as chatFolders_l5,
-  codexRequestInsideChatFolders as codexRequestInsideChatFolders_l5,
-  recordCodexFileChange as recordCodexFileChange_l5,
-  type CodexFileChangeLog as CodexFileChangeLog_l5,
+  chatFolders,
+  codexRequestInsideChatFolders,
+  recordCodexFileChange,
+  type CodexFileChangeLog,
 } from "../../../../features/tool-access/model/chatFolders";
 import {
-  codexThreadIdentity as codexThreadIdentity_l5,
-  codexThreadIdentityKey as codexThreadIdentityKey_l5,
-  pickCodexNetworkAmendment as pickCodexNetworkAmendment_l5,
-  codexNetworkAmendmentDecision as codexNetworkAmendmentDecision_l5,
-  type CodexNetworkAmendment as CodexNetworkAmendment_l5,
+  codexThreadIdentity,
+  codexThreadIdentityKey,
+  pickCodexNetworkAmendment,
+  codexNetworkAmendmentDecision,
+  type CodexNetworkAmendment,
   codexRouteLocality,
   codexWebSearchConfig,
 } from "./codexProviders";
 import {
-  codexEditAdapter as codexEditAdapter_l5,
-  editAdapterConfig as editAdapterConfig_l5,
+  codexEditAdapter,
+  editAdapterConfig,
 } from "../../../../features/model-setup/model/editAdapter";
 import {
   knownHarnessModelRoute,
@@ -117,7 +118,7 @@ type PendingApproval = {
   /** The per-chat rule key of the request, where it has one. */
   toolKey?: string;
   /** Host rules Codex proposed with a network request; see `respondCodexApproval`. */
-  networkAmendments?: CodexNetworkAmendment_l5[];
+  networkAmendments?: CodexNetworkAmendment[];
   /** The proposed `allow` the user picked with "Always allow <host>". */
   chosenAmendment?: { host: string; action: "allow" };
   /**
@@ -209,13 +210,13 @@ type Live = {
   /** The active turn failed on a spent usage limit. */
   usageLimited: boolean;
   /** Paths of recent file change items, by item id. */
-  fileChanges_l5: CodexFileChangeLog_l5;
+  fileChanges: CodexFileChangeLog;
   /** The chat's working folder and added folders, for automatic yeses. */
-  chatFolders_l5: string[];
+  chatFolders: string[];
   /** Model provider and permissions profile the thread was opened with. */
-  identityKey_l5: string;
+  identityKey: string;
   /** Session 10: the edit adapter route the thread was opened with, or "". */
-  editAdapterKey_l5: string;
+  editAdapterKey: string;
   /** Mac test 8.3: the thread's MCP servers starting, for its first turn. */
   mcpStartup: McpStartup;
 };
@@ -409,10 +410,7 @@ export function respondCodexApproval(
   sessionId: string,
   requestId: number,
   decision: ApprovalDecision,
-  options?: {
-    networkAmendment?: { host: string; action: "allow" };
-    forChat?: boolean;
-  },
+  options?: ApprovalOptions,
 ): void {
   const live = liveByThread.get(sessionId);
   const pending = live?.approvals.get(requestId);
@@ -420,7 +418,7 @@ export function respondCodexApproval(
   // Only an allow Codex proposed for this request is ever sent back; any
   // other host falls back to a plain accept.
   if (decision === "allow") {
-    const chosen = pickCodexNetworkAmendment_l5(
+    const chosen = pickCodexNetworkAmendment(
       pending.networkAmendments,
       options?.networkAmendment,
     );
@@ -649,13 +647,13 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     ),
   );
   const gatewayKey = gatewayArgs.join("\n");
-  const identity_l5 = codexThreadIdentity_l5(input);
-  const identityKey_l5 = codexThreadIdentityKey_l5(identity_l5);
+  const identity = codexThreadIdentity(input);
+  const identityKey = codexThreadIdentityKey(identity);
   // Session 10: the edit adapter, when it is on for this chat's provider.
   // A failure to open it leaves Codex talking to the model server directly.
-  const editAdapter_l5 = await codexEditAdapter_l5(input);
-  if (editAdapter_l5.error)
-    console.warn("Edit adapter not used:", editAdapter_l5.error);
+  const editAdapter = await codexEditAdapter(input);
+  if (editAdapter.error)
+    console.warn("Edit adapter not used:", editAdapter.error);
   // The servers this session's Codex has an entry for, once it was asked;
   // null when it could not say.
   let mcpConfigured: Set<string> | null | undefined;
@@ -670,8 +668,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     existing.ephemeral === ephemeral &&
     existing.codexStore === codexStore &&
     existing.gatewayKey === gatewayKey
-    && existing.identityKey_l5 === identityKey_l5
-    && existing.editAdapterKey_l5 === editAdapter_l5.key
+    && existing.identityKey === identityKey
+    && existing.editAdapterKey === editAdapter.key
   ) {
     if (existing.mcpRequested === mcpRequested) {
       existing.onEvent = input.onEvent;
@@ -756,7 +754,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       onNotification: (method, params) => {
         if (noteMcpStartup(mcpStartup, method, params)) return;
         const live = liveRef.current;
-        if (live) noteCodexNotification_l5(live, input.sessionId, method, params);
+        if (live) noteCodexNotification(live, input.sessionId, method, params);
         if (!live || live.muteUpdates) return;
         if (live.notificationQueue) {
           const turnGeneration = live.turnGeneration;
@@ -877,7 +875,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     // Mac test 11.15: a local model route gets Codex's web search off.
     const routeLocality = await codexThreadRouteLocality(input);
     const providerConfig = threadOverrides(
-      editAdapterConfig_l5(editAdapter_l5),
+      editAdapterConfig(editAdapter),
       codexWebSearchConfig(routeLocality),
     );
 
@@ -931,7 +929,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
           model,
           serviceTier,
           extraDirs: input.extraDirs,
-          ...identity_l5,
+          ...identity,
           providerConfig,
         });
         const opened = await openThread("thread/resume", {
@@ -959,7 +957,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
         serviceTier,
         extraDirs: input.extraDirs,
         developerInstructions: input.developerInstructions,
-        ...identity_l5,
+        ...identity,
         providerConfig,
       });
       const opened = await openThread("thread/start", {
@@ -1012,10 +1010,10 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       openAgentRows: new Map(),
       rateLimits: new Map(),
       usageLimited: false,
-      fileChanges_l5: new Map(),
-      chatFolders_l5: chatFolders_l5(input.cwd, input.extraDirs),
-      identityKey_l5,
-      editAdapterKey_l5: editAdapter_l5.key,
+      fileChanges: new Map(),
+      chatFolders: chatFolders(input.cwd, input.extraDirs),
+      identityKey,
+      editAdapterKey: editAdapter.key,
       mcpStartup,
     };
     mcpStartup.threadId = threadId;
@@ -1131,9 +1129,9 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
     serviceTier,
     intent: input.intent,
     extraDirs: input.extraDirs,
-    ...noteCodexChatFolders_l5(live, input.extraDirs),
-    permissionsProfile: codexThreadIdentity_l5(input).permissionsProfile,
-    autoReviewOff: codexThreadIdentity_l5(input).autoReviewOff,
+    ...noteCodexChatFolders(live, input.extraDirs),
+    permissionsProfile: codexThreadIdentity(input).permissionsProfile,
+    autoReviewOff: codexThreadIdentity(input).autoReviewOff,
     commandsAlways: ruleDecision(live.toolRules, CODEX_COMMAND_TOOL) === "allow",
   });
 
@@ -1776,7 +1774,7 @@ async function handleServerRequest(
       !confirmation &&
       !live.cancelled &&
       !live.muteUpdates &&
-      (await handleCodexSignIn_l5(live, id, threadId, params))
+      (await handleCodexSignIn(live, id, threadId, params))
     )
       return;
     if (!confirmation || live.cancelled || live.muteUpdates) {
@@ -1908,9 +1906,9 @@ async function handleServerRequest(
   const plain = isPlainCodexApproval(method, params);
   const ruleMayAccept = mapped.kind === "file-change" && plain;
   const insideFolders = () =>
-    codexRequestInsideChatFolders_l5(
-      live.fileChanges_l5,
-      live.chatFolders_l5,
+    codexRequestInsideChatFolders(
+      live.fileChanges,
+      live.chatFolders,
       method,
       params,
     );
@@ -1962,7 +1960,7 @@ async function handleServerRequest(
     (await insideFolders());
   await live.rpc.respond(id, {
     decision: amendment
-      ? codexNetworkAmendmentDecision_l5(amendment)
+      ? codexNetworkAmendmentDecision(amendment)
       : toCodexApprovalDecision(decision, mapped.kind, { forSession }),
   });
 }
@@ -2013,7 +2011,7 @@ export function __codexTestResumeMap(): Map<string, Resume> {
  * `lastTurnId` (inclusive) when given. Returns the new thread's id, which the
  * new chat is bound to. The source thread is left as it was.
  */
-export async function forkCodexSession_l1(input: {
+export async function forkCodexSession(input: {
   source: HarnessSessionInput;
   boundary?: string;
 }): Promise<{ providerSessionId?: string }> {
@@ -2040,7 +2038,7 @@ export async function forkCodexSession_l1(input: {
  * The connection and thread of a live Codex session, for calls made beside
  * the turn (background terminals, fork). Null when no app-server is up.
  */
-export function codexLiveThread_l1(
+export function codexLiveThread(
   sessionId: string,
 ): { rpc: JsonRpcClient; threadId: string } | null {
   const live = liveByThread.get(sessionId);
@@ -2052,17 +2050,17 @@ export function codexLiveThread_l1(
  * the chat-folder check, and the images of finished MCP tool calls, such as
  * browser screenshots, kept for the transcript as Claude Code's are.
  */
-function noteCodexNotification_l5(
+function noteCodexNotification(
   live: Live,
   sessionId: string,
   method: string,
   params: unknown,
 ): void {
-  recordCodexFileChange_l5(live.fileChanges_l5, method, params);
+  recordCodexFileChange(live.fileChanges, method, params);
   if (live.muteUpdates || live.cancelled) return;
-  const found = codexMcpResultImages_l5(method, params, live.threadId);
+  const found = codexMcpResultImages(method, params, live.threadId);
   if (!found) return;
-  void keepToolResultImages_l5({
+  void keepToolResultImages({
     sessionId,
     callId: found.callId,
     images: found.images,
@@ -2075,13 +2073,13 @@ function noteCodexNotification_l5(
  * card that opens the page on the user's click. Returns false when the
  * request is neither, so the caller cancels it with a note.
  */
-async function handleCodexSignIn_l5(
+async function handleCodexSignIn(
   live: Live,
   id: JsonRpcId,
   threadId: string,
   params: unknown,
 ): Promise<boolean> {
-  const form = codexElicitationForm_l5(params);
+  const form = codexElicitationForm(params);
   if (form) {
     const uiId = live.nextApprovalUiId++;
     const event: Extract<HarnessEvent, { type: "question.asked" }> = {
@@ -2125,7 +2123,7 @@ async function handleCodexSignIn_l5(
       });
       return true;
     }
-    const answer = codexElicitationContent_l5(form, reply);
+    const answer = codexElicitationContent(form, reply);
     if (!answer.ok)
       live.onEvent({
         type: "status",
@@ -2139,7 +2137,7 @@ async function handleCodexSignIn_l5(
     );
     return true;
   }
-  const signIn = codexElicitationSignIn_l5(params);
+  const signIn = codexElicitationSignIn(params);
   if (!signIn) return false;
   const uiId = live.nextApprovalUiId++;
   const pending = waitApproval(live, uiId, id, "permissions", threadId);
@@ -2165,10 +2163,10 @@ async function handleCodexSignIn_l5(
  * Keep the chat's folders current: a folder added mid-session applies from
  * the next turn. Spread into the `turn/start` params, where it adds nothing.
  */
-function noteCodexChatFolders_l5(
+function noteCodexChatFolders(
   live: Live,
   extraDirs: string[] | undefined,
 ): Record<string, never> {
-  live.chatFolders_l5 = chatFolders_l5(live.cwd, extraDirs);
+  live.chatFolders = chatFolders(live.cwd, extraDirs);
   return {};
 }

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  harnessListsSessions_l1,
-  listHarnessSessions_l1,
-  readHarnessSessionTurns_l1,
+  harnessListsSessions,
+  listHarnessSessions,
+  readHarnessSessionTurns,
   registerHarness,
   type HarnessAdapter,
 } from "./registry";
@@ -26,16 +26,16 @@ afterEach(() => {
 describe("session list wrappers", () => {
   it("refuse to list and import nothing on a harness without them (corner case 11)", async () => {
     registerHarness(adapter({}));
-    expect(harnessListsSessions_l1("grok")).toBe(false);
-    await expect(listHarnessSessions_l1("grok", { cwd: "/r" })).rejects.toThrow(
+    expect(harnessListsSessions("grok")).toBe(false);
+    await expect(listHarnessSessions("grok", { cwd: "/r" })).rejects.toThrow(
       "grok cannot list its sessions",
     );
     await expect(
-      readHarnessSessionTurns_l1("grok", { cwd: "/r", providerSessionId: "s" }),
+      readHarnessSessionTurns("grok", { cwd: "/r", providerSessionId: "s" }),
     ).resolves.toBeNull();
     // A harness that is not installed at all.
-    expect(harnessListsSessions_l1("omp")).toBe(false);
-    await expect(listHarnessSessions_l1("omp", { cwd: "/r" })).rejects.toThrow();
+    expect(harnessListsSessions("omp")).toBe(false);
+    await expect(listHarnessSessions("omp", { cwd: "/r" })).rejects.toThrow();
   });
 
   it("pass through to the adapter, errors included", async () => {
@@ -44,13 +44,13 @@ describe("session list wrappers", () => {
       throw new Error("thread not loaded");
     });
     registerHarness(adapter({ listSessions, readSessionTurns }));
-    expect(harnessListsSessions_l1("grok")).toBe(true);
+    expect(harnessListsSessions("grok")).toBe(true);
     await expect(
-      listHarnessSessions_l1("grok", { cwd: "/r", providerAccountId: "x" }),
+      listHarnessSessions("grok", { cwd: "/r", providerAccountId: "x" }),
     ).resolves.toHaveLength(1);
     expect(listSessions).toHaveBeenCalledWith({ cwd: "/r", providerAccountId: "x" });
     await expect(
-      readHarnessSessionTurns_l1("grok", { cwd: "/r", providerSessionId: "s" }),
+      readHarnessSessionTurns("grok", { cwd: "/r", providerSessionId: "s" }),
     ).rejects.toThrow("thread not loaded");
   });
 });

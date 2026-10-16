@@ -110,8 +110,8 @@ export function UsageProviderChip({
       !limits.monthly);
   // Usage figures switched off reads as off, not as a lost sign-in (Mac
   // finding 5.9).
-  const usageOff_s6 = usageSwitchedOff(limits);
-  const disconnected = limits.status === "unavailable" && !usageOff_s6;
+  const usageOff = usageSwitchedOff(limits);
+  const disconnected = limits.status === "unavailable" && !usageOff;
   const windows = usageWindows(limits);
   const loginView = Boolean(
     onReconnect &&
@@ -246,7 +246,7 @@ export function UsageProviderChip({
         <HarnessIcon harness={iconHarness} className="size-3 shrink-0" />
         {loading ? (
           <span className="animate-pulse text-content/35">···</span>
-        ) : usageOff_s6 ? (
+        ) : usageOff ? (
           <span className="text-content/35">usage off</span>
         ) : disconnected ? (
           <span className="text-content/35">not connected</span>

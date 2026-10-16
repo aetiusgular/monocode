@@ -131,8 +131,8 @@ import { AddFolderMenuItem } from "../../session-tools/ui/AddFolderMenuItem";
 import { ConnectorsBadge } from "../../session-tools/ui/ConnectorsBadge";
 import { ConnectorsMenuItem } from "../../session-tools/ui/ConnectorsMenuItem";
 import { ConnectorsPopover } from "../../session-tools/ui/ConnectorsPopover";
-import { gatewayOffByDefault as gatewayOffByDefault_s6 } from "../../gateway-connectors/model/sessionGateway";
-import { useInstalledConnectors as useInstalledConnectors_s6 } from "../../gateway-connectors/model/installed";
+import { gatewayOffByDefault } from "../../gateway-connectors/model/sessionGateway";
+import { useInstalledConnectors } from "../../gateway-connectors/model/installed";
 import { ExtraDirChips } from "../../session-tools/ui/ExtraDirChips";
 import { ResearchChip } from "../../research-mode/ui/ResearchChip";
 import { ResearchMenuItem } from "../../research-mode/ui/ResearchMenuItem";
@@ -258,26 +258,26 @@ import {
 } from "../../settings/model/mcpSettingsCache";
 import type { LastTurnRecall } from "../model/editLastTurn";
 import { useComposerAutocorrect } from "../../settings/model/displayPrefs";
-import { PickUpMenuItem as PickUpMenuItem_l1 } from "../../session-import/ui/PickUpMenuItem";
-import { PickUpSessionPopover as PickUpSessionPopover_l1 } from "../../session-import/ui/PickUpSessionPopover";
-import type { PickUpTarget as PickUpTarget_l1 } from "../../session-import/model/pickUp";
-import { SuggestedPromptChips as SuggestedPromptChips_l2 } from "../../suggested-prompts/ui/SuggestedPromptChips";
-import type { SuggestedPrompt as SuggestedPrompt_l2 } from "../../suggested-prompts/model/suggestions";
-import { helperRouteForSession as helperRouteForSession_l4 } from "../../../integrations/harness/core/helperPrompt";
+import { PickUpMenuItem } from "../../session-import/ui/PickUpMenuItem";
+import { PickUpSessionPopover } from "../../session-import/ui/PickUpSessionPopover";
+import type { PickUpTarget } from "../../session-import/model/pickUp";
+import { SuggestedPromptChips } from "../../suggested-prompts/ui/SuggestedPromptChips";
+import type { SuggestedPrompt } from "../../suggested-prompts/model/suggestions";
+import { helperRouteForSession } from "../../../integrations/harness/core/helperPrompt";
 import {
-  BrowserToolsMenuItem as BrowserToolsMenuItem_l5,
-  useBrowserServers as useBrowserServers_l5,
+  BrowserToolsMenuItem,
+  useBrowserServers,
 } from "../../browser-tools/ui/BrowserToolsMenuItem";
 import {
-  SessionPrivateBadge as SessionPrivateBadge_l5,
-  type PrivacyPanelSession as PrivacyPanelSession_l5,
+  SessionPrivateBadge,
+  type PrivacyPanelSession,
 } from "../../privacy-view/ui/SessionPrivacy";
-import { ProviderBadge as ProviderBadge_l5 } from "../../privacy-view/ui/ProviderBadge";
+import { ProviderBadge } from "../../privacy-view/ui/ProviderBadge";
 import {
-  autoModeAllowed as autoModeAllowed_l5,
-  type SessionProviderInput as SessionProviderInput_l5,
+  autoModeAllowed,
+  type SessionProviderInput,
 } from "../../model-setup/model/sessionProvider";
-import { harnessCan as harnessCan_l5 } from "../../../integrations/harness/core/capabilities";
+import { harnessCan } from "../../../integrations/harness/core/capabilities";
 
 type Props = {
   enabled?: boolean;
@@ -401,20 +401,20 @@ type Props = {
   ) => void;
   children?: ReactNode;
   /** #45: offers the harness's own sessions for this folder, when set. */
-  pickUp_l1?: PickUpTarget_l1;
+  pickUp?: PickUpTarget;
   /** #46: chips from the project's state; a click fills the input. */
-  suggestedPrompts?: readonly SuggestedPrompt_l2[];
+  suggestedPrompts?: readonly SuggestedPrompt[];
   onDismissSuggestedPrompts?: () => void;
   /**
    * The chat was used: a prompt was sent or the harness holds a conversation.
    * A blank chat's harness was never chosen for anything, so its Generate
    * asks before a diff leaves (Mac finding 10.2, security review F6).
    */
-  sessionUsed_l4?: boolean;
+  sessionUsed?: boolean;
   /** The chat's provider, account and Codex permissions profile (lane 5). */
-  privacySession_l5?: SessionProviderInput_l5 & PrivacyPanelSession_l5;
+  privacySession?: SessionProviderInput & PrivacyPanelSession;
   /** Sets the chat's provider or profile; "" clears it. */
-  onPrivacyPatch_l5?: (patch: {
+  onPrivacyPatch?: (patch: {
     modelProvider?: string;
     permissionsProfile?: string;
     gatewayOn?: string[];
@@ -551,12 +551,12 @@ export function Composer({
   onEditingLastTurnChange,
   onRestorePromptReady,
   children,
-  pickUp_l1,
+  pickUp,
   suggestedPrompts,
   onDismissSuggestedPrompts,
-  sessionUsed_l4 = false,
-  privacySession_l5,
-  onPrivacyPatch_l5,
+  sessionUsed = false,
+  privacySession,
+  onPrivacyPatch,
 }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -773,19 +773,19 @@ export function Composer({
     harnessSupportsConnectorSwitches(harness);
   const connectorsAtTurnStart = useTurnStartSnapshot(disabledMcpServers, busy);
   // Gateway connectors a local model starts with switched off (Mac 1.3).
-  const installedConnectors_s6 = useInstalledConnectors_s6();
+  const installedConnectors = useInstalledConnectors();
   const connectorsOffCount =
     disabledMcpServers.length +
-    (connectorsSupported && privacySession_l5 && onPrivacyPatch_l5
-      ? gatewayOffByDefault_s6(
+    (connectorsSupported && privacySession && onPrivacyPatch
+      ? gatewayOffByDefault(
           {
-            ...privacySession_l5,
+            ...privacySession,
             id: sessionId,
             harness,
             disabledMcpServers,
           },
           executionCwd,
-          installedConnectors_s6,
+          installedConnectors,
         ).length
       : 0);
   const toolAccessSupported =
@@ -1969,7 +1969,7 @@ export function Composer({
   };
 
   /** #46: fill the input with a suggestion; it is never sent from here. */
-  const fillSuggestion_l2 = (prompt: SuggestedPrompt_l2) => {
+  const fillSuggestion = (prompt: SuggestedPrompt) => {
     const el = ref.current;
     if (!el || el.value.trim()) return;
     el.value = prompt.prompt;
@@ -1982,8 +1982,8 @@ export function Composer({
   };
   // F6: a commit before a branch switch is written by this session's model.
   // A blank chat passes a bare harness id, so Generate asks first.
-  const helperRoute_l4 = sessionUsed_l4
-    ? helperRouteForSession_l4({
+  const helperRoute = sessionUsed
+    ? helperRouteForSession({
         harness,
         model,
         modelSettings,
@@ -1992,7 +1992,7 @@ export function Composer({
         ...(sessionId ? { id: sessionId } : {}),
       })
     : harness;
-  const browserServers_l5 = useBrowserServers_l5({
+  const browserServers = useBrowserServers({
     harness,
     cwd: executionCwd,
     sessionId,
@@ -2249,7 +2249,7 @@ export function Composer({
                     <BranchPicker
                       cwd={executionCwd}
                       branch={branch}
-                      textHarness={helperRoute_l4}
+                      textHarness={helperRoute}
                       enabled={enabled && !busy}
                       onChange={onBranchChange}
                       onClose={() => ref.current?.focus()}
@@ -2277,7 +2277,7 @@ export function Composer({
                   <BranchPicker
                     cwd={executionCwd}
                     branch={branch}
-                    textHarness={helperRoute_l4}
+                    textHarness={helperRoute}
                     enabled={enabled && !busy}
                     onChange={onBranchChange}
                     onClose={() => ref.current?.focus()}
@@ -2326,9 +2326,9 @@ export function Composer({
           !draft.trim() &&
           attachments.length === 0 &&
           suggestedPrompts?.length ? (
-            <SuggestedPromptChips_l2
+            <SuggestedPromptChips
               prompts={suggestedPrompts}
-              onPick={fillSuggestion_l2}
+              onPick={fillSuggestion}
               onDismiss={() => onDismissSuggestedPrompts?.()}
             />
           ) : null}
@@ -2557,9 +2557,9 @@ export function Composer({
                       }}
                     />
                   ) : null}
-                  {pickUp_l1 && !remote ? (
-                    <PickUpMenuItem_l1
-                      harness={pickUp_l1.harness}
+                  {pickUp && !remote ? (
+                    <PickUpMenuItem
+                      harness={pickUp.harness}
                       onOpen={() => {
                         setPlusOpen(false);
                         setChatList("pick-up");
@@ -2567,8 +2567,8 @@ export function Composer({
                     />
                   ) : null}
                   {connectorsSupported ? (
-                    <BrowserToolsMenuItem_l5
-                      servers={browserServers_l5}
+                    <BrowserToolsMenuItem
+                      servers={browserServers}
                       disabled={disabledMcpServers}
                       harness={harness}
                       runtimeMode={runtimeMode}
@@ -2741,10 +2741,10 @@ export function Composer({
                   disabled={disabledMcpServers}
                   atTurnStart={connectorsAtTurnStart}
                   onChange={(names) => onDisabledMcpServersChange?.(names)}
-                  localDefault={privacySession_l5}
+                  localDefault={privacySession}
                   onGatewayOnChange={
-                    onPrivacyPatch_l5
-                      ? (gatewayOn) => onPrivacyPatch_l5({ gatewayOn })
+                    onPrivacyPatch
+                      ? (gatewayOn) => onPrivacyPatch({ gatewayOn })
                       : undefined
                   }
                   onManage={() => {
@@ -2836,10 +2836,10 @@ export function Composer({
                   }}
                 />
               ) : null}
-              {chatList === "pick-up" && pickUp_l1 && !remote ? (
-                <PickUpSessionPopover_l1
+              {chatList === "pick-up" && pickUp && !remote ? (
+                <PickUpSessionPopover
                   anchor={plusRef}
-                  target={pickUp_l1}
+                  target={pickUp}
                   onDismiss={(reason) => {
                     setChatList(null);
                     if (reason === "escape") ref.current?.focus();
@@ -2928,18 +2928,18 @@ export function Composer({
               }}
             >
               <div className="flex shrink-0 items-center gap-1">
-                {privacySession_l5 ? (
-                  <ProviderBadge_l5
-                    session={privacySession_l5}
+                {privacySession ? (
+                  <ProviderBadge
+                    session={privacySession}
                     onChange={
-                      onPrivacyPatch_l5
-                        ? (modelProvider) => onPrivacyPatch_l5({ modelProvider })
+                      onPrivacyPatch
+                        ? (modelProvider) => onPrivacyPatch({ modelProvider })
                         : undefined
                     }
                   />
                 ) : null}
-                {privacySession_l5 && !compact ? (
-                  <SessionPrivateBadge_l5 session={privacySession_l5} />
+                {privacySession && !compact ? (
+                  <SessionPrivateBadge session={privacySession} />
                 ) : null}
                 <ModelPicker
                   harness={harness}
@@ -2973,16 +2973,16 @@ export function Composer({
                     onChange={onRuntimeModeChange}
                     onClose={() => ref.current?.focus()}
                     hideAuto={
-                      privacySession_l5
-                        ? !autoModeAllowed_l5(privacySession_l5)
+                      privacySession
+                        ? !autoModeAllowed(privacySession)
                         : false
                     }
-                    unsandboxed={!harnessCan_l5(harness, "sandboxed")}
-                    profile={privacySession_l5?.permissionsProfile}
+                    unsandboxed={!harnessCan(harness, "sandboxed")}
+                    profile={privacySession?.permissionsProfile}
                     onProfileChange={
-                      harnessCan_l5(harness, "sandboxed") && onPrivacyPatch_l5
+                      harnessCan(harness, "sandboxed") && onPrivacyPatch
                         ? (permissionsProfile) =>
-                            onPrivacyPatch_l5({ permissionsProfile })
+                            onPrivacyPatch({ permissionsProfile })
                         : undefined
                     }
                   />

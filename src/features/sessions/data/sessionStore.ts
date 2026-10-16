@@ -361,7 +361,7 @@ function persistedSessionTools(
   const disabledPlugins = sanitizeDisabledPlugins(source?.disabledPlugins);
   const modelProvider = sanitizeModelProvider(source?.modelProvider);
   const gatewayOn = sanitizeGatewayOn(source?.gatewayOn);
-  const permissionsProfile_l5 = sanitizeModelProvider(source?.permissionsProfile);
+  const permissionsProfile = sanitizeModelProvider(source?.permissionsProfile);
   if (
     !extraDirs &&
     !disabledMcpServers &&
@@ -370,7 +370,7 @@ function persistedSessionTools(
     !disabledPlugins &&
     !modelProvider &&
     !gatewayOn
-    && !permissionsProfile_l5
+    && !permissionsProfile
   ) {
     return undefined;
   }
@@ -382,7 +382,7 @@ function persistedSessionTools(
     ...(disabledPlugins ? { disabledPlugins } : {}),
     ...(modelProvider ? { modelProvider } : {}),
     ...(gatewayOn ? { gatewayOn } : {}),
-    ...(permissionsProfile_l5 ? { permissionsProfile: permissionsProfile_l5 } : {}),
+    ...(permissionsProfile ? { permissionsProfile } : {}),
   };
 }
 

@@ -122,21 +122,21 @@ import type {
   SendTurnInput,
   SteerTurnInput,
 } from "../../core/types";
-import { claudeBackgroundItems as claudeBackgroundItems_l1 } from "./claudeBackground";
-import { backgroundItemsKey as backgroundItemsKey_l1 } from "../../core/background";
-import { agentsMdPluginConfig as agentsMdPluginConfig_l2 } from "../../../../features/project-context/model/instructions";
-import { loadClaudeToolLoading as loadClaudeToolLoading_l4 } from "../../../../features/gateway-connectors/model/toolLoading";
+import { claudeBackgroundItems } from "./claudeBackground";
+import { backgroundItemsKey } from "../../core/background";
+import { agentsMdPluginConfig } from "../../../../features/project-context/model/instructions";
+import { loadClaudeToolLoading } from "../../../../features/gateway-connectors/model/toolLoading";
 import {
-  chatFolders as chatFolders_l5,
-  claudeWritePath as claudeWritePath_l5,
-  pathsInsideChatFolders as pathsInsideChatFolders_l5,
+  chatFolders,
+  claudeWritePath,
+  pathsInsideChatFolders,
 } from "../../../../features/tool-access/model/chatFolders";
 import {
-  blockedFetchMessage as blockedFetchMessage_l5,
-  blockedSiteMessage as blockedSiteMessage_l5,
-  siteApprovalRequest as siteApprovalRequest_l5,
+  blockedFetchMessage,
+  blockedSiteMessage,
+  siteApprovalRequest,
 } from "../../../../features/browser-tools/model/browserTools";
-import { siteRule as siteRule_l5 } from "../../../../features/browser-tools/model/siteRules";
+import { siteRule } from "../../../../features/browser-tools/model/siteRules";
 
 /**
  * A PermissionRequest hook can decide before the user touches the prompt; Claude
@@ -258,9 +258,9 @@ type Live = {
   manualCompaction: boolean;
   compactionConfirmed: boolean;
   /** Last Running list sent to the UI, to skip repeats. */
-  backgroundItemsKey_l1: string;
+  backgroundItemsKey: string;
   /** The chat's working folder and added folders, for automatic yeses. */
-  chatFolders_l5: string[];
+  chatFolders: string[];
 };
 
 type Resume = {
@@ -802,7 +802,7 @@ async function ensureLive(
     canResume &&
     !resumeAt &&
     !lastEntryByThread.has(input.sessionId) &&
-    forkByThread_l1.get(input.sessionId) !== claudeSessionId
+    forkByThread.get(input.sessionId) !== claudeSessionId
   ) {
     const uuid = await readClaudeLastEntry({
       cwd: input.cwd,
@@ -861,8 +861,8 @@ async function ensureLive(
     pendingAssistantBoundary: false,
     manualCompaction: false,
     compactionConfirmed: false,
-    backgroundItemsKey_l1: "",
-    chatFolders_l5: chatFolders_l5(input.cwd, input.extraDirs),
+    backgroundItemsKey: "",
+    chatFolders: chatFolders(input.cwd, input.extraDirs),
   };
   liveRef.current = live;
 
@@ -1525,10 +1525,10 @@ async function handleControlRequest(
   // even when the tool itself is always allowed: that rule does not cover new
   // sites. A call no rule may answer (no website named, several, or code)
   // always shows the card. Full access never asks, as for any tool.
-  const site = siteApprovalRequest_l5(toolName, input);
+  const site = siteApprovalRequest(toolName, input);
   if (site) {
     const blocked = site.hosts.find(
-      (host) => siteRule_l5(sessionId, live.cwd, host) === "never",
+      (host) => siteRule(sessionId, live.cwd, host) === "never",
     );
     if (blocked) {
       await writeJson(
@@ -1536,15 +1536,15 @@ async function handleControlRequest(
         replyTo(live, control, control.requestId, {
           behavior: "deny",
           message: site.fetch
-            ? blockedFetchMessage_l5(blocked)
-            : blockedSiteMessage_l5(blocked),
+            ? blockedFetchMessage(blocked)
+            : blockedSiteMessage(blocked),
         }),
       );
       return;
     }
     if (
       site.ruleable &&
-      siteRule_l5(sessionId, live.cwd, site.host) === "always"
+      siteRule(sessionId, live.cwd, site.host) === "always"
     ) {
       await writeJson(
         sessionId,
@@ -1567,19 +1567,19 @@ async function handleControlRequest(
   // prefix only (Claude Code's own "don't ask again for"). Before it answers,
   // the project is checked for what the rule's words would run that the user
   // never saw: a command the repository's git config names, for one.
-  const commandRuleKey_s6 =
+  const matchedRuleKey =
     !site &&
     toolName === COMMAND_RULE_TOOL &&
     !live.toolRules.always.has(toolName)
       ? matchingCommandRule(live.toolRules.always, input.command)
       : null;
-  const commandGate_s6 = commandRuleKey_s6
-    ? await commandRuleGate(commandRuleKey_s6, live.cwd, undefined, sessionId)
+  const commandGate = matchedRuleKey
+    ? await commandRuleGate(matchedRuleKey, live.cwd, undefined, sessionId)
     : null;
   if (
     !site &&
-    (live.toolRules.always.has(toolName) || commandGate_s6?.allow === true) &&
-    (await claudeRuleHeldToFolders_l5(live, toolName, input))
+    (live.toolRules.always.has(toolName) || commandGate?.allow === true) &&
+    (await claudeRuleHeldToFolders(live, toolName, input))
   ) {
     await writeJson(
       sessionId,
@@ -1614,11 +1614,11 @@ async function handleControlRequest(
   // so allowing it again keeps the script as it is now.
   // A package script prefix waits for package.json; other cards do not wait.
   const heldRule =
-    commandGate_s6?.allow === false &&
-    commandGate_s6.reason === "script-changed" &&
-    commandRuleKey_s6
-      ? { ...approvalTool(commandRuleKey_s6)!, changed: true }
-      : heldChatRule_s6(
+    commandGate?.allow === false &&
+    commandGate.reason === "script-changed" &&
+    matchedRuleKey
+      ? { ...approvalTool(matchedRuleKey)!, changed: true }
+      : heldChatRule(
           claudeCommandChatRule(toolName, input, control.permissionSuggestions),
           input.command,
           live.cwd,
@@ -1627,7 +1627,7 @@ async function handleControlRequest(
     heldRule instanceof Promise ? await heldRule : heldRule;
   // Read without holding the card back; an answer waits for it (R3).
   const scriptPrint = chatRule
-    ? chatRuleScriptPrint_s6(chatRule.key, live.cwd)
+    ? chatRuleScriptPrint(chatRule.key, live.cwd)
     : undefined;
   if (scriptPrint) {
     const entry = live.approvals.get(uiId);
@@ -2292,11 +2292,11 @@ function syncBackgroundWait(live: Live): void {
   // Claude has yielded. A cancelled turn has asked all of them to stop.
   const items =
     live.activeTurn && !live.cancelled
-      ? claudeBackgroundItems_l1(live.backgroundTasks)
+      ? claudeBackgroundItems(live.backgroundTasks)
       : [];
-  const itemsKey = backgroundItemsKey_l1(items);
-  if (itemsKey !== live.backgroundItemsKey_l1) {
-    live.backgroundItemsKey_l1 = itemsKey;
+  const itemsKey = backgroundItemsKey(items);
+  if (itemsKey !== live.backgroundItemsKey) {
+    live.backgroundItemsKey = itemsKey;
     if (!live.muteUpdates) live.onEvent({ type: "background.items", items });
   }
   const key = waiting.join("\n");
@@ -2407,7 +2407,7 @@ function settingsKeyFor(input: HarnessSessionInput): string {
     disabledSkills: input.disabledSkills,
     disabledPlugins: input.disabledPlugins,
     gatewayConnectors: input.gatewayConnectors,
-    toolLoading: loadClaudeToolLoading_l4(),
+    toolLoading: loadClaudeToolLoading(),
   })}`;
 }
 
@@ -2559,11 +2559,11 @@ function launchOptions(
   }
   // A fork resumes the source conversation once, as a copy. Once Claude has
   // bound the copy's own id, `resume` is that id and the fork is done.
-  const fork_l1 = forkByThread_l1.get(input.sessionId);
-  if (fork_l1 && fork_l1 !== resume) forkByThread_l1.delete(input.sessionId);
-  const forkSession_l1 = fork_l1 !== undefined && fork_l1 === resume;
-  const agentsMd_l2 = agentsMdPluginConfig_l2(input.agentsMdPlugin);
-  if (agentsMd_l2) settings.pluginConfigs = agentsMd_l2;
+  const fork = forkByThread.get(input.sessionId);
+  if (fork && fork !== resume) forkByThread.delete(input.sessionId);
+  const forkSession = fork !== undefined && fork === resume;
+  const agentsMd = agentsMdPluginConfig(input.agentsMdPlugin);
+  if (agentsMd) settings.pluginConfigs = agentsMd;
   return {
     model: resolveClaudeApiModelId(native, context),
     effort: normalizeClaudeCliEffort(effortRaw, native),
@@ -2587,11 +2587,11 @@ function launchOptions(
     ],
     disabledMcpServers: input.disabledMcpServers,
     gatewayConnectors: input.gatewayConnectors,
-    ...(forkSession_l1 ? { forkSession: true } : {}),
+    ...(forkSession ? { forkSession: true } : {}),
     ...(input.preambleFile && !resume
       ? { appendSystemPromptFile: input.preambleFile }
       : {}),
-    toolLoading: loadClaudeToolLoading_l4(),
+    toolLoading: loadClaudeToolLoading(),
   };
 }
 
@@ -2607,16 +2607,16 @@ export function __claudeTestReset(): void {
 /**
  * Chats waiting to start as a fork, by MonoCode session id, with the source
  * Claude conversation they copy. In memory only: a fork must get its first
- * prompt before the app restarts (see `prepareClaudeFork_l1`).
+ * prompt before the app restarts (see `prepareClaudeFork`).
  */
-const forkByThread_l1 = new Map<string, string>();
+const forkByThread = new Map<string, string>();
 
 /**
  * Makes the next start of `threadId` a fork of another Claude conversation:
  * `--resume <source> --fork-session`, and `--resume-session-at <at>` to copy
  * it only up to an entry. The source conversation is never written to.
  */
-export function prepareClaudeFork_l1(input: {
+export function prepareClaudeFork(input: {
   threadId: string;
   providerSessionId: string;
   cwd: string;
@@ -2630,7 +2630,7 @@ export function prepareClaudeFork_l1(input: {
   if (liveByThread.has(input.threadId)) {
     throw new Error("The new chat is already running");
   }
-  forkByThread_l1.set(input.threadId, source);
+  forkByThread.set(input.threadId, source);
   resumeByThread.set(input.threadId, {
     sessionId: source,
     cwd: input.cwd,
@@ -2645,7 +2645,7 @@ export function prepareClaudeFork_l1(input: {
 }
 
 /** The adapter's `forkSession`: the copy binds its own id on its first start. */
-export async function forkClaudeSession_l1(input: {
+export async function forkClaudeSession(input: {
   sourceSessionId: string;
   newSessionId: string;
   providerSessionId: string;
@@ -2656,7 +2656,7 @@ export async function forkClaudeSession_l1(input: {
   if (liveByThread.get(input.sourceSessionId)?.activeTurn) {
     throw new Error("Stop the current turn before forking");
   }
-  prepareClaudeFork_l1({
+  prepareClaudeFork({
     threadId: input.newSessionId,
     providerSessionId: input.providerSessionId,
     cwd: input.cwd,
@@ -2667,15 +2667,15 @@ export async function forkClaudeSession_l1(input: {
 }
 
 /** Test seam. */
-export function __claudeForkPending_l1(threadId: string): string | undefined {
-  return forkByThread_l1.get(threadId);
+export function __claudeForkPending(threadId: string): string | undefined {
+  return forkByThread.get(threadId);
 }
 /**
  * Stops one task Claude Code runs beside the turn, by its task id, with the
  * same `stop_task` request a cancel sends for all of them. False when the
  * session or the task is not live.
  */
-export async function stopClaudeBackgroundTask_l1(
+export async function stopClaudeBackgroundTask(
   sessionId: string,
   taskId: string,
 ): Promise<boolean> {
@@ -2690,21 +2690,21 @@ export async function stopClaudeBackgroundTask_l1(
   );
   return true;
 }
-async function claudeRuleHeldToFolders_l5(
+async function claudeRuleHeldToFolders(
   live: Live,
   toolName: string,
   input: Record<string, unknown>,
 ): Promise<boolean> {
-  const path = claudeWritePath_l5(toolName, input);
+  const path = claudeWritePath(toolName, input);
   if (path === undefined) return true;
-  return pathsInsideChatFolders_l5(
+  return pathsInsideChatFolders(
     path === null ? null : [path],
-    live.chatFolders_l5,
+    live.chatFolders,
   );
 }
 
 /** The fingerprint a package script rule is kept with, read now (R3). */
-function chatRuleScriptPrint_s6(
+function chatRuleScriptPrint(
   ruleKey: string,
   cwd: string,
 ): Promise<{ ruleKey: string; fingerprint: string } | undefined> | undefined {
@@ -2721,7 +2721,7 @@ function chatRuleScriptPrint_s6(
  * The card's rule, held to the scripts in the project's `package.json` (R4).
  * Waits only for a package script prefix rule, so other cards are not held.
  */
-function heldChatRule_s6(
+function heldChatRule(
   chatRule: ApprovalTool | undefined,
   command: unknown,
   cwd: string,

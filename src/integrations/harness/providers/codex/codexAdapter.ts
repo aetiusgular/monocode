@@ -4,6 +4,7 @@ import {
   compactCodexContext,
   rewindCodexLastTurn,
   forgetCodexSession,
+  forkCodexSession,
   keepCodexQuestionOpen,
   respondCodexApproval,
   respondCodexQuestion,
@@ -32,13 +33,12 @@ import {
   type HarnessAdapter,
 } from "../../core/registry";
 import {
-  listCodexBackgroundTasks as listCodexBackgroundTasks_l1,
-  stopCodexBackgroundTask as stopCodexBackgroundTask_l1,
+  listCodexBackgroundTasks,
+  stopCodexBackgroundTask,
 } from "./codexBackground";
-import { forkCodexSession_l1 } from "./codex";
 import {
-  listCodexSessions as listCodexSessions_l1,
-  readCodexSessionTurns as readCodexSessionTurns_l1,
+  listCodexSessions,
+  readCodexSessionTurns,
 } from "./codexSessions";
 
 export const codexAdapter: HarnessAdapter = {
@@ -65,12 +65,12 @@ export const codexAdapter: HarnessAdapter = {
   runTextPrompt: runCodexTextPrompt,
   stopTextPrompt: stopCodexTextPrompt,
   listMcpServers: listCodexMcpServers,
-  listBackgroundTasks: listCodexBackgroundTasks_l1,
-  stopBackgroundTask: stopCodexBackgroundTask_l1,
+  listBackgroundTasks: listCodexBackgroundTasks,
+  stopBackgroundTask: stopCodexBackgroundTask,
   forkSession: (input) =>
-    forkCodexSession_l1({ source: input.source, boundary: input.boundary }),
-  listSessions: listCodexSessions_l1,
-  readSessionTurns: readCodexSessionTurns_l1,
+    forkCodexSession({ source: input.source, boundary: input.boundary }),
+  listSessions: listCodexSessions,
+  readSessionTurns: readCodexSessionTurns,
 };
 
 let registered = false;

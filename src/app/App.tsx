@@ -192,6 +192,7 @@ import {
   leafIds,
   movePane,
   neighborLeafId,
+  newAppPreviewTab,
   newEditorWorkspaceTab,
   newFileTab,
   newPlanTab,
@@ -253,8 +254,14 @@ import {
   removeTabFromGroup,
   tabGroupProject,
 } from "../features/workspace/model/tabGroups";
-import { type WindowTransferPayload } from "./model/windowTransfer";
-import { bootSessionsToBind as bootSessionsToBind_s6 } from "./model/windowTransfer";
+import {
+  bootSessionsToBind,
+  collectWindowTransfer,
+  popOutCheck,
+  popOutTabs,
+  setPopOutHost,
+  type WindowTransferPayload,
+} from "./model/windowTransfer";
 import {
   confirmCloseTerminal,
   confirmCloseTerminals,
@@ -303,6 +310,7 @@ import {
   type HarnessEvent,
   type UserQuestionReply,
 } from "../integrations/harness";
+import type { ApprovalOptions } from "../features/tool-access/model/networkApproval";
 import { supportsHarnessLogin } from "../integrations/harness/core/authSupport";
 import {
   appendPreparingHandoff,
@@ -556,7 +564,10 @@ import {
   tabVisitForward,
   type TabVisitHistory,
 } from "../features/workspace/model/tabVisitHistory";
-import { preparePrompt } from "../features/sessions/model/promptPreparation";
+import {
+  inlineMentionSource,
+  preparePrompt,
+} from "../features/sessions/model/promptPreparation";
 import {
   consumeOperatorCommand,
   operatorEnabledInThread,
@@ -642,10 +653,12 @@ import {
 import { ArtifactPanel } from "../features/artifacts/ui/ArtifactPanel";
 import { confirmDeleteChats } from "../features/sessions/model/deleteConfirm";
 import {
+  automationRunSettlement,
   beginAutomationRun,
   evaluateAutomationSchedule,
   listAutomations,
   recoverAutomationRuns,
+  startManualAutomationRun,
   updateAutomationRun,
   type Automation,
   type AutomationRun,
@@ -817,56 +830,48 @@ import {
   setQuitWorkspace,
   type ResumedWorkspace,
 } from "./model/appLifecycle";
-import { withEmptyTurnNotice as withEmptyTurnNotice_s6 } from "../features/sessions/model/emptyTurn";
-import { inlineMentionSource as inlineMentionSource_s6 } from "../features/sessions/model/promptPreparation";
-import { gatewayOnAtFirstTurn as gatewayOnAtFirstTurn_s6 } from "../features/gateway-connectors/model/localDefault";
-import { newChatLike as newChatLike_s6 } from "../features/session-preamble/model/newChatLike";
-import { sessionAfterCatalogRefresh as sessionAfterCatalogRefresh_s6 } from "../features/sessions/model/bootModel";
-import { rewindOptions as rewindOptions_l1 } from "../features/rewind/model/rewind";
-import { cutChatTranscript as cutChatTranscript_l1 } from "../features/rewind/model/turnRewind";
-import { runChatRewind as runChatRewind_l1 } from "../features/rewind/model/chatRewindRun";
-import { forkSessionAt as forkSessionAt_l1 } from "../features/rewind/model/forkSession";
-import { forkHarnessSession_l1 } from "../integrations/harness/core/registry";
-import { readHarnessSessionTurns_l1 } from "../integrations/harness/core/registry";
+import { withEmptyTurnNotice } from "../features/sessions/model/emptyTurn";
+import { gatewayOnAtFirstTurn } from "../features/gateway-connectors/model/localDefault";
+import { newChatLike } from "../features/session-preamble/model/newChatLike";
+import { sessionAfterCatalogRefresh } from "../features/sessions/model/bootModel";
+import { rewindOptions } from "../features/rewind/model/rewind";
+import { cutChatTranscript } from "../features/rewind/model/turnRewind";
+import { runChatRewind } from "../features/rewind/model/chatRewindRun";
+import { forkSessionAt } from "../features/rewind/model/forkSession";
 import {
-  boundProviderSessions as boundProviderSessions_l1,
-  pickedUpSession as pickedUpSession_l1,
+  forkHarnessSession,
+  readHarnessSessionTurns,
+} from "../integrations/harness/core/registry";
+import {
+  boundProviderSessions,
+  pickedUpSession,
 } from "../features/session-import/model/sessionImport";
-import type { HarnessSessionRow as HarnessSessionRow_l1 } from "../features/session-import/model/types";
-import { startManualAutomationRun as startManualAutomationRun_l2 } from "../features/automations/model/automations";
-import { automationRunSettlement } from "../features/automations/model/automations";
-import { appBlock as appBlock_l2 } from "../features/session-preamble/model/appBlock";
+import type { HarnessSessionRow } from "../features/session-import/model/types";
+import { appBlock } from "../features/session-preamble/model/appBlock";
 import {
-  forgetSessionContext as forgetSessionContext_l2,
-  prepareSessionPreamble as prepareSessionPreamble_l2,
-  type PreparedPreamble as PreparedPreamble_l2,
+  forgetSessionContext,
+  prepareSessionPreamble,
+  type PreparedPreamble,
 } from "../features/session-preamble/model/sessionPreamble";
-import { withPreambleBlock as withPreambleBlock_l2 } from "../features/session-preamble/model/preamble";
-import { chatContextPrefs as chatContextPrefs_l2 } from "../features/session-preamble/model/chatContext";
+import { withPreambleBlock } from "../features/session-preamble/model/preamble";
+import { chatContextPrefs } from "../features/session-preamble/model/chatContext";
 import {
-  agentsMdBesideClaudeMd as agentsMdBesideClaudeMd_l2,
-  agentsMdPluginId as agentsMdPluginId_l2,
+  agentsMdBesideClaudeMd,
+  agentsMdPluginId,
 } from "../features/project-context/model/instructions";
-import { claudeCliVersion as claudeCliVersion_l2 } from "../features/project-context/model/claudeVersion";
-import { newAppPreviewTab as newAppPreviewTab_l3 } from "../features/workspace/model/layout";
-import { setPreviewHost as setPreviewHost_l3 } from "../features/app-preview/model/previewHost";
-import { useVerifyAfterTurns as useVerifyAfterTurns_l3 } from "../features/verify/model/useVerifyAfterTurns";
+import { claudeCliVersion } from "../features/project-context/model/claudeVersion";
+import { setPreviewHost } from "../features/app-preview/model/previewHost";
+import { useVerifyAfterTurns } from "../features/verify/model/useVerifyAfterTurns";
 import {
-  canRunHelper as canRunHelper_l4,
-  helperBranchName as helperBranchName_l4,
-  helperRouteForCheckout as helperRouteForCheckout_l4,
-  helperRouteForSession as helperRouteForSession_l4,
-  helperTitle as helperTitle_l4,
-  setCheckoutSessionsSource as setCheckoutSessionsSource_l4,
+  canRunHelper,
+  helperBranchName,
+  helperRouteForCheckout,
+  helperRouteForSession,
+  helperTitle,
+  setCheckoutSessionsSource,
 } from "../integrations/harness/core/helperPrompt";
-import { setPrBarHost as setPrBarHost_l4 } from "../features/pr-bar/model/prBar";
-import {
-  collectWindowTransfer as collectWindowTransfer_l4,
-  popOutCheck as popOutCheck_l4,
-  popOutTabs as popOutTabs_l4,
-  setPopOutHost as setPopOutHost_l4,
-} from "./model/windowTransfer";
-import { forgetSiteRules as forgetSiteRules_l5 } from "../features/browser-tools/model/siteRules";
+import { setPrBarHost } from "../features/pr-bar/model/prBar";
+import { forgetSiteRules } from "../features/browser-tools/model/siteRules";
 
 const SearchView = lazySurface(
   async () => {
@@ -1783,8 +1788,8 @@ function Workspace({
 
   useEffect(() => {
     // A moved chat is bound like a restored one, so it resumes (Mac 4.14).
-    const bootSessions_s6 = bootSessionsToBind_s6(windowTransfer, resumed);
-    if (bootSessions_s6.length) bindResumedSessions(bootSessions_s6);
+    const bootSessions = bootSessionsToBind(windowTransfer, resumed);
+    if (bootSessions.length) bindResumedSessions(bootSessions);
     const stopBridge = startHarnessBridge();
     const reap = () => {
       if (isAppQuitting()) return;
@@ -1880,7 +1885,7 @@ function Workspace({
       setSessions((prev) =>
         prev.map((session) =>
           isLiveHarness(session.harness)
-            ? sessionAfterCatalogRefresh_s6(session)
+            ? sessionAfterCatalogRefresh(session)
             : session,
         ),
       );
@@ -5775,8 +5780,8 @@ function Workspace({
     (sessionId: string) =>
       onRemoveHistorySession(sessionId, "delete").then((removed) => {
         if (removed) {
-          forgetSessionContext_l2(sessionId);
-          forgetSiteRules_l5("chat", sessionId);
+          forgetSessionContext(sessionId);
+          forgetSiteRules("chat", sessionId);
         }
         return removed;
       }),
@@ -5822,8 +5827,8 @@ function Workspace({
       if (!(await confirmDeleteChats(sessionIds.length))) return;
       for (const sessionId of sessionIds) {
         if (!(await onRemoveHistorySession(sessionId, "delete", true))) break;
-        forgetSessionContext_l2(sessionId);
-        forgetSiteRules_l5("chat", sessionId);
+        forgetSessionContext(sessionId);
+        forgetSiteRules("chat", sessionId);
       }
     },
     [onRemoveHistorySession],
@@ -7127,16 +7132,16 @@ function Workspace({
       // only on a local model route (security review of the Mac fixes). The
       // route is judged as the privacy panel's model row judges it, after
       // asking the harness, for the folder the turn runs in.
-      const inlineTyped_s6 = options?.ciRepair
+      const inlineTyped = options?.ciRepair
         ? ""
         : rawCommand
           ? submittedText
           : promptText;
-      const inline_s6 = (turnCwd_s6: string) =>
-        inlineMentionSource_s6(inlineTyped_s6, {
+      const inline = (turnCwd: string) =>
+        inlineMentionSource(inlineTyped, {
           ...current,
           providerAccountId,
-          ...(turnCwd_s6 !== current.cwd ? { worktreeCwd: turnCwd_s6 } : {}),
+          ...(turnCwd !== current.cwd ? { worktreeCwd: turnCwd } : {}),
         });
 
       const pendingSwitch = pendingComposerSwitch(current);
@@ -7212,7 +7217,7 @@ function Workspace({
                 sessionId,
                 cwd: initialWorkCwd,
                 disabledSkills: turnDisabledSkills(current),
-                inline: await inline_s6(initialWorkCwd),
+                inline: await inline(initialWorkCwd),
               }),
             };
           },
@@ -7353,7 +7358,7 @@ function Workspace({
               sessionId,
               cwd: initialWorkCwd,
               disabledSkills: turnDisabledSkills(current),
-              inline: await inline_s6(initialWorkCwd),
+              inline: await inline(initialWorkCwd),
             });
             await steerHarnessTurn({
               harness: current.harness,
@@ -7567,8 +7572,8 @@ function Workspace({
             };
             // A Codex chat on a local model keeps its gateway connectors off
             // from its first message on (Mac 1.3); saved with the chat.
-            const gatewayOn_s6 = gatewayOnAtFirstTurn_s6(next);
-            if (gatewayOn_s6) next = { ...next, gatewayOn: gatewayOn_s6 };
+            const gatewayOn = gatewayOnAtFirstTurn(next);
+            if (gatewayOn) next = { ...next, gatewayOn };
             if (editedResend) {
               next = { ...editedResend.replace(next), resendingEdited: false };
             }
@@ -7680,13 +7685,13 @@ function Workspace({
         const titleMessage =
           harnessText || attachments.map((file) => file.name).join(", ");
         // F6: the title runs on this session's own account and model.
-        const titleRoute = helperRouteForSession_l4({
+        const titleRoute = helperRouteForSession({
           ...current,
           providerAccountId,
         });
         void (
-          canRunHelper_l4(titleRoute)
-            ? helperTitle_l4(titleRoute, {
+          canRunHelper(titleRoute)
+            ? helperTitle(titleRoute, {
                 cwd: workCwd,
                 message: titleMessage,
               })
@@ -7815,8 +7820,8 @@ function Workspace({
             harnessText || attachments.map((file) => file.name).join(", ");
           // F6: the branch name runs on this session's own account and
           // model, and is skipped when its harness has no side prompt.
-          void helperBranchName_l4(
-            helperRouteForSession_l4({ ...current, providerAccountId }),
+          void helperBranchName(
+            helperRouteForSession({ ...current, providerAccountId }),
             workCwd,
             branchMessage,
           )
@@ -8023,7 +8028,7 @@ function Workspace({
                   sessionId,
                   cwd: workCwd,
                   disabledSkills: turnDisabledSkills(current),
-                  inline: await inline_s6(workCwd),
+                  inline: await inline(workCwd),
                 });
           const turnPrompt = proposalDraft
             ? options?.orchestrationRetry?.response
@@ -8106,7 +8111,7 @@ function Workspace({
           }
           // F2 and #27: native instruction channels, applied by the adapter
           // only when a new conversation starts. Set below, before the send.
-          let preambleNative_l2: {
+          let preambleNative: {
             preambleFile?: string;
             developerInstructions?: string;
             agentsMdPlugin?: string;
@@ -8130,7 +8135,7 @@ function Workspace({
                 orchestrator.run(sessionId)?.status === "active",
               appAccess: operatorAccess,
               ...sessionToolsInput(current, workCwd),
-              ...preambleNative_l2,
+              ...preambleNative,
               text,
               attachments: turnAttachments,
               ...(editedResend ? { onAccepted: acceptEditedResend } : {}),
@@ -8219,40 +8224,40 @@ function Workspace({
           if (mono && (operatorCommand.matched || handAgent)) {
             const cli = `${shellPath(await invoke<string>("app_cli_path"))} app`;
             appContext.push(
-              appBlock_l2({ cli, alwaysEnabled: Boolean(handAgent) }),
+              appBlock({ cli, alwaysEnabled: Boolean(handAgent) }),
             );
           }
           // F2: a regular session's instructions, project memory and app
           // access, fitted to the model's budget. Receipts send it once per
           // provider session, so /operator's block survives a compaction or
           // a provider switch (defect 5).
-          let preamble_l2: PreparedPreamble_l2 | undefined;
+          let preamble: PreparedPreamble | undefined;
           if (!mono) {
-            const memoryOn_l2 = !chatContextPrefs_l2(sessionId).memoryOff;
-            const operatorBlock_l2 = operatorAccess
-              ? appBlock_l2({
+            const memoryOn = !chatContextPrefs(sessionId).memoryOff;
+            const operatorBlock = operatorAccess
+              ? appBlock({
                   cli: `${shellPath(await invoke<string>("app_cli_path"))} app`,
                   alwaysEnabled: false,
-                  memory: memoryOn_l2,
+                  memory: memoryOn,
                 })
               : undefined;
-            preamble_l2 = await prepareSessionPreamble_l2({
+            preamble = await prepareSessionPreamble({
               session: current,
               project: current.cwd,
-              operatorBlock: operatorBlock_l2,
+              operatorBlock,
               commandFirst: !!rawCommand,
             }).catch(() => undefined);
-            const agentsMdPlugin_l2 = agentsMdBesideClaudeMd_l2()
-              ? agentsMdPluginId_l2(await claudeCliVersion_l2())
+            const agentsMdPlugin = agentsMdBesideClaudeMd()
+              ? agentsMdPluginId(await claudeCliVersion())
               : undefined;
-            preambleNative_l2 = {
-              ...(preamble_l2?.preambleFile
-                ? { preambleFile: preamble_l2.preambleFile }
+            preambleNative = {
+              ...(preamble?.preambleFile
+                ? { preambleFile: preamble.preambleFile }
                 : {}),
-              ...(preamble_l2?.developerInstructions
-                ? { developerInstructions: preamble_l2.developerInstructions }
+              ...(preamble?.developerInstructions
+                ? { developerInstructions: preamble.developerInstructions }
                 : {}),
-              ...(agentsMdPlugin_l2 ? { agentsMdPlugin: agentsMdPlugin_l2 } : {}),
+              ...(agentsMdPlugin ? { agentsMdPlugin } : {}),
             };
           }
           // A Mono reads who it is ahead of the message, so it never takes it
@@ -8260,14 +8265,14 @@ function Workspace({
           if (mono && !rawCommand) sendText = monoTurn(sendText, appContext);
           else if (appContext.length)
             sendText += `\n\n${appContext.join("\n\n")}`;
-          if (preamble_l2?.messageBlock)
-            sendText = withPreambleBlock_l2(
+          if (preamble?.messageBlock)
+            sendText = withPreambleBlock(
               sendText,
-              preamble_l2.messageBlock,
+              preamble.messageBlock,
               !!rawCommand,
             );
           await sendTurn(sendText);
-          preamble_l2?.commit(
+          preamble?.commit(
             sessionsRef.current.find((session) => session.id === sessionId)
               ?.providerSessionId ?? current.providerSessionId,
           );
@@ -8359,7 +8364,7 @@ function Workspace({
           setSessions((prev) =>
             prev.map((s) => {
               if (s.id !== sessionId) return s;
-              const stopped = withEmptyTurnNotice_s6(stopStreaming(s));
+              const stopped = withEmptyTurnNotice(stopStreaming(s));
               const providerFailed =
                 providerFailureSeen ||
                 isProviderFailureText(lastAssistantTextInTurn(stopped));
@@ -8908,6 +8913,8 @@ function Workspace({
   saveDraftRef.current = onSaveDraft;
   const ensureOpenSessionRef = useRef(ensureOpenSession);
   ensureOpenSessionRef.current = ensureOpenSession;
+  const launchAutomationRef = useRef(launchAutomation);
+  launchAutomationRef.current = launchAutomation;
 
   const appReceipts = useRef(
     new Map<string, { signature: string; promise: Promise<unknown> }>(),
@@ -10430,7 +10437,7 @@ function Workspace({
       decision: ApprovalDecision,
       // "Always allow <host>" on a network approval. Only the local Codex
       // adapter reads it; a Mono relay or a remote project answers plainly.
-      options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
+      options?: ApprovalOptions,
     ) => {
       const session = sessionsRef.current.find((s) => s.id === sessionId);
       if (!session || session.worktreeRemoved) return;
@@ -11333,9 +11340,9 @@ function Workspace({
             writeAgentFile: (monoId, path, text, hash) =>
               writeAgentFile(monoId, path, text, hash),
             runAutomation: (automationId) =>
-              startManualAutomationRun_l2(automationId, (automation, run) =>
+              startManualAutomationRun(automationId, (automation, run) =>
                 // The listener mounts once; the ref holds today's launcher.
-                launchAutomationRef_l2.current(automation, run, false),
+                launchAutomationRef.current(automation, run, false),
               ),
           },
         );
@@ -12727,13 +12734,13 @@ function Workspace({
    * harness can cut to. The harness forgets it first; only then is the
    * transcript cut, so a refused rewind leaves the chat as it was.
    */
-  const onRewindChat_l1 = useCallback(
+  const onRewindChat = useCallback(
     async (sessionId: string, blockId: string) => {
       const current = sessionsRef.current.find(
         (session) => session.id === sessionId,
       );
       if (!current) return;
-      const options = rewindOptions_l1(current, blockId);
+      const options = rewindOptions(current, blockId);
       if (!options) return;
       if (!options.chat.enabled) {
         throw new Error(options.chat.reason ?? "This chat cannot be rewound");
@@ -12745,7 +12752,7 @@ function Workspace({
       const asked = `${options.turnStart}:${options.laterPrompts}`;
       // One at a time per chat, refused rather than queued, and bounded so
       // the menu always ends in a result or an error.
-      await runChatRewind_l1({
+      await runChatRewind({
         sessionId,
         forget: () =>
           rewindHarnessLastTurn({
@@ -12768,7 +12775,7 @@ function Workspace({
           const latest = sessionsRef.current.find(
             (session) => session.id === sessionId,
           );
-          const now = latest ? rewindOptions_l1(latest, blockId) : null;
+          const now = latest ? rewindOptions(latest, blockId) : null;
           if (!now || `${now.turnStart}:${now.laterPrompts}` !== asked) {
             throw new Error(
               "The chat changed while the agent went back. Rewind again from the prompt you want",
@@ -12776,7 +12783,7 @@ function Workspace({
           }
           // Through the ref as well as state: a harness event flush rebuilds
           // state from the ref and would put the cut turns back otherwise.
-          cutChatTranscript_l1(
+          cutChatTranscript(
             {
               flushEvents: flushHarnessEvents,
               current: () => sessionsRef.current,
@@ -12799,13 +12806,13 @@ function Workspace({
    * the turn. Native on Claude Code and Codex; otherwise, or when the native
    * call fails, seeded with the transcript and labelled approximate.
    */
-  const onForkTurn_l1 = useCallback(
+  const onForkTurn = useCallback(
     async (sourceId: string, blockId: string) => {
       const source = sessionsRef.current.find(
         (session) => session.id === sourceId,
       );
       if (!source || source.worktreeRemoved) return;
-      const options = rewindOptions_l1(source, blockId);
+      const options = rewindOptions(source, blockId);
       if (!options) return;
       if (!options.fork.enabled) {
         throw new Error(options.fork.reason ?? "This chat cannot be forked");
@@ -12823,7 +12830,7 @@ function Workspace({
         modelSettings: source.modelSettings,
         providerAccountId: source.providerAccountId,
       };
-      const forked = await forkSessionAt_l1({
+      const forked = await forkSessionAt({
         source,
         options,
         base,
@@ -12838,7 +12845,7 @@ function Workspace({
           ...sessionToolsInput(source, workCwd),
           onEvent: (event) => enqueueHarnessEvent(sourceId, event),
         },
-        nativeFork: (input) => forkHarnessSession_l1(source.harness, input),
+        nativeFork: (input) => forkHarnessSession(source.harness, input),
       });
       if (forked.session.providerSessionId) {
         bindHarnessSession(
@@ -12856,9 +12863,9 @@ function Workspace({
   );
 
   /** #45: harness session ids already bound to a chat, open or saved. */
-  const pickUpBound_l1 = useCallback(
+  const pickUpBound = useCallback(
     (harness: HarnessId) =>
-      boundProviderSessions_l1(harness, sessionsRef.current, history),
+      boundProviderSessions(harness, sessionsRef.current, history),
     // `sessions` so the map is rebuilt when a chat binds a new id.
     [history, sessions],
   );
@@ -12869,14 +12876,14 @@ function Workspace({
    * Otherwise a new chat is bound to the session's id, with its earlier turns
    * as text where the harness can replay them. Nothing is sent.
    */
-  const onPickUpSession_l1 = useCallback(
-    async (sourceId: string, row: HarnessSessionRow_l1) => {
+  const onPickUpSession = useCallback(
+    async (sourceId: string, row: HarnessSessionRow) => {
       const source = sessionsRef.current.find(
         (session) => session.id === sourceId,
       );
       if (!source || source.worktreeRemoved) return;
       const boundTo = () =>
-        boundProviderSessions_l1(
+        boundProviderSessions(
           source.harness,
           sessionsRef.current,
           history,
@@ -12887,11 +12894,11 @@ function Workspace({
         return;
       }
       const workCwd = sessionWorkCwd(source);
-      let imported: Awaited<ReturnType<typeof readHarnessSessionTurns_l1>> =
+      let imported: Awaited<ReturnType<typeof readHarnessSessionTurns>> =
         null;
       let reason: string | undefined;
       try {
-        imported = await readHarnessSessionTurns_l1(source.harness, {
+        imported = await readHarnessSessionTurns(source.harness, {
           cwd: workCwd,
           providerAccountId: source.providerAccountId,
           providerSessionId: row.id,
@@ -12907,7 +12914,7 @@ function Workspace({
         await onSelectHistorySession(meanwhile);
         return;
       }
-      const session = pickedUpSession_l1({
+      const session = pickedUpSession({
         base: {
           ...newSession(
             source.harness,
@@ -12945,12 +12952,10 @@ function Workspace({
     },
     [history, onSelectHistorySession, replaceBlankPaneWithSession, appendTab],
   );
-  const launchAutomationRef_l2 = useRef(launchAutomation);
-  launchAutomationRef_l2.current = launchAutomation;
   // Finding 2.2: changed instructions apply to new chats only. The stale
   // line's "New chat with these" opens one in the same project with the same
   // harness, model, settings and account, the way "New chat" does.
-  const onNewChatLike_s6 = useCallback(
+  const onNewChatLike = useCallback(
     (sessionId: string) => {
       const source = sessionsRef.current.find(
         (session) => session.id === sessionId,
@@ -12958,7 +12963,7 @@ function Workspace({
       if (!source) return;
       // Carries every switch that narrows the source chat, never one that
       // widens it; see newChatLike.
-      const session = newChatLike_s6(source);
+      const session = newChatLike(source);
       const tab = newTab(session.id);
       setSessions((prev) => [...prev, session]);
       appendTab(tab, source.cwd);
@@ -12969,12 +12974,12 @@ function Workspace({
   );
   // #38a: verify after turns that changed files while a preview runs, and
   // stop a deleted chat's preview.
-  useVerifyAfterTurns_l3(sessions, (sessionId, text) =>
+  useVerifyAfterTurns(sessions, (sessionId, text) =>
     onSubmit(sessionId, text, []),
   );
   // #37: the session panel opens a chat's preview in the editor area.
   useEffect(() => {
-    setPreviewHost_l3({
+    setPreviewHost({
       openPane: (sessionId) => {
         const session = sessionsRef.current.find((s) => s.id === sessionId);
         const tab = tabsRef.current.find(
@@ -12982,7 +12987,7 @@ function Workspace({
         );
         if (!session || !tab) return;
         const file = {
-          ...newAppPreviewTab_l3(session.id, sessionWorkCwd(session)),
+          ...newAppPreviewTab(session.id, sessionWorkCwd(session)),
           ...(session.worktreeCwd ? { projectCwd: session.cwd } : {}),
         };
         setTabs((prev) =>
@@ -12993,17 +12998,17 @@ function Workspace({
         setComposerFocused(false);
       },
     });
-    return () => setPreviewHost_l3(null);
+    return () => setPreviewHost(null);
   }, []);
   // 4.2: a Generate that holds only a folder finds the chat that owns it.
   useEffect(() => {
-    setCheckoutSessionsSource_l4(() => sessionsRef.current);
-    return () => setCheckoutSessionsSource_l4(null);
+    setCheckoutSessionsSource(() => sessionsRef.current);
+    return () => setCheckoutSessionsSource(null);
   }, []);
   // #33: the PR bar sends CI repairs to, and archives, the chat that owns a
   // checkout. It reaches the app through this host, not through props.
   useEffect(() => {
-    setPrBarHost_l4({
+    setPrBarHost({
       submitRepair: async (sessionId, request) => {
         const session = sessionsRef.current.find((s) => s.id === sessionId);
         if (
@@ -13026,26 +13031,26 @@ function Workspace({
       },
       archiveSession: (sessionId) => onArchiveHistorySession(sessionId, true),
     });
-    return () => setPrBarHost_l4(null);
+    return () => setPrBarHost(null);
   }, [onArchiveHistorySession, onSubmit]);
   // #43: "Move to New Window" on a tab. Only idle chats move: each is
   // stopped here and bound again by the window the payload opens.
   useEffect(() => {
-    const check_l4 = (tabId: string) =>
-      popOutCheck_l4(
+    const check = (tabId: string) =>
+      popOutCheck(
         tabsRef.current,
         sessionsRef.current,
         tabId,
         dirtyFilesRef.current,
         isRemoteProjectPath,
       );
-    setPopOutHost_l4({
-      check: check_l4,
+    setPopOutHost({
+      check,
       popOut: async (tabId) => {
-        const allowed = check_l4(tabId);
+        const allowed = check(tabId);
         if (!allowed.ok) return allowed;
         const current = tabsRef.current;
-        const payload = collectWindowTransfer_l4(
+        const payload = collectWindowTransfer(
           current,
           sessionsRef.current,
           [tabId],
@@ -13061,7 +13066,7 @@ function Workspace({
                 current[current.findIndex((tab) => tab.id === tabId) - 1])
                 ?.id;
         if (!stay) return { ok: false, reason: "A window keeps at least one tab." };
-        return popOutTabs_l4({
+        return popOutTabs({
           payload,
           stopSession: async (session) => {
             await Promise.all(
@@ -13077,7 +13082,7 @@ function Workspace({
         });
       },
     });
-    return () => setPopOutHost_l4(null);
+    return () => setPopOutHost(null);
   }, [onCloseTabs, projectCwd]);
   const sessionPaneProps = {
     workspaceSwitchingSessionId: workspaceNavigation.pending
@@ -13137,11 +13142,11 @@ function Workspace({
     onBtwStop,
     onBtwModelChange,
     onNewTerminal: onNewTerminalInSession,
-    onRewindChat_l1,
-    onForkTurn_l1,
-    onPickUpSession_l1,
-    pickUpBound_l1,
-    onNewChatLike_s6,
+    onRewindChat,
+    onForkTurn,
+    onPickUpSession,
+    pickUpBound,
+    onNewChatLike,
   };
 
   // Renames, mascot picks and new projects show up on the rail.
@@ -13430,7 +13435,7 @@ function Workspace({
                 activeTab ? selectedCommitSha(activeTab) : undefined
               }
               textHarness={
-                helperRouteForCheckout_l4(sessions, gitCwd, active) ??
+                helperRouteForCheckout(sessions, gitCwd, active) ??
                 pickTextHarness(active?.harness)
               }
               recents={recents}
@@ -13760,7 +13765,7 @@ function Workspace({
                       color={monoViewMono.color}
                       textHarness={
                         monoViewSession
-                          ? helperRouteForSession_l4(monoViewSession)
+                          ? helperRouteForSession(monoViewSession)
                           : undefined
                       }
                       onClose={onCloseMonoChanges}

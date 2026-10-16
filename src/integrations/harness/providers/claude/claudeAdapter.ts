@@ -3,6 +3,7 @@ import {
   cancelClaudeTurn,
   compactClaudeContext,
   forgetClaudeSession,
+  forkClaudeSession,
   respondClaudeApproval,
   respondClaudeQuestion,
   restoreClaudeTaskLists,
@@ -10,6 +11,7 @@ import {
   sendClaudeTurn,
   setClaudeToolAccess,
   steerClaudeTurn,
+  stopClaudeBackgroundTask,
   stopClaudeSession,
 } from "./claude";
 import { refreshClaudeCatalog } from "./claudeCatalog";
@@ -25,11 +27,7 @@ import {
   warmupClaudeText,
 } from "./claudeText";
 import { registerHarness, type HarnessAdapter } from "../../core/registry";
-import {
-  forkClaudeSession_l1,
-  stopClaudeBackgroundTask_l1,
-} from "./claude";
-import { listClaudeSessions as listClaudeSessions_l1 } from "./claudeSessions";
+import { listClaudeSessions } from "./claudeSessions";
 
 export const claudeAdapter: HarnessAdapter = {
   id: "claude",
@@ -54,9 +52,9 @@ export const claudeAdapter: HarnessAdapter = {
   warmupText: warmupClaudeText,
   runTextPrompt: runClaudeTextPrompt,
   stopTextPrompt: stopClaudeTextPrompt,
-  stopBackgroundTask: stopClaudeBackgroundTask_l1,
+  stopBackgroundTask: stopClaudeBackgroundTask,
   forkSession: (input) =>
-    forkClaudeSession_l1({
+    forkClaudeSession({
       sourceSessionId: input.source.sessionId,
       newSessionId: input.newSessionId,
       providerSessionId: input.providerSessionId,
@@ -64,7 +62,7 @@ export const claudeAdapter: HarnessAdapter = {
       providerAccountId: input.source.providerAccountId,
       boundary: input.boundary,
     }),
-  listSessions: listClaudeSessions_l1,
+  listSessions: listClaudeSessions,
 };
 
 let registered = false;

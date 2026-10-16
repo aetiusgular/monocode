@@ -8,7 +8,7 @@ vi.mock("../../../integrations/harness/core/registry", async (importOriginal) =>
   ...(await importOriginal<
     typeof import("../../../integrations/harness/core/registry")
   >()),
-  listHarnessSessions_l1: listSessions,
+  listHarnessSessions: listSessions,
 }));
 vi.mock("@tauri-apps/api/core", async (importOriginal) => {
   const original = await importOriginal<typeof import("@tauri-apps/api/core")>();
@@ -88,7 +88,7 @@ async function renderComposer(options: {
         onModelChange: () => {},
         onRuntimeModeChange: () => {},
         onSubmit: () => {},
-        pickUp_l1: pickUp,
+        pickUp,
       }),
     ),
   );

@@ -137,6 +137,19 @@ import {
   NEW_THREAD_BACKGROUND_EFFECT_DEFAULT,
   type NewThreadBackgroundEffect,
   type TranscriptLayout,
+  applyChatFont,
+  CHAT_FONT_DEFAULT,
+  CHAT_FONT_LABELS,
+  CHAT_FONTS,
+  loadChatFont,
+  loadTranscriptDetail,
+  saveChatFont,
+  saveTranscriptDetail,
+  TRANSCRIPT_DETAIL_DEFAULT,
+  TRANSCRIPT_DETAIL_LABELS,
+  TRANSCRIPT_DETAILS,
+  type ChatFont,
+  type TranscriptDetail,
 } from "../model/appearance";
 import {
   pickAndSaveChatBackground,
@@ -418,25 +431,10 @@ import {
   type RemoveWorktree,
 } from "../../source-control/model/worktrees";
 import type { Session } from "../../sessions/model/session";
-import { InstructionsPage as InstructionsPage_l2 } from "../../project-context/ui/InstructionsPage";
-import { MemoryPage as MemoryPage_l2 } from "../../project-memory/ui/MemoryPage";
-import { EnvironmentPage as EnvironmentPage_l2 } from "../../environment/ui/EnvironmentPage";
-import {
-  applyChatFont as applyChatFont_l3,
-  CHAT_FONT_DEFAULT as CHAT_FONT_DEFAULT_l3,
-  CHAT_FONT_LABELS as CHAT_FONT_LABELS_l3,
-  CHAT_FONTS as CHAT_FONTS_l3,
-  loadChatFont as loadChatFont_l3,
-  loadTranscriptDetail as loadTranscriptDetail_l3,
-  saveChatFont as saveChatFont_l3,
-  saveTranscriptDetail as saveTranscriptDetail_l3,
-  TRANSCRIPT_DETAIL_DEFAULT as TRANSCRIPT_DETAIL_DEFAULT_l3,
-  TRANSCRIPT_DETAIL_LABELS as TRANSCRIPT_DETAIL_LABELS_l3,
-  TRANSCRIPT_DETAILS as TRANSCRIPT_DETAILS_l3,
-  type ChatFont as ChatFont_l3,
-  type TranscriptDetail as TranscriptDetail_l3,
-} from "../model/appearance";
-import { OutboundCallsSettings as OutboundCallsSettings_l5 } from "../../privacy-view/ui/OutboundCallsSettings";
+import { InstructionsPage } from "../../project-context/ui/InstructionsPage";
+import { MemoryPage } from "../../project-memory/ui/MemoryPage";
+import { EnvironmentPage } from "../../environment/ui/EnvironmentPage";
+import { OutboundCallsSettings } from "../../privacy-view/ui/OutboundCallsSettings";
 
 /**
  * The `data-setting-id` Settings should reveal when it opens: one of the ids in
@@ -637,17 +635,17 @@ export function SettingsView({
               {section === "plugins" ? <PluginsPage cwd={cwd} /> : null}
               {section === "models" ? <ModelsPage /> : null}
               {section === "instructions" ? (
-                <InstructionsPage_l2
+                <InstructionsPage
                   cwd={cwd}
                   recents={recents}
                   onOpenFile={onOpenContextFile}
                 />
               ) : null}
               {section === "memory" ? (
-                <MemoryPage_l2 cwd={cwd} recents={recents} />
+                <MemoryPage cwd={cwd} recents={recents} />
               ) : null}
               {section === "environment" ? (
-                <EnvironmentPage_l2 cwd={cwd} recents={recents} />
+                <EnvironmentPage cwd={cwd} recents={recents} />
               ) : null}
               {section === "providers" ? (
                 <ProvidersPage cwd={cwd} recents={recents} />
@@ -1017,7 +1015,7 @@ function GeneralPage({
         )}
       </Group>
 
-      <OutboundCallsSettings_l5 Group={Group} Row={Row} Toggle={Toggle} />
+      <OutboundCallsSettings Group={Group} Row={Row} Toggle={Toggle} />
 
       <Group title="About">
         <UpdateRow onOpenWhatsNew={onOpenWhatsNew} />
@@ -1939,9 +1937,9 @@ function useAppearanceSettings(
   const [chatBackgroundScope, setChatBackgroundScope] =
     useState<ChatBackgroundScope>(loadChatBackgroundScope);
   const [diffPalette, setDiffPalette] = useState<DiffPalette>(loadDiffPalette);
-  const [chatFont, setChatFont] = useState<ChatFont_l3>(loadChatFont_l3);
-  const [transcriptDetail, setTranscriptDetail] = useState<TranscriptDetail_l3>(
-    loadTranscriptDetail_l3,
+  const [chatFont, setChatFont] = useState<ChatFont>(loadChatFont);
+  const [transcriptDetail, setTranscriptDetail] = useState<TranscriptDetail>(
+    loadTranscriptDetail,
   );
   const [newThreadBackgroundEffect, setBackgroundEffect] =
     useState<NewThreadBackgroundEffect>(loadNewThreadBackgroundEffect);
@@ -2060,14 +2058,14 @@ function useAppearanceSettings(
     setChatBackgroundScope(next);
   }, []);
 
-  const onChatFont = useCallback((next: ChatFont_l3) => {
-    applyChatFont_l3(next);
-    saveChatFont_l3(next);
+  const onChatFont = useCallback((next: ChatFont) => {
+    applyChatFont(next);
+    saveChatFont(next);
     setChatFont(next);
   }, []);
 
-  const onTranscriptDetail = useCallback((next: TranscriptDetail_l3) => {
-    saveTranscriptDetail_l3(next);
+  const onTranscriptDetail = useCallback((next: TranscriptDetail) => {
+    saveTranscriptDetail(next);
     setTranscriptDetail(next);
   }, []);
 
@@ -2117,8 +2115,8 @@ function useAppearanceSettings(
     );
     onChatBackgroundScope(CHAT_BACKGROUND_SCOPE_DEFAULT);
     onDiffPalette(DIFF_PALETTE_DEFAULT);
-    onChatFont(CHAT_FONT_DEFAULT_l3);
-    onTranscriptDetail(TRANSCRIPT_DETAIL_DEFAULT_l3);
+    onChatFont(CHAT_FONT_DEFAULT);
+    onTranscriptDetail(TRANSCRIPT_DETAIL_DEFAULT);
     onNewThreadBackgroundEffect(NEW_THREAD_BACKGROUND_EFFECT_DEFAULT);
     if (chatBackgroundPath) void onClearChatBackground();
     onUiScale(Math.round(UI_SCALE_DEFAULT * 100));
@@ -2251,9 +2249,9 @@ function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
           <Segmented
             label="Chat font"
             value={appearance.chatFont}
-            options={CHAT_FONTS_l3.map((value) => ({
+            options={CHAT_FONTS.map((value) => ({
               value,
-              label: CHAT_FONT_LABELS_l3[value],
+              label: CHAT_FONT_LABELS[value],
             }))}
             onChange={appearance.onChatFont}
           />
@@ -2266,9 +2264,9 @@ function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
           <Segmented
             label="Transcript detail"
             value={appearance.transcriptDetail}
-            options={TRANSCRIPT_DETAILS_l3.map((value) => ({
+            options={TRANSCRIPT_DETAILS.map((value) => ({
               value,
-              label: TRANSCRIPT_DETAIL_LABELS_l3[value],
+              label: TRANSCRIPT_DETAIL_LABELS[value],
             }))}
             onChange={appearance.onTranscriptDetail}
           />

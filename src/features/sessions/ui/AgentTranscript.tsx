@@ -166,23 +166,26 @@ import {
   transcriptWordRanges,
 } from "../model/transcriptHighlights";
 import { ResearchLabel } from "../../research-mode/ui/ResearchLabel";
-import type { TurnRewind as TurnRewind_l1 } from "../../rewind/model/turnRewind";
-import { TurnRewindMenu as TurnRewindMenu_l1 } from "../../rewind/ui/TurnRewindMenu";
-import { rememberText as rememberText_l2 } from "../../project-memory/model/remember";
-import { rememberedNotice as rememberedNotice_s6 } from "../../project-memory/model/remember";
+import type { TurnRewind } from "../../rewind/model/turnRewind";
+import { TurnRewindMenu } from "../../rewind/ui/TurnRewindMenu";
 import {
-  rowStartsOpen as rowStartsOpen_s6,
-  useRowOpen as useRowOpen_s6,
-  useTranscriptDetail as useTranscriptDetail_l3,
-  workStartsOpen as workStartsOpen_l3,
+  rememberedNotice,
+  rememberText,
+} from "../../project-memory/model/remember";
+import {
+  rowStartsOpen,
+  useRowOpen,
+  useTranscriptDetail,
+  workStartsOpen,
 } from "../hooks/useTranscriptDetail";
 import {
-  alwaysAllowHostOptions as alwaysAllowHostOptions_l5,
-  networkApprovalView as networkApprovalView_l5,
+  alwaysAllowHostOptions,
+  networkApprovalView,
+  type ApprovalOptions,
 } from "../../tool-access/model/networkApproval";
-import { AllowForChatButton as AllowForChatButton_l5 } from "../../tool-access/ui/AllowForChatButton";
-import { SignInControls as SignInControls_l5 } from "../../mcp-signin/ui/SignInControls";
-import { SiteControls as SiteControls_l5 } from "../../browser-tools/ui/SiteControls";
+import { AllowForChatButton } from "../../tool-access/ui/AllowForChatButton";
+import { SignInControls } from "../../mcp-signin/ui/SignInControls";
+import { SiteControls } from "../../browser-tools/ui/SiteControls";
 
 const NEAR_BOTTOM_PX = 16;
 const WHEEL_HOLD_MS = 150;
@@ -251,7 +254,7 @@ type Props = {
   onApproval?: (
     requestId: number,
     decision: ApprovalDecision,
-    options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
+    options?: ApprovalOptions,
   ) => void;
   onAddToChat?: (text: string) => void;
   onSaveNote?: (text: string) => void | Promise<void>;
@@ -297,9 +300,9 @@ type Props = {
   /** A worker's transcript: show the orchestrator's turns instead of hiding them. */
   managed?: boolean;
   /** Rewind, restore and fork on each sent prompt, once the turn settles. */
-  turnRewind_l1?: TurnRewind_l1;
+  turnRewind?: TurnRewind;
   /** #38a: the verify card, under the latest turn once it settles. */
-  latestTurnVerify_l3?: ReactNode;
+  latestTurnVerify?: ReactNode;
 };
 
 function AgentTranscriptComponent({
@@ -361,8 +364,8 @@ function AgentTranscriptComponent({
   parked = false,
   onScrollerChange,
   managed = false,
-  turnRewind_l1,
-  latestTurnVerify_l3,
+  turnRewind,
+  latestTurnVerify,
 }: Props) {
   const isMonoChat = !!agentMascot;
   const blocks = useMemo(() => {
@@ -1061,44 +1064,44 @@ function AgentTranscriptComponent({
     historicalBlockIds,
   );
 
-  const [rememberNotice_s6, setRememberNotice_s6] = useState<string | null>(
+  const [rememberNotice, setRememberNotice] = useState<string | null>(
     null,
   );
-  const rememberNoticeTimer_s6 = useRef<number | null>(null);
-  const showRememberNotice_s6 = useCallback((text: string) => {
-    setRememberNotice_s6(text);
-    if (rememberNoticeTimer_s6.current != null)
-      window.clearTimeout(rememberNoticeTimer_s6.current);
-    rememberNoticeTimer_s6.current = window.setTimeout(() => {
-      rememberNoticeTimer_s6.current = null;
-      setRememberNotice_s6(null);
+  const rememberNoticeTimer = useRef<number | null>(null);
+  const showRememberNotice = useCallback((text: string) => {
+    setRememberNotice(text);
+    if (rememberNoticeTimer.current != null)
+      window.clearTimeout(rememberNoticeTimer.current);
+    rememberNoticeTimer.current = window.setTimeout(() => {
+      rememberNoticeTimer.current = null;
+      setRememberNotice(null);
     }, 2500);
   }, []);
   useEffect(
     () => () => {
-      if (rememberNoticeTimer_s6.current != null)
-        window.clearTimeout(rememberNoticeTimer_s6.current);
+      if (rememberNoticeTimer.current != null)
+        window.clearTimeout(rememberNoticeTimer.current);
     },
     [],
   );
   // #36: "Remember this" on a selection or a reply. Monos keep their own
   // memory, so their transcripts do not offer it.
-  const onRemember_l2 = useMemo(
+  const onRemember = useMemo(
     () =>
       agentName || !cwd || cwd === "~" || !harness
         ? undefined
         : async (text: string) => {
-            const result = await rememberText_l2(cwd, text, {
+            const result = await rememberText(cwd, text, {
               harness,
               model,
             });
             // Confirm in the transcript, as Save as note does (Mac 2.8).
             playCue("copy");
-            showRememberNotice_s6(rememberedNotice_s6(cwd, result));
+            showRememberNotice(rememberedNotice(cwd, result));
           },
-    [agentName, cwd, harness, model, showRememberNotice_s6],
+    [agentName, cwd, harness, model, showRememberNotice],
   );
-  const transcriptDetail_l3 = useTranscriptDetail_l3();
+  const transcriptDetail = useTranscriptDetail();
   return (
     <div
       ref={setScroller}
@@ -1242,7 +1245,7 @@ function AgentTranscriptComponent({
               )
             : folded;
           const workOpen =
-            openWork[turnId] ?? workStartsOpen_l3(transcriptDetail_l3);
+            openWork[turnId] ?? workStartsOpen(transcriptDetail);
           // The action keeps the pane's props, which go stale once parked.
           const turnEditAction =
             firstVisibleTurn + turnIndex === editTurnIndex && !parked
@@ -1436,9 +1439,9 @@ function AgentTranscriptComponent({
                   item.block.role === "user" &&
                   item.block.id === editableUserBlockId
                 }
-                turnRewind_l1={
+                turnRewind={
                   settled && item.block.role === "user" && !item.block.draft
-                    ? turnRewind_l1
+                    ? turnRewind
                     : undefined
                 }
               />
@@ -1632,7 +1635,7 @@ function AgentTranscriptComponent({
               {isLastTurn && latestTurnAccessory && !parked
                 ? latestTurnAccessory
                 : null}
-              {isLastTurn && settled && !parked ? latestTurnVerify_l3 : null}
+              {isLastTurn && settled && !parked ? latestTurnVerify : null}
               {settled &&
               !reactedOnly &&
               (durationMs != null ||
@@ -1711,24 +1714,24 @@ function AgentTranscriptComponent({
           );
         })}
       </TranscriptContent>
-      {onAddToChat || onSaveSelectionNote || onRemember_l2 ? (
+      {onAddToChat || onSaveSelectionNote || onRemember ? (
         <TranscriptSelectionMenu
           selection={selection}
           onAddToChat={onAddToChat}
           onAddToNotes={onSaveSelectionNote}
-          onRemember={onRemember_l2}
+          onRemember={onRemember}
           onDismiss={dismissSelection}
         />
       ) : null}
-      {rememberNotice_s6 ? (
-        <RememberNotice_s6 text={rememberNotice_s6} />
+      {rememberNotice ? (
+        <RememberNotice text={rememberNotice} />
       ) : null}
     </div>
   );
 }
 
 /** The short confirmation after "Remember this" (Mac 2.8). */
-export function RememberNotice_s6({ text }: { text: string }) {
+export function RememberNotice({ text }: { text: string }) {
   return (
     <div
       role="status"
@@ -2334,7 +2337,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
   planModelSettings,
   onEditLastTurn,
   editing = false,
-  turnRewind_l1,
+  turnRewind,
 }: {
   block: Block;
   layout: TranscriptLayout;
@@ -2353,7 +2356,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
   onApproval?: (
     requestId: number,
     decision: ApprovalDecision,
-    options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
+    options?: ApprovalOptions,
   ) => void;
   onSaveNote?: (text: string) => void | Promise<void>;
   onSendDraft?: (block: Block) => boolean | void;
@@ -2368,7 +2371,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
   planModelSettings?: Record<string, string>;
   onEditLastTurn?: () => void;
   editing?: boolean;
-  turnRewind_l1?: TurnRewind_l1;
+  turnRewind?: TurnRewind;
 }) {
   if (block.role === "user") {
     return (
@@ -2387,7 +2390,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
         onSaveNote={onSaveNote}
         onSendDraft={onSendDraft}
         onRemoveDraft={onRemoveDraft}
-        turnRewind={turnRewind_l1}
+        turnRewind={turnRewind}
       />
     );
   }
@@ -2551,7 +2554,7 @@ function UserMessageBlock({
   visible: boolean;
   stickyIndex: number;
   /** Rewind, restore and fork from this prompt. */
-  turnRewind?: TurnRewind_l1;
+  turnRewind?: TurnRewind;
   onEdit?: () => void;
   editing?: boolean;
   cwd?: string;
@@ -2931,7 +2934,7 @@ function UserMessageBlock({
               <EditLastTurnButton onEdit={onEdit} editing={editing} />
             ) : null}
             {turnRewind && !block.draft ? (
-              <TurnRewindMenu_l1 rewind={turnRewind} blockId={block.id} />
+              <TurnRewindMenu rewind={turnRewind} blockId={block.id} />
             ) : null}
             {text && onSaveNote ? (
               <SaveNoteButton text={text} onSave={onSaveNote} />
@@ -3155,7 +3158,7 @@ type ActivityPhasesProps = {
   onApproval?: (
     requestId: number,
     decision: ApprovalDecision,
-    options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
+    options?: ApprovalOptions,
   ) => void;
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
@@ -3634,7 +3637,7 @@ function ActivityPhaseGroup({
   onApproval?: (
     requestId: number,
     decision: ApprovalDecision,
-    options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
+    options?: ApprovalOptions,
   ) => void;
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
@@ -3643,7 +3646,7 @@ function ActivityPhaseGroup({
   const waiting = phase.steps.some(needsApproval);
   // Everything opens a settled group too; a group toggled by hand keeps its
   // state through later setting changes (Mac 3.10).
-  const rowsOpen = rowStartsOpen_s6(useTranscriptDetail_l3());
+  const rowsOpen = rowStartsOpen(useTranscriptDetail());
   const open = waiting || (override ?? (active || rowsOpen));
   const [liveScroller, setLiveScroller] = useState<HTMLDivElement | null>(null);
   useLivePhaseScroll(liveScroller, active && open, phase.steps);
@@ -4230,7 +4233,7 @@ function ActivityRow({
   onApproval?: (
     requestId: number,
     decision: ApprovalDecision,
-    options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
+    options?: ApprovalOptions,
   ) => void;
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
@@ -4384,7 +4387,7 @@ function ActivityThinkingRow({
   bare?: boolean;
   onOpenFile?: (path: string) => void;
 }) {
-  const [open, setOpen] = useRowOpen_s6();
+  const [open, setOpen] = useRowOpen();
   const text = proseSummary(block.text) || "Thinking";
   // In a group the rail is the bullet, so there is nothing to breathe while
   // reasoning streams in — the line itself does.
@@ -4532,13 +4535,13 @@ function ActivityToolRow({
   onApproval?: (
     requestId: number,
     decision: ApprovalDecision,
-    options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
+    options?: ApprovalOptions,
   ) => void;
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
 }) {
   const [errorOpen, setErrorOpen] = useState(false);
-  const [detailOpen, setDetailOpen] = useRowOpen_s6();
+  const [detailOpen, setDetailOpen] = useRowOpen();
   const appCall = monoCodeToolCall(block);
   if (appCall) {
     return (
@@ -4663,7 +4666,7 @@ function MonoCodeCallRow({
   onApproval?: (
     requestId: number,
     decision: ApprovalDecision,
-    options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
+    options?: ApprovalOptions,
   ) => void;
 }) {
   const state = toolCallState(block);
@@ -4838,13 +4841,13 @@ function ToolCall({
   onApproval?: (
     requestId: number,
     decision: ApprovalDecision,
-    options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
+    options?: ApprovalOptions,
   ) => void;
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
   embedded?: boolean;
 }) {
-  const [open, setOpen] = useRowOpen_s6();
+  const [open, setOpen] = useRowOpen();
   const preview = block.tool?.preview;
   const label = toolCallLabel(block, cwd);
   const detail = block.tool?.detail?.trim();
@@ -5099,14 +5102,14 @@ export function ApprovalControls({
   onApproval?: (
     requestId: number,
     decision: ApprovalDecision,
-    options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
+    options?: ApprovalOptions,
   ) => void;
 }) {
   const approval = block.approval;
   if (!approval || approval.decided || !onApproval) return null;
   if (approval.site)
     return (
-      <SiteControls_l5
+      <SiteControls
         requestId={approval.requestId}
         site={approval.site}
         onApproval={onApproval}
@@ -5114,14 +5117,14 @@ export function ApprovalControls({
     );
   if (approval.signIn)
     return (
-      <SignInControls_l5
+      <SignInControls
         requestId={approval.requestId}
         signIn={approval.signIn}
         onApproval={onApproval}
       />
     );
   // Host text comes from the harness: plain text only, never a link.
-  const network = networkApprovalView_l5(approval);
+  const network = networkApprovalView(approval);
   const controls = (
     <div className="mt-1.5 flex gap-2">
       <button
@@ -5131,7 +5134,7 @@ export function ApprovalControls({
       >
         Allow
       </button>
-      <AllowForChatButton_l5 approval={approval} onApproval={onApproval} />
+      <AllowForChatButton approval={approval} onApproval={onApproval} />
       {network?.alwaysAllowHost ? (
         <button
           type="button"
@@ -5140,7 +5143,7 @@ export function ApprovalControls({
             onApproval(
               approval.requestId,
               "allow",
-              alwaysAllowHostOptions_l5(network.alwaysAllowHost!),
+              alwaysAllowHostOptions(network.alwaysAllowHost!),
             )
           }
         >

@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   Bot,
   DashboardSquare,
+  FileScript,
   Inbox,
   FolderTree,
   Ghost,
@@ -16,6 +17,8 @@ import {
   SlidersHorizontal,
   Sparkles,
   SquarePlus,
+  StickyNote,
+  Terminal,
   type IconComponent,
 } from "../../shared/ui/icons";
 import { useLockOverscroll } from "../../shared/hooks/useLockOverscroll";
@@ -23,11 +26,6 @@ import {
   settingsSectionsByGroup,
   type SettingsSectionId,
 } from "../../features/settings/model/settings";
-import {
-  FileScript as FileScript_l2,
-  StickyNote as StickyNote_l2,
-  Terminal as Terminal_l2,
-} from "../../shared/ui/icons";
 
 const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   general: SlidersHorizontal,
@@ -46,9 +44,9 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   inbox: Inbox,
   worktrees: FolderTree,
   archive: Archive,
-  instructions: FileScript_l2,
-  memory: StickyNote_l2,
-  environment: Terminal_l2,
+  instructions: FileScript,
+  memory: StickyNote,
+  environment: Terminal,
 };
 
 type Props = {

@@ -179,7 +179,7 @@ export function buildThreadStartParams(input: {
     ...(input.autoReviewOff && config.approvalsReviewer === "auto_review"
       ? { approvalsReviewer: "user" }
       : {}),
-    ...(isCodexConfigId_l5(input.modelProvider)
+    ...(isCodexConfigId(input.modelProvider)
       ? { modelProvider: input.modelProvider }
       : {}),
     ...(input.providerConfig && Object.keys(input.providerConfig).length
@@ -188,7 +188,7 @@ export function buildThreadStartParams(input: {
     // A named profile cannot be combined with `sandbox`. The undefined keys
     // drop out when the request is serialized to JSON. Full access keeps
     // MonoCode's own policy, as on turn/start.
-    ...(isCodexConfigId_l5(input.permissionsProfile) &&
+    ...(isCodexConfigId(input.permissionsProfile) &&
     input.runtimeMode !== "full-access"
       ? {
           permissions: input.permissionsProfile,
@@ -255,7 +255,7 @@ export function buildTurnStartParams(input: {
   // "missing field `model`". Skip the override until a model is known
   // so Codex keeps the one it chose when the thread started.
   const profiled =
-    isCodexConfigId_l5(input.permissionsProfile) &&
+    isCodexConfigId(input.permissionsProfile) &&
     input.intent !== "plan" &&
     input.runtimeMode !== "full-access";
   const model = input.model?.trim() ?? "";
@@ -1772,17 +1772,17 @@ export function mapApprovalRequest(
     // only when it looks like a host and a known protocol.
     const networkRec = asRecord(rec.networkApprovalContext);
     const networkHost = networkRec
-      ? codexApprovalHost_l5(networkRec.host)
+      ? codexApprovalHost(networkRec.host)
       : undefined;
     const networkProtocol = networkRec
-      ? codexApprovalProtocol_l5(networkRec.protocol)
+      ? codexApprovalProtocol(networkRec.protocol)
       : undefined;
     const amendments = Array.isArray(rec.proposedNetworkPolicyAmendments)
       ? rec.proposedNetworkPolicyAmendments
           .slice(0, 8)
           .flatMap((item): { host: string; action: "allow" | "deny" }[] => {
             const entry = asRecord(item);
-            const host = entry ? codexApprovalHost_l5(entry.host) : undefined;
+            const host = entry ? codexApprovalHost(entry.host) : undefined;
             const action = entry?.action;
             return host && (action === "allow" || action === "deny")
               ? [{ host, action }]
@@ -1856,14 +1856,14 @@ export function mapApprovalRequest(
   return null;
 }
 /** A host from a network approval: bounded, host characters only. */
-function codexApprovalHost_l5(value: unknown): string | undefined {
+function codexApprovalHost(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const host = value.trim();
   if (!host || host.length > 253) return undefined;
   return /^[A-Za-z0-9.\-:[\]*]+$/.test(host) ? host : undefined;
 }
 
-function codexApprovalProtocol_l5(value: unknown): string | undefined {
+function codexApprovalProtocol(value: unknown): string | undefined {
   return value === "http" ||
     value === "https" ||
     value === "socks5Tcp" ||
@@ -1873,7 +1873,7 @@ function codexApprovalProtocol_l5(value: unknown): string | undefined {
 }
 
 /** A Codex config key: letters, digits, `.`, `_`, `-`, at most 64 long. */
-function isCodexConfigId_l5(value: unknown): value is string {
+function isCodexConfigId(value: unknown): value is string {
   return (
     typeof value === "string" &&
     value.length <= 64 &&

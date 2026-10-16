@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { newChatLike as newChatLike_s6 } from "./newChatLike";
+import { newChatLike } from "./newChatLike";
 import type { Session } from "../../sessions/model/session";
 
 // Security review W2: "New chat with these" carried the harness, model, mode
@@ -46,7 +46,7 @@ function source(extra: Partial<Session> = {}): Session {
 
 describe("newChatLike", () => {
   it("carries every switch that narrows the chat", () => {
-    const next = newChatLike_s6(source());
+    const next = newChatLike(source());
     expect(next.harness).toBe("codex");
     expect(next.cwd).toBe("/Users/tonyg/proj");
     expect(next.runtimeMode).toBe("supervised");
@@ -60,7 +60,7 @@ describe("newChatLike", () => {
   });
 
   it("keeps never rules and drops always rules", () => {
-    const next = newChatLike_s6(source());
+    const next = newChatLike(source());
     expect(next.toolAccess).toEqual({
       "codex:command": "never",
       mcp__exa__web_search: "never",
@@ -68,28 +68,28 @@ describe("newChatLike", () => {
   });
 
   it("carries no tool rules when the source has only always rules", () => {
-    const next = newChatLike_s6(source({ toolAccess: { Bash: "always" } }));
+    const next = newChatLike(source({ toolAccess: { Bash: "always" } }));
     expect(next.toolAccess).toBeUndefined();
   });
 
   it("keeps an empty gateway list, which means every connector off", () => {
-    const next = newChatLike_s6(source({ gatewayOn: [] }));
+    const next = newChatLike(source({ gatewayOn: [] }));
     expect(next.gatewayOn).toEqual([]);
   });
 
   it("uses the source chat's own checkout", () => {
-    const next = newChatLike_s6(source());
+    const next = newChatLike(source());
     expect(next.worktreeCwd).toBe("/Users/tonyg/proj-wt");
     expect(next.branch).toBe("feature");
   });
 
   it("does not carry a removed checkout", () => {
-    const next = newChatLike_s6(source({ worktreeRemoved: true }));
+    const next = newChatLike(source({ worktreeRemoved: true }));
     expect(next.worktreeCwd).toBeUndefined();
   });
 
   it("carries nothing that widens or belongs to the old conversation", () => {
-    const next = newChatLike_s6(source());
+    const next = newChatLike(source());
     expect(next.id).not.toBe("src");
     expect(next.extraDirs).toBeUndefined();
     expect(next.providerSessionId).toBeUndefined();
@@ -98,7 +98,7 @@ describe("newChatLike", () => {
 
   it("does not share arrays with the source", () => {
     const from = source();
-    const next = newChatLike_s6(from);
+    const next = newChatLike(from);
     next.disabledMcpServers!.push("x");
     next.gatewayOn!.push("y");
     expect(from.disabledMcpServers).toEqual(["exa"]);

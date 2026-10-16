@@ -19,7 +19,7 @@ import {
   useTraitOverridesVersion,
   type TraitSource,
 } from "../model/modelTraits";
-import { ModelSetupSection as ModelSetupSection_l5 } from "../../model-setup/ui/ModelSetupSection";
+import { ModelSetupSection } from "../../model-setup/ui/ModelSetupSection";
 
 const NOTE = "text-[11px] leading-4 text-content/45";
 const SELECT =
@@ -237,7 +237,7 @@ export function ModelsPage() {
         is a default and can be wrong, so set its traits here. Claude models are
         known and not listed. Nothing here is sent anywhere.
       </p>
-      <ModelSetupSection_l5 />
+      <ModelSetupSection />
       <form
         className="flex flex-wrap items-center gap-2"
         onSubmit={(event) => {

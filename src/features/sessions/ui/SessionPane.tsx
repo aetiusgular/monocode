@@ -27,6 +27,7 @@ import {
   type ApprovalDecision,
   type UserQuestionReply,
 } from "../../../integrations/harness";
+import type { ApprovalOptions } from "../../tool-access/model/networkApproval";
 import {
   looksLikeProject,
   type RecentProject,
@@ -130,18 +131,18 @@ import {
 } from "../../session-panel";
 import { ToolImageGalleryHost } from "../../tool-images";
 import {
-  takeRewoundPrompt as takeRewoundPrompt_l1,
-  turnRewindFor as turnRewindFor_l1,
+  takeRewoundPrompt,
+  turnRewindFor,
 } from "../../rewind/model/turnRewind";
 import {
-  harnessOffersPickUp as harnessOffersPickUp_l1,
-  type PickUpTarget as PickUpTarget_l1,
+  harnessOffersPickUp,
+  type PickUpTarget,
 } from "../../session-import/model/pickUp";
-import type { HarnessSessionRow as HarnessSessionRow_l1 } from "../../session-import/model/types";
-import { StaleInstructionsLine as StaleInstructionsLine_s6 } from "../../session-preamble/ui/StaleInstructionsLine";
-import { useSuggestedPrompts as useSuggestedPrompts_l2 } from "../../suggested-prompts/hooks/useSuggestedPrompts";
-import { VerifyCard as VerifyCard_l3 } from "../../verify/ui/VerifyCard";
-import { sessionWasUsed as sessionWasUsed_l4 } from "../../../integrations/harness/core/helperPrompt";
+import type { HarnessSessionRow } from "../../session-import/model/types";
+import { StaleInstructionsLine } from "../../session-preamble/ui/StaleInstructionsLine";
+import { useSuggestedPrompts } from "../../suggested-prompts/hooks/useSuggestedPrompts";
+import { VerifyCard } from "../../verify/ui/VerifyCard";
+import { sessionWasUsed } from "../../../integrations/harness/core/helperPrompt";
 
 export type SessionPaneProps = {
   session: Session;
@@ -235,7 +236,7 @@ export type SessionPaneProps = {
     sessionId: string,
     requestId: number,
     decision: ApprovalDecision,
-    options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
+    options?: ApprovalOptions,
   ) => void;
   onQuestionReply: (
     sessionId: string,
@@ -287,15 +288,15 @@ export type SessionPaneProps = {
   /** Keeps this transcript mounted after the pane closes. */
   transcriptPool?: TranscriptPool;
   /** Takes the chat back to before a prompt. Files stay as they are. */
-  onRewindChat_l1?: (sessionId: string, blockId: string) => Promise<void>;
+  onRewindChat?: (sessionId: string, blockId: string) => Promise<void>;
   /** Opens a new chat with the conversation up to the end of a turn. */
-  onForkTurn_l1?: (sessionId: string, blockId: string) => Promise<void>;
+  onForkTurn?: (sessionId: string, blockId: string) => Promise<void>;
   /** #45: opens a harness session from the terminal, bound to a chat. */
-  onPickUpSession_l1?: (sessionId: string, row: HarnessSessionRow_l1) => Promise<void>;
+  onPickUpSession?: (sessionId: string, row: HarnessSessionRow) => Promise<void>;
   /** #45: harness session ids already bound to a chat, to that chat's id. */
-  pickUpBound_l1?: (harness: Session["harness"]) => ReadonlyMap<string, string>;
+  pickUpBound?: (harness: Session["harness"]) => ReadonlyMap<string, string>;
   /** Finding 2.2: a new chat in the same project, harness, model and account. */
-  onNewChatLike_s6?: (sessionId: string) => void;
+  onNewChatLike?: (sessionId: string) => void;
 };
 
 type Props = SessionPaneProps & {
@@ -402,11 +403,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onNewTerminal,
   onPaneDragStart,
   transcriptPool,
-  onRewindChat_l1,
-  onForkTurn_l1,
-  onPickUpSession_l1,
-  pickUpBound_l1,
-  onNewChatLike_s6,
+  onRewindChat,
+  onForkTurn,
+  onPickUpSession,
+  pickUpBound,
+  onNewChatLike,
 }: Props) {
   const orchestrationRuns = useSyncExternalStore(
     orchestrator.subscribe,
@@ -484,7 +485,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
     (
       requestId: number,
       decision: ApprovalDecision,
-      options?: { networkAmendment?: { host: string; action: "allow" }; forChat?: boolean },
+      options?: ApprovalOptions,
     ) => onApproval(session.id, requestId, decision, options),
     [onApproval, session.id],
   );
@@ -738,36 +739,36 @@ const LocalSessionPane = memo(function LocalSessionPane({
   // A Mono's chat is a running conversation, and a remote one is driven from
   // the other machine: neither offers rewind. Files restore works anywhere
   // MonoCode took a checkpoint.
-  const rewindOffered_l1 =
+  const rewindOffered =
     !remote &&
     !monoForSession(session.id) &&
     !session.ephemeral &&
     !session.worktreeRemoved &&
     !session.inboxAsk &&
     !monoTranscript.viewingOlderPage;
-  const turnRewind_l1 = useMemo(
+  const turnRewind = useMemo(
     () =>
-      rewindOffered_l1
-        ? turnRewindFor_l1(
+      rewindOffered
+        ? turnRewindFor(
             session,
             { sharedCheckout: reviewUndoLocked },
             workCwd,
-            { onRewindChat: onRewindChat_l1, onFork: onForkTurn_l1 },
+            { onRewindChat, onFork: onForkTurn },
           )
         : undefined,
     [
-      rewindOffered_l1,
+      rewindOffered,
       session,
       reviewUndoLocked,
       workCwd,
-      onRewindChat_l1,
-      onForkTurn_l1,
+      onRewindChat,
+      onForkTurn,
     ],
   );
   // The prompt a chat rewind took back goes back in the composer, once, and
   // only when nothing has been typed there since.
   useEffect(() => {
-    if (takeRewoundPrompt_l1(session.rewoundPrompt)) {
+    if (takeRewoundPrompt(session.rewoundPrompt)) {
       restorePromptRef.current?.(
         session.rewoundPrompt!.text,
         session.rewoundPrompt!.attachments,
@@ -775,26 +776,26 @@ const LocalSessionPane = memo(function LocalSessionPane({
     }
   }, [session.rewoundPrompt]);
   // #45: a local chat on a harness that keeps its own sessions offers them.
-  const pickUp_l1 = useMemo<PickUpTarget_l1 | undefined>(
+  const pickUp = useMemo<PickUpTarget | undefined>(
     () =>
-      onPickUpSession_l1 &&
+      onPickUpSession &&
       !remote &&
       !monoForSession(session.id) &&
       !session.ephemeral &&
       !session.worktreeRemoved &&
       !session.inboxAsk &&
-      harnessOffersPickUp_l1(session.harness)
+      harnessOffersPickUp(session.harness)
         ? {
             harness: session.harness,
             cwd: workCwd,
             providerAccountId: session.providerAccountId,
-            bound: pickUpBound_l1?.(session.harness) ?? new Map(),
-            onPick: (row) => onPickUpSession_l1(session.id, row),
+            bound: pickUpBound?.(session.harness) ?? new Map(),
+            onPick: (row) => onPickUpSession(session.id, row),
           }
         : undefined,
     [
-      onPickUpSession_l1,
-      pickUpBound_l1,
+      onPickUpSession,
+      pickUpBound,
       remote,
       session.id,
       session.ephemeral,
@@ -805,7 +806,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       workCwd,
     ],
   );
-  const suggestions_l2 = useSuggestedPrompts_l2({
+  const suggestions = useSuggestedPrompts({
     sessionId: session.id,
     workCwd,
     blocks: session.blocks,
@@ -983,23 +984,23 @@ const LocalSessionPane = memo(function LocalSessionPane({
       onRestorePromptReady={(restore) => {
         restorePromptRef.current = restore;
       }}
-      pickUp_l1={pickUp_l1}
-      suggestedPrompts={suggestions_l2.prompts}
-      onDismissSuggestedPrompts={suggestions_l2.dismiss}
+      pickUp={pickUp}
+      suggestedPrompts={suggestions.prompts}
+      onDismissSuggestedPrompts={suggestions.dismiss}
       // Finding 2.2: one line above the input when this chat's instructions
       // changed after it started. Changes apply to new chats only.
       children={
-        <StaleInstructionsLine_s6
+        <StaleInstructionsLine
           session={session}
           project={session.cwd}
           onNewChat={
-            onNewChatLike_s6 ? () => onNewChatLike_s6(session.id) : undefined
+            onNewChatLike ? () => onNewChatLike(session.id) : undefined
           }
         />
       }
-      sessionUsed_l4={sessionWasUsed_l4(session)}
-      privacySession_l5={session}
-      onPrivacyPatch_l5={
+      sessionUsed={sessionWasUsed(session)}
+      privacySession={session}
+      onPrivacyPatch={
         sessionToolsAvailable && onSessionToolsChange
           ? (patch) => onSessionToolsChange(session.id, patch)
           : undefined
@@ -1339,10 +1340,10 @@ const LocalSessionPane = memo(function LocalSessionPane({
                         />
                       )
                     }
-                    turnRewind_l1={turnRewind_l1}
-                    latestTurnVerify_l3={
+                    turnRewind={turnRewind}
+                    latestTurnVerify={
                       agent ? undefined : (
-                        <VerifyCard_l3
+                        <VerifyCard
                           sessionId={session.id}
                           blocks={session.blocks}
                           busy={!!session.busy}
@@ -1483,8 +1484,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
           visible={visible}
           onOpenFile={onOpenFile}
           onShowInChat={showInChat}
-          onNewChatLike_s6={
-            onNewChatLike_s6 ? () => onNewChatLike_s6(session.id) : undefined
+          onNewChatLike={
+            onNewChatLike ? () => onNewChatLike(session.id) : undefined
           }
         />
         <ToolImageGalleryHost blocks={session.blocks} cwd={workCwd} />

@@ -31,12 +31,12 @@ import { ProgressSection } from "./ProgressSection";
 import { SessionPanelCloseButton } from "./SessionPanelToggle";
 import { UsedSection } from "./UsedSection";
 import type { SessionPanelControl } from "./useSessionPanel";
-import { RunningSection as RunningSection_l1 } from "./RunningSection";
-import { ContextSection as ContextSection_l2 } from "../../session-preamble/ui/ContextSection";
-import { PreviewServerSection as PreviewServerSection_l3 } from "../../app-preview/ui/PreviewServerSection";
+import { RunningSection } from "./RunningSection";
+import { ContextSection } from "../../session-preamble/ui/ContextSection";
+import { PreviewServerSection } from "../../app-preview/ui/PreviewServerSection";
 import {
-  SessionPrivacySection as SessionPrivacySection_l5,
-  SessionPrivateBadge as SessionPrivateBadge_l5,
+  SessionPrivacySection,
+  SessionPrivateBadge,
 } from "../../privacy-view/ui/SessionPrivacy";
 
 type PanelSession = Pick<
@@ -69,7 +69,7 @@ type PanelActions = {
   /** Scroll the transcript to a block, unfolding the work it sits in. */
   onShowInChat: (blockId: string) => void;
   /** Finding 2.2: a new chat like this one, for the Context section. */
-  onNewChatLike_s6?: () => void;
+  onNewChatLike?: () => void;
 };
 
 /**
@@ -83,7 +83,7 @@ export function SessionPanel({
   visible = true,
   onOpenFile,
   onShowInChat,
-  onNewChatLike_s6,
+  onNewChatLike,
 }: PanelActions & {
   panel: SessionPanelControl;
   session: PanelSession;
@@ -104,7 +104,7 @@ export function SessionPanel({
       onClose={close}
       onOpenFile={onOpenFile}
       onShowInChat={onShowInChat}
-      onNewChatLike_s6={onNewChatLike_s6}
+      onNewChatLike={onNewChatLike}
     />
   );
 }
@@ -126,7 +126,7 @@ export function SessionPanelView({
   onClose,
   onOpenFile,
   onShowInChat,
-  onNewChatLike_s6,
+  onNewChatLike,
 }: PanelActions & {
   session: PanelSession;
   outputs: readonly DocumentFile[];
@@ -258,7 +258,7 @@ export function SessionPanelView({
               <CornerDownRight className="size-3.5" strokeWidth={1.75} />
             </button>
           ) : null}
-          <SessionPrivateBadge_l5 session={session} />
+          <SessionPrivateBadge session={session} />
           <SessionPanelCloseButton controls={id} onClose={onClose} />
         </header>
         <div
@@ -277,7 +277,7 @@ export function SessionPanelView({
           <PreviewSection blocks={session.blocks} cwd={workCwd} />
           <OutputsSection files={outputs} onOpenFile={onOpenFile} />
           <UsedSection rows={rows} active={visible} onAction={act} />
-          <RunningSection_l1
+          <RunningSection
             sessionId={session.id}
             harness={session.harness}
             blocks={session.blocks}
@@ -286,18 +286,18 @@ export function SessionPanelView({
             active={visible}
             onShowInChat={onShowInChat}
           />
-          <ContextSection_l2
+          <ContextSection
             sessionId={session.id}
             project={session.cwd}
             session={session}
-            onNewChat={onNewChatLike_s6}
+            onNewChat={onNewChatLike}
           />
-          <PreviewServerSection_l3
+          <PreviewServerSection
             sessionId={session.id}
             project={session.cwd}
             workCwd={workCwd}
           />
-          <SessionPrivacySection_l5 session={session} />
+          <SessionPrivacySection session={session} />
           <PanelSection title="Session" fold="facts">
             <dl className="flex flex-col gap-0.5 px-2">
               {facts.map((fact) => (

@@ -27,9 +27,9 @@ vi.mock("../../core/child", () => ({
 const {
   sendClaudeTurn,
   stopClaudeSession,
-  prepareClaudeFork_l1,
-  forkClaudeSession_l1,
-  __claudeForkPending_l1,
+  prepareClaudeFork,
+  forkClaudeSession,
+  __claudeForkPending,
   __claudeTestReset,
   CLAUDE_FIRST_TURN,
 } = await import("./claude");
@@ -113,7 +113,7 @@ describe("--fork-session", () => {
 
 describe("Claude fork", () => {
   it("starts the new chat as a copy cut at the entry, never as the source", async () => {
-    prepareClaudeFork_l1({
+    prepareClaudeFork({
       threadId: "fork1",
       providerSessionId: "sess_src",
       cwd: "/repo",
@@ -132,7 +132,7 @@ describe("Claude fork", () => {
   });
 
   it("resumes the copy, not the source, once Claude named it", async () => {
-    prepareClaudeFork_l1({
+    prepareClaudeFork({
       threadId: "fork1",
       providerSessionId: "sess_src",
       cwd: "/repo",
@@ -143,11 +143,11 @@ describe("Claude fork", () => {
     const second = spawned[1];
     expect(flag(second, "--resume")).toBe("sess_new");
     expect(second).not.toContain("--fork-session");
-    expect(__claudeForkPending_l1("fork1")).toBeUndefined();
+    expect(__claudeForkPending("fork1")).toBeUndefined();
   });
 
   it("forks again if the first start never reached Claude's own id", async () => {
-    prepareClaudeFork_l1({
+    prepareClaudeFork({
       threadId: "fork1",
       providerSessionId: "sess_src",
       cwd: "/repo",
@@ -161,7 +161,7 @@ describe("Claude fork", () => {
   });
 
   it("forks a whole conversation when there is no entry to cut at", async () => {
-    prepareClaudeFork_l1({
+    prepareClaudeFork({
       threadId: "fork1",
       providerSessionId: "sess_src",
       cwd: "/repo",
@@ -174,11 +174,11 @@ describe("Claude fork", () => {
 
   it("refuses without a source conversation or while the new chat runs", async () => {
     expect(() =>
-      prepareClaudeFork_l1({ threadId: "fork1", providerSessionId: " ", cwd: "/repo" }),
+      prepareClaudeFork({ threadId: "fork1", providerSessionId: " ", cwd: "/repo" }),
     ).toThrow("no Claude conversation");
     await startOn("src", "sess_src");
     await expect(
-      forkClaudeSession_l1({
+      forkClaudeSession({
         sourceSessionId: "x",
         newSessionId: "src",
         providerSessionId: "sess_src",

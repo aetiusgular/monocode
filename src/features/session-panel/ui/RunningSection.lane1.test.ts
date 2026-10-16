@@ -3,11 +3,11 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const listHarnessBackgroundTasks_l1 = vi.hoisted(() => vi.fn());
-const stopHarnessBackgroundTask_l1 = vi.hoisted(() => vi.fn());
+const listHarnessBackgroundTasks = vi.hoisted(() => vi.fn());
+const stopHarnessBackgroundTask = vi.hoisted(() => vi.fn());
 vi.mock("../../../integrations/harness/core/registry", () => ({
-  listHarnessBackgroundTasks_l1,
-  stopHarnessBackgroundTask_l1,
+  listHarnessBackgroundTasks,
+  stopHarnessBackgroundTask,
 }));
 
 const { RunningSection, RUNNING_POLL_MS } = await import("./RunningSection");
@@ -36,8 +36,8 @@ const item = (patch: Partial<BackgroundItem> = {}): BackgroundItem => ({
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   localStorage.clear();
-  listHarnessBackgroundTasks_l1.mockReset();
-  stopHarnessBackgroundTask_l1.mockReset();
+  listHarnessBackgroundTasks.mockReset();
+  stopHarnessBackgroundTask.mockReset();
   ptyData.clear();
   setOwnedProcessPtyForTest({
     spawn: async () => undefined,
@@ -81,20 +81,20 @@ describe("RunningSection", () => {
   });
 
   it("lists a harness item with a stop button and stops it by id", async () => {
-    stopHarnessBackgroundTask_l1.mockResolvedValue(true);
+    stopHarnessBackgroundTask.mockResolvedValue(true);
     await render({ pushed: [item()] });
     expect(container.textContent).toContain("npm test");
     expect(container.querySelector("[data-running-count]")?.textContent).toBe("1");
     const stop = container.querySelector<HTMLButtonElement>("[data-running-stop]");
     await act(async () => stop!.click());
-    expect(stopHarnessBackgroundTask_l1).toHaveBeenCalledWith("claude", "s1", "t1");
+    expect(stopHarnessBackgroundTask).toHaveBeenCalledWith("claude", "s1", "t1");
     expect(
       container.querySelector("[data-running-row]")?.getAttribute("data-running-status"),
     ).toBe("stopping");
   });
 
   it("says so when a stop finds nothing to stop", async () => {
-    stopHarnessBackgroundTask_l1.mockResolvedValue(false);
+    stopHarnessBackgroundTask.mockResolvedValue(false);
     await render({ pushed: [item()] });
     await act(async () =>
       container.querySelector<HTMLButtonElement>("[data-running-stop]")!.click(),
@@ -115,23 +115,23 @@ describe("RunningSection", () => {
 
   it("polls Codex while shown and stops asking when it has no list", async () => {
     vi.useFakeTimers();
-    listHarnessBackgroundTasks_l1.mockResolvedValueOnce([item({ id: "42" })]);
-    listHarnessBackgroundTasks_l1.mockResolvedValueOnce(null);
+    listHarnessBackgroundTasks.mockResolvedValueOnce([item({ id: "42" })]);
+    listHarnessBackgroundTasks.mockResolvedValueOnce(null);
     await render({ harness: "codex" });
     expect(container.textContent).toContain("npm test");
     await act(async () => {
       await vi.advanceTimersByTimeAsync(RUNNING_POLL_MS);
     });
-    expect(listHarnessBackgroundTasks_l1).toHaveBeenCalledTimes(2);
+    expect(listHarnessBackgroundTasks).toHaveBeenCalledTimes(2);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(RUNNING_POLL_MS * 3);
     });
-    expect(listHarnessBackgroundTasks_l1).toHaveBeenCalledTimes(2);
+    expect(listHarnessBackgroundTasks).toHaveBeenCalledTimes(2);
   });
 
   it("does not poll while the panel is behind another tab", async () => {
     await render({ harness: "codex", active: false });
-    expect(listHarnessBackgroundTasks_l1).not.toHaveBeenCalled();
+    expect(listHarnessBackgroundTasks).not.toHaveBeenCalled();
   });
 
   it("shows a MonoCode process with its output and no terminal codes", async () => {
