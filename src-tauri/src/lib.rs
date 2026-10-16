@@ -7,6 +7,7 @@ mod azure_devops;
 mod chat_background;
 mod checkpoint;
 mod claude_plugin;
+mod claude_sessions;
 mod codex_mono_store;
 mod control;
 pub mod control_cli;
@@ -14,6 +15,9 @@ mod cursor_store;
 mod devin_config;
 mod devin_usage;
 mod docker_mcp;
+pub mod edit_adapter;
+mod edit_adapter_commands;
+mod env_store;
 mod external_editor;
 mod fs;
 mod git_guard;
@@ -31,6 +35,7 @@ mod macos;
 mod macos_background;
 mod mcp;
 mod menu;
+mod model_setup;
 mod mono;
 #[cfg(target_os = "macos")]
 mod mono_chat;
@@ -39,6 +44,8 @@ mod notes;
 mod notifications;
 mod pasteboard;
 mod pi_usage;
+mod preview;
+mod project_context;
 mod project_logo;
 mod pty;
 #[cfg(target_os = "macos")]
@@ -47,6 +54,7 @@ mod rate_limits;
 mod reminders;
 mod remote;
 mod remote_ssh;
+mod sandbox_frame;
 mod search;
 mod session_store;
 mod skills;
@@ -62,14 +70,6 @@ mod window_transfer;
 mod windows;
 mod worktree_lifecycle;
 mod worktrees;
-mod claude_sessions;
-mod env_store;
-mod project_context;
-mod preview;
-mod sandbox_frame;
-pub mod edit_adapter;
-mod edit_adapter_commands;
-mod model_setup;
 
 // Phase 1 seam: spawn / kill harness children per MonoCode thread.
 // Adapters own the protocol; this host only supervises processes.
