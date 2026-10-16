@@ -18,13 +18,14 @@ export const REMEMBER_MAX = MEMORY_ENTRY_MAX - 20;
  * project's memory. It is the user's own click, so it is saved at once, not
  * proposed. What a local session showed stays local only. The text is saved
  * whole or not at all: a selection longer than REMEMBER_MAX is refused with
- * the limit named, never cut (Mac 2.8).
+ * the limit named, never cut (Mac 2.8). The reason is short, so the menu
+ * can show it whole after "Could not remember this."
  */
 export function rememberableText(text: string): string {
   const flat = text.replace(/\s+/g, " ").trim();
   if (flat.length > REMEMBER_MAX)
     throw new Error(
-      `This selection is ${flat.length.toLocaleString("en-US")} characters. A memory entry holds at most ${REMEMBER_MAX.toLocaleString("en-US")}, so nothing was saved.`,
+      `This selection is ${flat.length.toLocaleString("en-US")} characters. A memory entry holds at most ${REMEMBER_MAX.toLocaleString("en-US")}.`,
     );
   return flat;
 }

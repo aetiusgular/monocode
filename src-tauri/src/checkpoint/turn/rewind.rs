@@ -82,6 +82,7 @@ impl CheckpointStore {
                 error: None,
                 dismissed: BTreeSet::new(),
                 edited: BTreeSet::new(),
+                started_ms: None,
             },
         )
     }

@@ -45,10 +45,41 @@ export function TranscriptSelectionMenu({
   if (!selection) return null;
 
   return (
+    <SelectionMenuSurface
+      selection={selection}
+      onAddToChat={onAddToChat}
+      onAddToNotes={onAddToNotes}
+      onRemember={onRemember}
+      onDismiss={onDismiss}
+    />
+  );
+}
+
+/** How wide the menu grows while it shows why an action failed (Mac 2.8). */
+export const SELECTION_MENU_FAILURE_WIDTH = 256;
+
+/**
+ * The open menu. It unmounts when the selection is dropped, which clears a
+ * failure it showed.
+ */
+function SelectionMenuSurface({
+  selection,
+  onAddToChat,
+  onAddToNotes,
+  onRemember,
+  onDismiss,
+}: Omit<Props, "selection"> & { selection: TranscriptSelection }) {
+  // Mac 2.8: a failure reason is wrapped at a readable width, and the menu
+  // is measured at its full height, so it moves below the selection rather
+  // than cut the reason off when there is no room above.
+  const [failed, setFailed] = useState(false);
+  return (
     <Popover
       anchor={selection.rect}
       side="top"
       align="center"
+      width={failed ? SELECTION_MENU_FAILURE_WIDTH : undefined}
+      constrainHeight={false}
       onDismiss={(reason) => {
         if (reason === "escape") window.getSelection()?.removeAllRanges();
         onDismiss();
@@ -65,6 +96,7 @@ export function TranscriptSelectionMenu({
             text={selection.text}
             onSelect={onAddToChat}
             onDismiss={onDismiss}
+            onFailed={() => setFailed(true)}
           >
             <MessageSquarePlus
               aria-hidden="true"
@@ -79,6 +111,7 @@ export function TranscriptSelectionMenu({
             text={selection.text}
             onSelect={onAddToNotes}
             onDismiss={onDismiss}
+            onFailed={() => setFailed(true)}
           >
             <FilePlusCorner
               aria-hidden="true"
@@ -94,6 +127,7 @@ export function TranscriptSelectionMenu({
             text={selection.text}
             onSelect={onRemember}
             onDismiss={onDismiss}
+            onFailed={() => setFailed(true)}
           >
             <StickyNote
               aria-hidden="true"
@@ -118,6 +152,7 @@ function SelectionAction({
   children,
   onSelect,
   onDismiss,
+  onFailed,
 }: {
   label: string;
   failure?: string;
@@ -125,6 +160,7 @@ function SelectionAction({
   children: ReactNode;
   onSelect: (text: string) => void | Promise<void>;
   onDismiss: () => void;
+  onFailed?: () => void;
 }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -150,6 +186,7 @@ function SelectionAction({
             onDismiss();
           } catch (error) {
             setError(error instanceof Error ? error.message : String(error));
+            onFailed?.();
           } finally {
             setPending(false);
           }
@@ -162,7 +199,7 @@ function SelectionAction({
       {error && (
         <span
           role="alert"
-          className="max-w-xs px-2.5 py-1 text-xs text-content/70"
+          className="whitespace-normal break-words px-2.5 py-1 text-xs leading-4 text-content/70"
         >
           {failure} {error}
         </span>

@@ -1183,3 +1183,266 @@ fn python_cache_paths_are_recognised() {
     assert!(!is_python_cache("a.pyx"));
     assert!(!is_python_cache("src/main.py"));
 }
+
+/// Mac retest 7.3 (15 Oct): after `python3 -m pytest`, Undo all removed the
+/// edit and both `.pyc` files but left an empty `__pycache__` folder.
+mod emptied_folders {
+    use super::*;
+
+    fn exists(f: &Fixture, path: &str) -> bool {
+        f.repo.join(path).exists()
+    }
+
+    fn head(f: &Fixture) -> String {
+        String::from_utf8(run_git(&f.repo, &["rev-parse", "HEAD"]).unwrap())
+            .unwrap()
+            .trim()
+            .to_string()
+    }
+
+    /// A finished turn record whose baseline is HEAD.
+    fn recorded(before: &str, started_ms: u64) -> RecordedTurn {
+        RecordedTurn {
+            id: "t".into(),
+            before: Some(before.into()),
+            after: Some(before.into()),
+            head: None,
+            shared: false,
+            error: None,
+            dismissed: BTreeSet::new(),
+            edited: BTreeSet::new(),
+            started_ms: Some(started_ms),
+        }
+    }
+
+    /// File times come from the kernel's coarse clock, which can trail the
+    /// clock a start is read from by a few milliseconds. A pause after the
+    /// start keeps what the test makes next later than it.
+    fn pause() {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    /// The time now, then a pause, so folders made next are later by the clock.
+    fn start() -> u64 {
+        let started = epoch_ms(std::time::SystemTime::now()).unwrap();
+        pause();
+        started
+    }
+
+    fn begin(f: &Fixture, session: &str, cwd: &str, id: &str) {
+        f.store.begin_turn(session, cwd, id).unwrap();
+        pause();
+    }
+
+    #[test]
+    fn undo_all_removes_folders_the_turn_made_and_left_empty() {
+        let f = Fixture::new();
+        begin(&f, "session", f.cwd(), "pytest");
+        f.write("a.txt", "original\nagent change\n");
+        f.write("__pycache__/a.cpython-312.pyc", "bytecode");
+        // Nested: `tests` and its cache are both new.
+        f.write(
+            "tests/__pycache__/test_a.cpython-312-pytest-8.pyc",
+            "bytecode",
+        );
+        f.write("tests/test_a.py", "def test_a():\n    pass\n");
+        // pytest's own cache ignores itself, so the checkpoint never has it.
+        f.write(
+            ".pytest_cache/.gitignore",
+            "# Created by pytest automatically.\n*\n",
+        );
+        f.write(".pytest_cache/v/cache/nodeids", "[]\n");
+        f.store.finish_turn("session", f.cwd(), "pytest").unwrap();
+
+        let after = f.store.undo("session", f.cwd(), None).unwrap();
+        assert!(after.files.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(f.repo.join("a.txt")).unwrap(),
+            "original\n"
+        );
+        assert!(!exists(&f, "__pycache__"));
+        assert!(!exists(&f, "tests/__pycache__"));
+        assert!(!exists(&f, "tests"));
+        // Ignored files are not the checkpoint's: left as they are.
+        assert!(exists(&f, ".pytest_cache/.gitignore"));
+        assert!(exists(&f, ".pytest_cache/v/cache/nodeids"));
+        assert!(f.repo.is_dir());
+    }
+
+    #[test]
+    fn a_folder_that_existed_before_the_turn_stays_even_when_empty() {
+        let f = Fixture::new();
+        std::fs::create_dir(f.repo.join("logs")).unwrap();
+        std::fs::create_dir_all(f.repo.join("out/empty")).unwrap();
+        pause();
+        begin(&f, "session", f.cwd(), "first");
+        f.write("logs/run.txt", "log\n");
+        f.write("out/empty/new/x.txt", "x\n");
+        f.store.finish_turn("session", f.cwd(), "first").unwrap();
+        f.store.undo("session", f.cwd(), None).unwrap();
+        assert!(!exists(&f, "logs/run.txt"));
+        assert!(f.repo.join("logs").is_dir());
+        // The new folder inside goes; the empty ones that were there stay.
+        assert!(!exists(&f, "out/empty/new"));
+        assert!(f.repo.join("out/empty").is_dir());
+    }
+
+    #[test]
+    fn a_folder_that_held_files_before_the_turn_stays_when_the_turn_made_it_again() {
+        let f = Fixture::new();
+        f.write("docs/readme.md", "read me\n");
+        run_git(&f.repo, &["add", "docs/readme.md"]).unwrap();
+        run_git(&f.repo, &["commit", "-m", "docs"]).unwrap();
+        begin(&f, "session", f.cwd(), "first");
+        // The folder is deleted and made again: new by the clock, but the
+        // snapshot shows it held a file before the turn.
+        std::fs::remove_dir_all(f.repo.join("docs")).unwrap();
+        f.write("docs/new.md", "new\n");
+        f.store.finish_turn("session", f.cwd(), "first").unwrap();
+        f.store
+            .undo("session", f.cwd(), Some("docs/new.md"))
+            .unwrap();
+        assert!(!exists(&f, "docs/new.md"));
+        assert!(!exists(&f, "docs/readme.md"));
+        assert!(f.repo.join("docs").is_dir());
+    }
+
+    #[test]
+    fn a_new_folder_that_still_holds_a_file_stays() {
+        let f = Fixture::new();
+        f.write(".gitignore", "*.log\n");
+        run_git(&f.repo, &["add", ".gitignore"]).unwrap();
+        run_git(&f.repo, &["commit", "-m", "ignore logs"]).unwrap();
+        begin(&f, "session", f.cwd(), "first");
+        f.write("gen/a.txt", "a\n");
+        f.write("gen/sub/b.txt", "b\n");
+        // Ignored, so not in the checkpoint and not removed.
+        f.write("gen/debug.log", "kept\n");
+        f.store.finish_turn("session", f.cwd(), "first").unwrap();
+        f.store.undo("session", f.cwd(), None).unwrap();
+        assert!(!exists(&f, "gen/a.txt"));
+        assert!(!exists(&f, "gen/sub"));
+        assert!(exists(&f, "gen/debug.log"));
+        assert!(f.repo.join("gen").is_dir());
+    }
+
+    #[test]
+    fn a_turn_recorded_without_a_start_removes_no_folder() {
+        let f = Fixture::new();
+        begin(&f, "session", f.cwd(), "first");
+        f.write("made/x.txt", "x\n");
+        f.store.finish_turn("session", f.cwd(), "first").unwrap();
+        // A review saved before turns kept their start.
+        let path = f.dir.join("checkpoints/session/turn-review.json");
+        let mut review: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let latest = review["latest"].as_object_mut().unwrap();
+        assert!(latest.remove("startedMs").is_some());
+        std::fs::write(&path, serde_json::to_vec(&review).unwrap()).unwrap();
+        f.store.undo("session", f.cwd(), None).unwrap();
+        assert!(!exists(&f, "made/x.txt"));
+        assert!(f.repo.join("made").is_dir());
+    }
+
+    #[test]
+    fn a_chat_in_a_subfolder_never_touches_folders_outside_it() {
+        let f = Fixture::new();
+        f.write("nested/keep.txt", "kept\n");
+        let cwd = f.repo.join("nested");
+        let cwd = cwd.to_str().unwrap();
+        begin(&f, "nested", cwd, "first");
+        f.write("nested/new/deeper/x.txt", "x\n");
+        // Outside the chat's folder: not in its checkpoint.
+        f.write("beside/y.txt", "y\n");
+        f.store.finish_turn("nested", cwd, "first").unwrap();
+        f.store.undo("nested", cwd, None).unwrap();
+        assert!(!exists(&f, "nested/new"));
+        assert!(exists(&f, "nested/keep.txt"));
+        assert!(exists(&f, "beside/y.txt"));
+    }
+
+    #[test]
+    fn never_the_checkpoint_folder_itself_or_anything_above_it() {
+        let f = Fixture::new();
+        let before = head(&f);
+        let started = start();
+        // All new and empty: only the folder inside the root may go.
+        let root = f.repo.join("app");
+        std::fs::create_dir_all(root.join("deep")).unwrap();
+        std::fs::create_dir(f.repo.join("sibling")).unwrap();
+        remove_emptied_folders(
+            &root,
+            &recorded(&before, started),
+            &[
+                "x.txt".into(),
+                "deep/x.txt".into(),
+                "../sibling/x.txt".into(),
+                "/abs/x.txt".into(),
+                ".git/x.txt".into(),
+            ],
+        );
+        assert!(!root.join("deep").exists());
+        assert!(root.is_dir());
+        assert!(f.repo.join("sibling").is_dir());
+        assert!(f.repo.join(".git").is_dir());
+        // A folder that is not empty stays, and so do the ones above it.
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        std::fs::write(root.join("a/b/late.txt"), "late\n").unwrap();
+        remove_emptied_folders(&root, &recorded(&before, started), &["a/b/x.txt".into()]);
+        assert!(root.join("a/b/late.txt").exists());
+    }
+
+    #[test]
+    fn a_folder_made_before_the_turn_began_stays() {
+        let f = Fixture::new();
+        let before = head(&f);
+        std::fs::create_dir(f.repo.join("old")).unwrap();
+        pause();
+        let started = start();
+        remove_emptied_folders(&f.repo, &recorded(&before, started), &["old/x.txt".into()]);
+        assert!(f.repo.join("old").is_dir());
+        // The same folder counted against an earlier start is new, and goes.
+        remove_emptied_folders(
+            &f.repo,
+            &recorded(&before, started - 60_000),
+            &["old/x.txt".into()],
+        );
+        assert!(!f.repo.join("old").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_folder_is_never_followed() {
+        let f = Fixture::new();
+        let before = head(&f);
+        let outside = f.dir.join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        let started = start();
+        // New and empty, but reached only through a link.
+        std::fs::create_dir(outside.join("inner")).unwrap();
+        std::fs::create_dir(outside.join("empty")).unwrap();
+        std::fs::create_dir(f.repo.join("made")).unwrap();
+        std::os::unix::fs::symlink(&outside, f.repo.join("made/link")).unwrap();
+        std::os::unix::fs::symlink(outside.join("empty"), f.repo.join("to-empty")).unwrap();
+        remove_emptied_folders(
+            &f.repo,
+            &recorded(&before, started),
+            &[
+                "made/link/inner/gone.txt".into(),
+                "made/link/gone.txt".into(),
+                "to-empty/gone.txt".into(),
+            ],
+        );
+        assert!(outside.join("inner").is_dir());
+        assert!(outside.join("empty").is_dir());
+        assert!(std::fs::symlink_metadata(f.repo.join("made/link"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(std::fs::symlink_metadata(f.repo.join("to-empty"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(f.repo.join("made").is_dir());
+    }
+}

@@ -97,6 +97,7 @@ import {
 } from "../../../../features/sessions/model/userQuestion";
 import { approvalTool } from "../../../../features/tool-access/model/toolAccess";
 import {
+  chatRuleOffered,
   commandRuleGate,
   packageScriptFingerprint,
   ruleHeldToProjectScripts,
@@ -1612,7 +1613,8 @@ async function handleControlRequest(
   const tool = approvalTool(control.toolName);
   // A rule whose script changed since it was allowed is named on the card,
   // so allowing it again keeps the script as it is now.
-  // A package script prefix waits for package.json; other cards do not wait.
+  // A package script prefix waits for package.json, and a git rule for the
+  // repository check below; other cards do not wait.
   const heldRule =
     commandGate?.allow === false &&
     commandGate.reason === "script-changed" &&
@@ -1623,8 +1625,15 @@ async function handleControlRequest(
           input.command,
           live.cwd,
         );
-  const chatRule: ApprovalTool | undefined =
+  const keptRule: ApprovalTool | undefined =
     heldRule instanceof Promise ? await heldRule : heldRule;
+  // Mac test 10.1: a git rule never answers in a repository whose own config
+  // names a command, so there the card offers only Allow and Deny.
+  const offered = keptRule ? chatRuleOffered(keptRule.key, live.cwd) : false;
+  const chatRule =
+    keptRule && (offered instanceof Promise ? await offered : offered)
+      ? keptRule
+      : undefined;
   // Read without holding the card back; an answer waits for it (R3).
   const scriptPrint = chatRule
     ? chatRuleScriptPrint(chatRule.key, live.cwd)

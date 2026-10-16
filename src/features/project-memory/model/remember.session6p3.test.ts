@@ -44,7 +44,7 @@ describe("Remember this never cuts", () => {
   it("refuses a longer selection, names the limit and saves nothing", async () => {
     const text = "x".repeat(REMEMBER_MAX + 1);
     expect(() => rememberableText(text)).toThrow(
-      `This selection is 981 characters. A memory entry holds at most ${REMEMBER_MAX}, so nothing was saved.`,
+      `This selection is 981 characters. A memory entry holds at most ${REMEMBER_MAX}.`,
     );
     await expect(
       rememberText(project, text, { harness: "codex" }),

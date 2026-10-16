@@ -134,7 +134,20 @@ export function sandboxView(session: PrivacySession): SandboxView {
   }
 }
 
-function modelDestination(session: PrivacySession): Destination {
+/** The session fields the model route reads. */
+export type ModelRouteSession = Pick<
+  PrivacySession,
+  "harness" | "cwd" | "worktreeCwd"
+> &
+  Partial<
+    Pick<PrivacySession, "model" | "modelProvider" | "providerAccountId">
+  >;
+
+/**
+ * The model line of Where data goes. The composer's provider badge reads the
+ * same line, so the two never disagree (Mac 5.4).
+ */
+export function modelDestination(session: ModelRouteSession): Destination {
   if (session.harness === "claude")
     return {
       kind: "model",

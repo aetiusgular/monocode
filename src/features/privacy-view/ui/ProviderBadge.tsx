@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, useSyncExternalStore } from "react";
 import { Popover } from "../../../shared/ui/Popover";
 import {
   BUILT_IN_PROVIDERS,
@@ -6,13 +6,17 @@ import {
 } from "../../model-setup/model/modelProviders";
 import { providerLocality } from "../../model-setup/model/providerLocality";
 import {
-  sessionModelProvider,
   sessionProviderLabel,
   type SessionProviderInput,
 } from "../../model-setup/model/sessionProvider";
 import { urlHost } from "../../model-setup/model/loopback";
 import type { Locality } from "../../server-locality/model/locality";
+import {
+  harnessReportsVersion,
+  subscribeHarnessReports,
+} from "../../server-locality/model/sessionServers";
 import { harnessCan } from "../../../integrations/harness/core/capabilities";
+import { modelDestination, type ModelRouteSession } from "../model/privacyView";
 
 export type ProviderChoice = {
   id: string;
@@ -54,6 +58,31 @@ const LOCALITY_TEXT: Record<Locality, string> = {
   unknown: "Not known, counted as hosted",
 };
 
+export type ProviderBadgeSession = SessionProviderInput & ModelRouteSession;
+
+/**
+ * The badge's name, mark and tooltip (Mac 5.4). The mark is the one Where
+ * data goes shows for the same model route, from the same function. With no
+ * provider picked, the tooltip names what the home's config names once the
+ * harness reported it, and says it is not reported yet before then. A route
+ * that is not known counts as hosted.
+ */
+export function providerBadgeView(session: ProviderBadgeSession): {
+  label: string;
+  locality: Locality;
+  title: string;
+} {
+  const route = modelDestination(session);
+  const picked = sessionProviderLabel(session);
+  const label = picked ?? "Home default";
+  const where = !picked && route.detail ? ` ${route.detail}.` : "";
+  return {
+    label,
+    locality: route.locality,
+    title: `Model provider: ${label}.${where} ${LOCALITY_TEXT[route.locality]}.`,
+  };
+}
+
 function LocalityDot({ locality }: { locality: Locality }) {
   return (
     <span
@@ -74,16 +103,20 @@ export function ProviderBadge({
   session,
   onChange,
 }: {
-  session: SessionProviderInput;
+  session: ProviderBadgeSession;
   onChange?: (providerId: string) => void;
 }) {
   const entries = useModelProviders();
+  // What the harness reports about its home decides the route (Mac 5.4).
+  useSyncExternalStore(
+    subscribeHarnessReports,
+    harnessReportsVersion,
+    harnessReportsVersion,
+  );
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   if (!harnessCan(session.harness, "modelProvider")) return null;
-  const current = sessionModelProvider(session);
-  const locality = providerLocality(current);
-  const label = sessionProviderLabel(session) ?? "Home default";
+  const { label, locality, title } = providerBadgeView(session);
 
   return (
     <div ref={root} className="relative" data-provider-badge>
@@ -92,7 +125,7 @@ export function ProviderBadge({
         disabled={!onChange}
         aria-haspopup="listbox"
         aria-expanded={open}
-        title={`Model provider: ${label}. ${LOCALITY_TEXT[locality]}.`}
+        title={title}
         onMouseDown={(event) => event.preventDefault()}
         onClick={() => setOpen((value) => !value)}
         className="flex h-6.5 max-w-40 items-center gap-1.5 rounded-md bg-selection px-1.5 text-[11px] text-content hover:bg-selection-hover disabled:cursor-default"
@@ -115,7 +148,10 @@ export function ProviderBadge({
           <ProviderOption
             label="Home default"
             note="What this Codex home's config names"
-            locality={providerLocality(undefined)}
+            locality={
+              modelDestination({ ...session, modelProvider: undefined })
+                .locality
+            }
             selected={!session.modelProvider}
             onPick={() => {
               onChange("");

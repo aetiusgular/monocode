@@ -14,9 +14,15 @@ let onLine: ((line: string) => void) | undefined;
 
 /** The project's package.json, as Rust reads it for the script rule check (R3). */
 const PACKAGE_JSON = '{"scripts":{"test":"vitest run"}}';
+// A plain repository: its git config names no command, so a card for a
+// command that names git can offer its rule (Mac test 10.1).
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: async (command: string) =>
-    command === "preview_read_config" ? { packageJson: PACKAGE_JSON } : true,
+    command === "preview_read_config"
+      ? { packageJson: PACKAGE_JSON }
+      : command === "git_repo_names_commands"
+        ? false
+        : true,
 }));
 vi.mock("../../core/existingDirs", () => ({
   existingDirs: async (dirs?: readonly string[]) => [...(dirs ?? [])],

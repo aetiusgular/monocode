@@ -50,6 +50,32 @@ export type RuleGateResult =
     };
 
 /**
+ * Whether a rule's words name git: a git prefix, or any rule whose text has
+ * the word git, also an exact rule the shell reading cannot split
+ * (`cd x && git status`).
+ */
+export function ruleNamesGit(rule: CommandRule): boolean {
+  return ruleWords(rule)?.[0] === "git" || GIT_WORD.test(formatWords(rule));
+}
+
+/**
+ * Whether a git rule may answer in `cwd`: Rust finds no command the
+ * repository's own config names. Fails closed: no folder, an error or an
+ * answer that is not a plain `false` is no.
+ */
+export async function gitRulesAnswerIn(
+  cwd: string,
+  call: RuleGateInvoke = tauriInvoke,
+): Promise<boolean> {
+  if (!cwd) return false;
+  try {
+    return (await call<unknown>("git_repo_names_commands", { cwd })) === false;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Whether the rule kept under `key` may answer a request in `cwd` without
  * the card. Fails closed: an error, a missing folder or an answer that is not
  * a plain boolean shows the card.
@@ -62,19 +88,10 @@ export async function commandRuleGate(
 ): Promise<RuleGateResult> {
   const rule = commandRuleFromKey(key);
   if (!rule) return { allow: false, reason: "unreadable" };
-  const words = ruleWords(rule);
-  // Any rule whose words name git, also an exact rule the shell reading
-  // cannot split (`cd x && git status`).
-  if (words?.[0] === "git" || GIT_WORD.test(formatWords(rule))) {
-    if (!cwd) return { allow: false, reason: "git-config" };
-    try {
-      const names = await call<unknown>("git_repo_names_commands", { cwd });
-      return names === false
-        ? { allow: true }
-        : { allow: false, reason: "git-config" };
-    } catch {
-      return { allow: false, reason: "git-config" };
-    }
+  if (ruleNamesGit(rule)) {
+    return (await gitRulesAnswerIn(cwd, call))
+      ? { allow: true }
+      : { allow: false, reason: "git-config" };
   }
   const script = packageScriptOf(rule);
   if (script !== null) {
@@ -85,6 +102,24 @@ export async function commandRuleGate(
       : { allow: false, reason: "script-changed" };
   }
   return { allow: true };
+}
+
+/**
+ * Whether a command card may offer to keep the rule under `key` for the chat
+ * (Mac test 10.1, 15 Oct). A git rule never answers in a repository whose own
+ * config names a command (see `commandRuleGate`), so the card does not offer
+ * one there: pressing it would change nothing and the card would show again.
+ * The check is the gate's own, and fails the same way. Every other rule is
+ * offered as before, at once, so only a git card waits for the check.
+ */
+export function chatRuleOffered(
+  key: string,
+  cwd: string,
+  call: RuleGateInvoke = tauriInvoke,
+): boolean | Promise<boolean> {
+  const rule = commandRuleFromKey(key);
+  if (!rule || !ruleNamesGit(rule)) return true;
+  return gitRulesAnswerIn(cwd, call);
 }
 
 /** The scripts in a project's `package.json`, and its `.npmrc` hash. */

@@ -25,6 +25,11 @@ struct RecordedTurn {
     /// Older shared snapshots have no attribution evidence and stay out of the card.
     #[serde(default)]
     edited: BTreeSet<String>,
+    /// When the turn began, in milliseconds since 1970. Undo removes a folder
+    /// it left empty only when the folder was made after this (Mac retest
+    /// 7.3). A turn recorded without it has its undo remove no folder.
+    #[serde(default)]
+    started_ms: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -136,6 +141,11 @@ impl CheckpointStore {
                 .as_ref()
                 .map(|turn| turn.edited.clone())
                 .unwrap_or_default(),
+            // A continued turn keeps the start that goes with its baseline.
+            started_ms: match &pending {
+                Some(pending) => pending.started_ms,
+                None => epoch_ms(std::time::SystemTime::now()),
+            },
         };
         // Publish the pending state first. A failed baseline must not leave the
         // previous turn's card underneath the new response.
@@ -324,6 +334,8 @@ impl CheckpointStore {
             // remains available, but recovery must never make Undo available.
             recovered.head = None;
             recovered.shared = true;
+            // Its baseline is another turn's, so this start does not go with it.
+            recovered.started_ms = None;
             if !changes(root, &recovered)?
                 .iter()
                 .any(|change| edited.contains(&change.relative))
@@ -549,6 +561,7 @@ impl CheckpointStore {
         if changes.iter().any(|change| !restorable(root, change)) {
             return Err("Cannot safely undo: a recorded file changed after the checkpoint".into());
         }
+        let mut removed = Vec::new();
         for change in changes {
             if change.before.is_some() {
                 run_git(
@@ -564,8 +577,10 @@ impl CheckpointStore {
                 )?;
             } else {
                 std::fs::remove_file(root.join(&change.relative)).map_err(|e| e.to_string())?;
+                removed.push(change.relative);
             }
         }
+        remove_emptied_folders(root, turn, &removed);
         self.keep_turn(session_id, cwd, relative.as_deref())
     }
 
@@ -1109,6 +1124,83 @@ fn git_paths(root: &Path, args: &[&str]) -> Result<HashSet<String>, String> {
         .filter(|path| !path.is_empty())
         .map(|path| String::from_utf8(path.to_vec()).map_err(|e| e.to_string()))
         .collect()
+}
+
+/// Milliseconds since 1970, or None for a time before it.
+fn epoch_ms(time: std::time::SystemTime) -> Option<u64> {
+    time.duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())
+}
+
+/// After an undo removed files the turn created, removes the folders above
+/// them that the undo left empty and that did not exist before the turn (Mac
+/// retest 7.3: an empty `__pycache__` stayed behind). Deepest first. A folder
+/// goes only when all of these hold:
+/// - its path is a plain relative path inside the checkpoint's folder, never
+///   that folder itself or `.git`, with no symbolic link on the way;
+/// - it is a real folder and is empty now;
+/// - the turn's starting snapshot has no file under it;
+/// - the file system says it was made after the turn began, and not after
+///   now. Where that time cannot be read, the folder stays. File times can
+///   trail the clock by a few milliseconds, which only keeps a folder made
+///   right at the start.
+///
+/// `remove_dir` removes only an empty folder, so a file that lands meanwhile
+/// keeps it. Files git ignores are not in the checkpoint, so their folders
+/// (`.pytest_cache`) are never emptied by an undo and stay. Nothing here
+/// fails the undo: a folder that cannot be removed is left as it is.
+fn remove_emptied_folders(root: &Path, turn: &RecordedTurn, removed: &[String]) {
+    let (Some(started), Some(before)) = (turn.started_ms, turn.before.as_deref()) else {
+        return;
+    };
+    let mut folders = BTreeSet::new();
+    for relative in removed {
+        if resolve_turn_path(relative).is_err() {
+            continue;
+        }
+        let mut parts: Vec<&str> = relative.split('/').collect();
+        parts.pop();
+        while !parts.is_empty() {
+            folders.insert(parts.join("/"));
+            parts.pop();
+        }
+    }
+    if folders.is_empty() {
+        return;
+    }
+    // Every folder that held a file in the snapshot, relative to `root`.
+    let Ok(listed) = run_git(root, &["ls-tree", "-r", "-d", "--name-only", "-z", before]) else {
+        return;
+    };
+    let existed: HashSet<&[u8]> = listed
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .collect();
+    let mut ordered: Vec<String> = folders.into_iter().collect();
+    ordered.sort_by_key(|folder| std::cmp::Reverse(folder.matches('/').count()));
+    let now = epoch_ms(std::time::SystemTime::now());
+    for folder in ordered {
+        if resolve_turn_path(&folder).is_err()
+            || existed.contains(folder.as_bytes())
+            || path_contains_symlink(root, &folder)
+        {
+            continue;
+        }
+        let path = root.join(&folder);
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        let made = meta.created().ok().and_then(epoch_ms);
+        let new = made.is_some_and(|made| made > started && now.is_some_and(|now| made <= now));
+        if !meta.file_type().is_dir() || !new {
+            continue;
+        }
+        let empty = std::fs::read_dir(&path).is_ok_and(|mut entries| entries.next().is_none());
+        if empty {
+            let _ = std::fs::remove_dir(&path);
+        }
+    }
 }
 
 fn restorable(root: &Path, change: &Change) -> bool {
