@@ -31,14 +31,9 @@ import { ProgressSection } from "./ProgressSection";
 import { SessionPanelCloseButton } from "./SessionPanelToggle";
 import { UsedSection } from "./UsedSection";
 import type { SessionPanelControl } from "./useSessionPanel";
-// [lane-1] imports
 import { RunningSection as RunningSection_l1 } from "./RunningSection";
-// [lane-2] imports
 import { ContextSection as ContextSection_l2 } from "../../session-preamble/ui/ContextSection";
-// [lane-3] imports
 import { PreviewServerSection as PreviewServerSection_l3 } from "../../app-preview/ui/PreviewServerSection";
-// [lane-4] imports
-// [lane-5] imports
 import {
   SessionPrivacySection as SessionPrivacySection_l5,
   SessionPrivateBadge as SessionPrivateBadge_l5,
@@ -55,18 +50,13 @@ type PanelSession = Pick<
   | "branch"
   | "context"
   | "extraDirs"
-  // [lane-1] panel-session
   | "id"
   | "busy"
   | "backgroundItems"
-  // [lane-2] panel-session
   | "providerSessionId"
   | "id"
   | "providerAccountId"
   | "modelSettings"
-  // [lane-3] panel-session
-  // [lane-4] panel-session
-  // [lane-5] panel-session
   | "modelProvider"
   | "providerAccountId"
   | "permissionsProfile"
@@ -78,13 +68,8 @@ type PanelActions = {
   onOpenFile: (path: string) => void;
   /** Scroll the transcript to a block, unfolding the work it sits in. */
   onShowInChat: (blockId: string) => void;
-  // [lane-1] panel-actions
-  // [lane-2] panel-actions
   /** Finding 2.2: a new chat like this one, for the Context section. */
   onNewChatLike_s6?: () => void;
-  // [lane-3] panel-actions
-  // [lane-4] panel-actions
-  // [lane-5] panel-actions
 };
 
 /**
@@ -98,12 +83,7 @@ export function SessionPanel({
   visible = true,
   onOpenFile,
   onShowInChat,
-  // [lane-1] wrapper-destructure
-  // [lane-2] wrapper-destructure
   onNewChatLike_s6,
-  // [lane-3] wrapper-destructure
-  // [lane-4] wrapper-destructure
-  // [lane-5] wrapper-destructure
 }: PanelActions & {
   panel: SessionPanelControl;
   session: PanelSession;
@@ -124,12 +104,7 @@ export function SessionPanel({
       onClose={close}
       onOpenFile={onOpenFile}
       onShowInChat={onShowInChat}
-      // [lane-1] view-props
-      // [lane-2] view-props
       onNewChatLike_s6={onNewChatLike_s6}
-      // [lane-3] view-props
-      // [lane-4] view-props
-      // [lane-5] view-props
     />
   );
 }
@@ -151,12 +126,7 @@ export function SessionPanelView({
   onClose,
   onOpenFile,
   onShowInChat,
-  // [lane-1] view-destructure
-  // [lane-2] view-destructure
   onNewChatLike_s6,
-  // [lane-3] view-destructure
-  // [lane-4] view-destructure
-  // [lane-5] view-destructure
 }: PanelActions & {
   session: PanelSession;
   outputs: readonly DocumentFile[];
@@ -288,11 +258,6 @@ export function SessionPanelView({
               <CornerDownRight className="size-3.5" strokeWidth={1.75} />
             </button>
           ) : null}
-          {/* [lane-1] header */}
-          {/* [lane-2] header */}
-          {/* [lane-3] header */}
-          {/* [lane-4] header */}
-          {/* [lane-5] header */}
           <SessionPrivateBadge_l5 session={session} />
           <SessionPanelCloseButton controls={id} onClose={onClose} />
         </header>
@@ -312,7 +277,6 @@ export function SessionPanelView({
           <PreviewSection blocks={session.blocks} cwd={workCwd} />
           <OutputsSection files={outputs} onOpenFile={onOpenFile} />
           <UsedSection rows={rows} active={visible} onAction={act} />
-          {/* [lane-1] sections */}
           <RunningSection_l1
             sessionId={session.id}
             harness={session.harness}
@@ -322,21 +286,17 @@ export function SessionPanelView({
             active={visible}
             onShowInChat={onShowInChat}
           />
-          {/* [lane-2] sections */}
           <ContextSection_l2
             sessionId={session.id}
             project={session.cwd}
             session={session}
             onNewChat={onNewChatLike_s6}
           />
-          {/* [lane-3] sections */}
           <PreviewServerSection_l3
             sessionId={session.id}
             project={session.cwd}
             workCwd={workCwd}
           />
-          {/* [lane-4] sections */}
-          {/* [lane-5] sections */}
           <SessionPrivacySection_l5 session={session} />
           <PanelSection title="Session" fold="facts">
             <dl className="flex flex-col gap-0.5 px-2">

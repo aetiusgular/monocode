@@ -25,16 +25,11 @@ import {
   warmupClaudeText,
 } from "./claudeText";
 import { registerHarness, type HarnessAdapter } from "../../core/registry";
-// [lane-1] imports
 import {
   forkClaudeSession_l1,
   stopClaudeBackgroundTask_l1,
 } from "./claude";
 import { listClaudeSessions as listClaudeSessions_l1 } from "./claudeSessions";
-// [lane-2] imports
-// [lane-3] imports
-// [lane-4] imports
-// [lane-5] imports
 
 export const claudeAdapter: HarnessAdapter = {
   id: "claude",
@@ -59,7 +54,6 @@ export const claudeAdapter: HarnessAdapter = {
   warmupText: warmupClaudeText,
   runTextPrompt: runClaudeTextPrompt,
   stopTextPrompt: stopClaudeTextPrompt,
-  // [lane-1] adapter
   stopBackgroundTask: stopClaudeBackgroundTask_l1,
   forkSession: (input) =>
     forkClaudeSession_l1({
@@ -71,10 +65,6 @@ export const claudeAdapter: HarnessAdapter = {
       boundary: input.boundary,
     }),
   listSessions: listClaudeSessions_l1,
-  // [lane-2] adapter
-  // [lane-3] adapter
-  // [lane-4] adapter
-  // [lane-5] adapter
 };
 
 let registered = false;

@@ -418,12 +418,9 @@ import {
   type RemoveWorktree,
 } from "../../source-control/model/worktrees";
 import type { Session } from "../../sessions/model/session";
-// [lane-1] imports
-// [lane-2] imports
 import { InstructionsPage as InstructionsPage_l2 } from "../../project-context/ui/InstructionsPage";
 import { MemoryPage as MemoryPage_l2 } from "../../project-memory/ui/MemoryPage";
 import { EnvironmentPage as EnvironmentPage_l2 } from "../../environment/ui/EnvironmentPage";
-// [lane-3] imports
 import {
   applyChatFont as applyChatFont_l3,
   CHAT_FONT_DEFAULT as CHAT_FONT_DEFAULT_l3,
@@ -439,8 +436,6 @@ import {
   type ChatFont as ChatFont_l3,
   type TranscriptDetail as TranscriptDetail_l3,
 } from "../model/appearance";
-// [lane-4] imports
-// [lane-5] imports
 import { OutboundCallsSettings as OutboundCallsSettings_l5 } from "../../privacy-view/ui/OutboundCallsSettings";
 
 /**
@@ -641,8 +636,6 @@ export function SettingsView({
               {section === "connectors" ? <ConnectorsPage cwd={cwd} /> : null}
               {section === "plugins" ? <PluginsPage cwd={cwd} /> : null}
               {section === "models" ? <ModelsPage /> : null}
-              {/* [lane-1] section-switch */}
-              {/* [lane-2] section-switch */}
               {section === "instructions" ? (
                 <InstructionsPage_l2
                   cwd={cwd}
@@ -656,9 +649,6 @@ export function SettingsView({
               {section === "environment" ? (
                 <EnvironmentPage_l2 cwd={cwd} recents={recents} />
               ) : null}
-              {/* [lane-3] section-switch */}
-              {/* [lane-4] section-switch */}
-              {/* [lane-5] section-switch */}
               {section === "providers" ? (
                 <ProvidersPage cwd={cwd} recents={recents} />
               ) : null}
@@ -1135,11 +1125,6 @@ function ChatPage() {
             onChange={onTranscriptAnchor}
           />
         </Row>
-        {/* [lane-1] chat-transcript */}
-        {/* [lane-2] chat-transcript */}
-        {/* [lane-3] chat-transcript */}
-        {/* [lane-4] chat-transcript */}
-        {/* [lane-5] chat-transcript */}
       </Group>
 
       <Group

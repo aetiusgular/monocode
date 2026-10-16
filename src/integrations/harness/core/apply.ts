@@ -239,7 +239,6 @@ export function applyHarnessEvent(
           ...(event.severity ? { severity: event.severity } : {}),
         },
       });
-    // [lane-1] events
     case "background.items": {
       if (event.items.length === 0) {
         if (!session.backgroundItems) return session;
@@ -266,10 +265,6 @@ export function applyHarnessEvent(
       };
       return { ...session, blocks };
     }
-    // [lane-2] events
-    // [lane-3] events
-    // [lane-4] events
-    // [lane-5] events
     default:
       return session;
   }

@@ -129,7 +129,6 @@ import {
   useSessionPanel,
 } from "../../session-panel";
 import { ToolImageGalleryHost } from "../../tool-images";
-// [lane-1] imports
 import {
   takeRewoundPrompt as takeRewoundPrompt_l1,
   turnRewindFor as turnRewindFor_l1,
@@ -139,14 +138,10 @@ import {
   type PickUpTarget as PickUpTarget_l1,
 } from "../../session-import/model/pickUp";
 import type { HarnessSessionRow as HarnessSessionRow_l1 } from "../../session-import/model/types";
-// [lane-2] imports
 import { StaleInstructionsLine as StaleInstructionsLine_s6 } from "../../session-preamble/ui/StaleInstructionsLine";
 import { useSuggestedPrompts as useSuggestedPrompts_l2 } from "../../suggested-prompts/hooks/useSuggestedPrompts";
-// [lane-3] imports
 import { VerifyCard as VerifyCard_l3 } from "../../verify/ui/VerifyCard";
-// [lane-4] imports
 import { sessionWasUsed as sessionWasUsed_l4 } from "../../../integrations/harness/core/helperPrompt";
-// [lane-5] imports
 
 export type SessionPaneProps = {
   session: Session;
@@ -291,7 +286,6 @@ export type SessionPaneProps = {
   onPaneDragStart?: (event: ReactPointerEvent<HTMLElement>) => void;
   /** Keeps this transcript mounted after the pane closes. */
   transcriptPool?: TranscriptPool;
-  // [lane-1] props
   /** Takes the chat back to before a prompt. Files stay as they are. */
   onRewindChat_l1?: (sessionId: string, blockId: string) => Promise<void>;
   /** Opens a new chat with the conversation up to the end of a turn. */
@@ -300,12 +294,8 @@ export type SessionPaneProps = {
   onPickUpSession_l1?: (sessionId: string, row: HarnessSessionRow_l1) => Promise<void>;
   /** #45: harness session ids already bound to a chat, to that chat's id. */
   pickUpBound_l1?: (harness: Session["harness"]) => ReadonlyMap<string, string>;
-  // [lane-2] props
   /** Finding 2.2: a new chat in the same project, harness, model and account. */
   onNewChatLike_s6?: (sessionId: string) => void;
-  // [lane-3] props
-  // [lane-4] props
-  // [lane-5] props
 };
 
 type Props = SessionPaneProps & {
@@ -412,16 +402,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onNewTerminal,
   onPaneDragStart,
   transcriptPool,
-  // [lane-1] destructure
   onRewindChat_l1,
   onForkTurn_l1,
   onPickUpSession_l1,
   pickUpBound_l1,
-  // [lane-2] destructure
   onNewChatLike_s6,
-  // [lane-3] destructure
-  // [lane-4] destructure
-  // [lane-5] destructure
 }: Props) {
   const orchestrationRuns = useSyncExternalStore(
     orchestrator.subscribe,
@@ -750,7 +735,6 @@ const LocalSessionPane = memo(function LocalSessionPane({
     (!draftBlock && (!isEmpty || inSplit || !!session.inboxAsk || !!agent));
   const composerDockMotion = useComposerDockMotion(dockComposer);
   const draftRef = useRef<string | undefined>(getComposerDraft(session.id));
-  // [lane-1] body
   // A Mono's chat is a running conversation, and a remote one is driven from
   // the other machine: neither offers rewind. Files restore works anywhere
   // MonoCode took a checkpoint.
@@ -821,7 +805,6 @@ const LocalSessionPane = memo(function LocalSessionPane({
       workCwd,
     ],
   );
-  // [lane-2] body
   const suggestions_l2 = useSuggestedPrompts_l2({
     sessionId: session.id,
     workCwd,
@@ -829,9 +812,6 @@ const LocalSessionPane = memo(function LocalSessionPane({
     busy: !!session.busy,
     remote,
   });
-  // [lane-3] body
-  // [lane-4] body
-  // [lane-5] body
   const composer = (
     <Composer
       key={session.id}
@@ -1003,9 +983,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       onRestorePromptReady={(restore) => {
         restorePromptRef.current = restore;
       }}
-      // [lane-1] composer-props
       pickUp_l1={pickUp_l1}
-      // [lane-2] composer-props
       suggestedPrompts={suggestions_l2.prompts}
       onDismissSuggestedPrompts={suggestions_l2.dismiss}
       // Finding 2.2: one line above the input when this chat's instructions
@@ -1019,10 +997,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
           }
         />
       }
-      // [lane-3] composer-props
-      // [lane-4] composer-props
       sessionUsed_l4={sessionWasUsed_l4(session)}
-      // [lane-5] composer-props
       privacySession_l5={session}
       onPrivacyPatch_l5={
         sessionToolsAvailable && onSessionToolsChange
@@ -1364,10 +1339,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                         />
                       )
                     }
-                    // [lane-1] transcript-props
                     turnRewind_l1={turnRewind_l1}
-                    // [lane-2] transcript-props
-                    // [lane-3] transcript-props
                     latestTurnVerify_l3={
                       agent ? undefined : (
                         <VerifyCard_l3
@@ -1378,8 +1350,6 @@ const LocalSessionPane = memo(function LocalSessionPane({
                         />
                       )
                     }
-                    // [lane-4] transcript-props
-                    // [lane-5] transcript-props
                   />
                 </PooledTranscript>
                 {!session.inboxAsk ? (
@@ -1513,14 +1483,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
           visible={visible}
           onOpenFile={onOpenFile}
           onShowInChat={showInChat}
-          // [lane-1] panel-props
-          // [lane-2] panel-props
           onNewChatLike_s6={
             onNewChatLike_s6 ? () => onNewChatLike_s6(session.id) : undefined
           }
-          // [lane-3] panel-props
-          // [lane-4] panel-props
-          // [lane-5] panel-props
         />
         <ToolImageGalleryHost blocks={session.blocks} cwd={workCwd} />
       </div>

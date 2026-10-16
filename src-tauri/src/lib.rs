@@ -62,16 +62,11 @@ mod window_transfer;
 mod windows;
 mod worktree_lifecycle;
 mod worktrees;
-// [lane-1] mods
 mod claude_sessions;
-// [lane-2] mods
 mod env_store;
 mod project_context;
-// [lane-3] mods
 mod preview;
 mod sandbox_frame;
-// [lane-4] mods
-// [lane-5] mods
 pub mod edit_adapter;
 mod edit_adapter_commands;
 mod model_setup;
@@ -312,9 +307,6 @@ pub fn run() {
         .on_menu_event(|app, event| {
             menu::dispatch(app, event.id().as_ref());
         })
-        // [lane-1] builder
-        // [lane-2] builder
-        // [lane-3] builder
         // Deep links (#44). The main window reads them and only fills a prompt.
         .plugin(tauri_plugin_deep_link::init())
         .manage(sandbox_frame::FrameStore::default())
@@ -323,8 +315,6 @@ pub fn run() {
             let store = ctx.app_handle().state::<sandbox_frame::FrameStore>();
             sandbox_frame::respond(&store, &request)
         })
-        // [lane-4] builder
-        // [lane-5] builder
         .invoke_handler(tauri::generate_handler![
             remote::remote_machines,
             remote::remote_connect,
@@ -659,12 +649,10 @@ pub fn run() {
             project_logo::save_project_logo,
             project_logo::remove_project_logo,
             project_logo::forget_logo_file,
-            // [lane-1] commands
             checkpoint::session_checkpoint_restore_preview,
             checkpoint::session_checkpoint_restore_turn,
             claude_sessions::claude_sessions_list,
             claude_sessions::claude_session_last_entry,
-            // [lane-2] commands
             project_context::project_context_read,
             project_context::project_context_save,
             project_context::session_preamble_write,
@@ -672,7 +660,6 @@ pub fn run() {
             env_store::env_store_load,
             env_store::env_store_set,
             env_store::env_store_remove,
-            // [lane-3] commands
             sandbox_frame::sandbox_frame_put,
             sandbox_frame::sandbox_frame_release,
             preview::preview_read_config,
@@ -681,11 +668,9 @@ pub fn run() {
             preview::preview_probe,
             preview::preview_fetch_script,
             preview::preview_listening_ports,
-            // [lane-4] commands
             fs::git_review_patch,
             git_guard::git_repo_names_commands,
             window_transfer::clear_window_transfer,
-            // [lane-5] commands
             model_setup::model_setup_detect,
             model_setup::model_setup_write_codex_home,
             model_setup::approval_paths_within,

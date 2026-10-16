@@ -361,11 +361,6 @@ function persistedSessionTools(
   const disabledPlugins = sanitizeDisabledPlugins(source?.disabledPlugins);
   const modelProvider = sanitizeModelProvider(source?.modelProvider);
   const gatewayOn = sanitizeGatewayOn(source?.gatewayOn);
-  // [lane-1] persisted-tools-body
-  // [lane-2] persisted-tools-body
-  // [lane-3] persisted-tools-body
-  // [lane-4] persisted-tools-body
-  // [lane-5] persisted-tools-body
   const permissionsProfile_l5 = sanitizeModelProvider(source?.permissionsProfile);
   if (
     !extraDirs &&
@@ -375,11 +370,6 @@ function persistedSessionTools(
     !disabledPlugins &&
     !modelProvider &&
     !gatewayOn
-    // [lane-1] persisted-tools-check
-    // [lane-2] persisted-tools-check
-    // [lane-3] persisted-tools-check
-    // [lane-4] persisted-tools-check
-    // [lane-5] persisted-tools-check
     && !permissionsProfile_l5
   ) {
     return undefined;
@@ -392,11 +382,6 @@ function persistedSessionTools(
     ...(disabledPlugins ? { disabledPlugins } : {}),
     ...(modelProvider ? { modelProvider } : {}),
     ...(gatewayOn ? { gatewayOn } : {}),
-    // [lane-1] persisted-tools-return
-    // [lane-2] persisted-tools-return
-    // [lane-3] persisted-tools-return
-    // [lane-4] persisted-tools-return
-    // [lane-5] persisted-tools-return
     ...(permissionsProfile_l5 ? { permissionsProfile: permissionsProfile_l5 } : {}),
   };
 }
@@ -1197,7 +1182,6 @@ function sanitizeBlock(
       next.notice = block.notice;
     }
   }
-  // [lane-1] sanitize-block
   // The checkpoint store accepts letters, digits, "-" and "_" only.
   if (
     block.role === "user" &&
@@ -1206,10 +1190,6 @@ function sanitizeBlock(
   ) {
     next.checkpointTurnId = block.checkpointTurnId;
   }
-  // [lane-2] sanitize-block
-  // [lane-3] sanitize-block
-  // [lane-4] sanitize-block
-  // [lane-5] sanitize-block
   return next;
 }
 

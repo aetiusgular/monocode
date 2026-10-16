@@ -23,16 +23,11 @@ import {
   settingsSectionsByGroup,
   type SettingsSectionId,
 } from "../../features/settings/model/settings";
-// [lane-1] imports
-// [lane-2] imports
 import {
   FileScript as FileScript_l2,
   StickyNote as StickyNote_l2,
   Terminal as Terminal_l2,
 } from "../../shared/ui/icons";
-// [lane-3] imports
-// [lane-4] imports
-// [lane-5] imports
 
 const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   general: SlidersHorizontal,
@@ -51,14 +46,9 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   inbox: Inbox,
   worktrees: FolderTree,
   archive: Archive,
-  // [lane-1] icons
-  // [lane-2] icons
   instructions: FileScript_l2,
   memory: StickyNote_l2,
   environment: Terminal_l2,
-  // [lane-3] icons
-  // [lane-4] icons
-  // [lane-5] icons
 };
 
 type Props = {

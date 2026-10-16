@@ -822,7 +822,6 @@ import { inlineMentionSource as inlineMentionSource_s6 } from "../features/sessi
 import { gatewayOnAtFirstTurn as gatewayOnAtFirstTurn_s6 } from "../features/gateway-connectors/model/localDefault";
 import { newChatLike as newChatLike_s6 } from "../features/session-preamble/model/newChatLike";
 import { sessionAfterCatalogRefresh as sessionAfterCatalogRefresh_s6 } from "../features/sessions/model/bootModel";
-// [lane-1] imports
 import { rewindOptions as rewindOptions_l1 } from "../features/rewind/model/rewind";
 import { cutChatTranscript as cutChatTranscript_l1 } from "../features/rewind/model/turnRewind";
 import { runChatRewind as runChatRewind_l1 } from "../features/rewind/model/chatRewindRun";
@@ -834,7 +833,6 @@ import {
   pickedUpSession as pickedUpSession_l1,
 } from "../features/session-import/model/sessionImport";
 import type { HarnessSessionRow as HarnessSessionRow_l1 } from "../features/session-import/model/types";
-// [lane-2] imports
 import { startManualAutomationRun as startManualAutomationRun_l2 } from "../features/automations/model/automations";
 import { automationRunSettlement } from "../features/automations/model/automations";
 import { appBlock as appBlock_l2 } from "../features/session-preamble/model/appBlock";
@@ -850,11 +848,9 @@ import {
   agentsMdPluginId as agentsMdPluginId_l2,
 } from "../features/project-context/model/instructions";
 import { claudeCliVersion as claudeCliVersion_l2 } from "../features/project-context/model/claudeVersion";
-// [lane-3] imports
 import { newAppPreviewTab as newAppPreviewTab_l3 } from "../features/workspace/model/layout";
 import { setPreviewHost as setPreviewHost_l3 } from "../features/app-preview/model/previewHost";
 import { useVerifyAfterTurns as useVerifyAfterTurns_l3 } from "../features/verify/model/useVerifyAfterTurns";
-// [lane-4] imports
 import {
   canRunHelper as canRunHelper_l4,
   helperBranchName as helperBranchName_l4,
@@ -870,7 +866,6 @@ import {
   popOutTabs as popOutTabs_l4,
   setPopOutHost as setPopOutHost_l4,
 } from "./model/windowTransfer";
-// [lane-5] imports
 import { forgetSiteRules as forgetSiteRules_l5 } from "../features/browser-tools/model/siteRules";
 
 const SearchView = lazySurface(
@@ -6918,11 +6913,6 @@ function Workspace({
     [invalidateLoadedSession],
   );
 
-  // [lane-1] app-state
-  // [lane-2] app-state
-  // [lane-3] app-state
-  // [lane-4] app-state
-  // [lane-5] app-state
   const submitSession = useCallback(
     (
       sessionId: string,
@@ -11342,16 +11332,11 @@ function Workspace({
             readAgentFile: (monoId, path) => readAgentFile(monoId, path),
             writeAgentFile: (monoId, path, text, hash) =>
               writeAgentFile(monoId, path, text, hash),
-            // [lane-1] agent-host
-            // [lane-2] agent-host
             runAutomation: (automationId) =>
               startManualAutomationRun_l2(automationId, (automation, run) =>
                 // The listener mounts once; the ref holds today's launcher.
                 launchAutomationRef_l2.current(automation, run, false),
               ),
-            // [lane-3] agent-host
-            // [lane-4] agent-host
-            // [lane-5] agent-host
           },
         );
         appReceipts.current.set(key, { signature, promise });
@@ -12737,7 +12722,6 @@ function Workspace({
     create: () => createMono().id,
   });
 
-  // [lane-1] app-late
   /**
    * #34: takes the chat back to before a prompt, at any earlier turn the
    * harness can cut to. The harness forgets it first; only then is the
@@ -12961,7 +12945,6 @@ function Workspace({
     },
     [history, onSelectHistorySession, replaceBlankPaneWithSession, appendTab],
   );
-  // [lane-2] app-late
   const launchAutomationRef_l2 = useRef(launchAutomation);
   launchAutomationRef_l2.current = launchAutomation;
   // Finding 2.2: changed instructions apply to new chats only. The stale
@@ -12984,7 +12967,6 @@ function Workspace({
     },
     [appendTab],
   );
-  // [lane-3] app-late
   // #38a: verify after turns that changed files while a preview runs, and
   // stop a deleted chat's preview.
   useVerifyAfterTurns_l3(sessions, (sessionId, text) =>
@@ -13013,7 +12995,6 @@ function Workspace({
     });
     return () => setPreviewHost_l3(null);
   }, []);
-  // [lane-4] app-late
   // 4.2: a Generate that holds only a folder finds the chat that owns it.
   useEffect(() => {
     setCheckoutSessionsSource_l4(() => sessionsRef.current);
@@ -13098,7 +13079,6 @@ function Workspace({
     });
     return () => setPopOutHost_l4(null);
   }, [onCloseTabs, projectCwd]);
-  // [lane-5] app-late
   const sessionPaneProps = {
     workspaceSwitchingSessionId: workspaceNavigation.pending
       ? active?.id
@@ -13157,16 +13137,11 @@ function Workspace({
     onBtwStop,
     onBtwModelChange,
     onNewTerminal: onNewTerminalInSession,
-    // [lane-1] pane-props
     onRewindChat_l1,
     onForkTurn_l1,
     onPickUpSession_l1,
     pickUpBound_l1,
-    // [lane-2] pane-props
     onNewChatLike_s6,
-    // [lane-3] pane-props
-    // [lane-4] pane-props
-    // [lane-5] pane-props
   };
 
   // Renames, mascot picks and new projects show up on the rail.
@@ -13498,11 +13473,6 @@ function Workspace({
               updateNotice={updateNotice}
               onOpenWhatsNew={onOpenWhatsNew}
               onDismissUpdate={onDismissUpdate}
-              // [lane-1] sidebar-props
-              // [lane-2] sidebar-props
-              // [lane-3] sidebar-props
-              // [lane-4] sidebar-props
-              // [lane-5] sidebar-props
             />
 
             <div className="body-glass flex min-h-0 min-w-0 flex-1 flex-col">
@@ -13984,11 +13954,6 @@ function Workspace({
               }}
             />
           )}
-          {/* [lane-1] mounts */}
-          {/* [lane-2] mounts */}
-          {/* [lane-3] mounts */}
-          {/* [lane-4] mounts */}
-          {/* [lane-5] mounts */}
           <HarnessUpdateNotice
             topOffset={
               12 + (reminderNoticesHeight ? reminderNoticesHeight + 8 : 0)

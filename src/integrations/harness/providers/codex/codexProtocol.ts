@@ -139,13 +139,8 @@ export function buildThreadStartParams(input: {
   model?: string;
   serviceTier?: string;
   extraDirs?: string[];
-  // [lane-1] thread-start-input
-  // [lane-2] thread-start-input
   /** F2: MonoCode's instructions, on a new thread only. */
   developerInstructions?: string;
-  // [lane-3] thread-start-input
-  // [lane-4] thread-start-input
-  // [lane-5] thread-start-input
   /** Codex `model_providers` key; sent on thread/start and thread/resume. */
   modelProvider?: string;
   /**
@@ -177,14 +172,9 @@ export function buildThreadStartParams(input: {
     ...(input.serviceTier && input.serviceTier !== "default"
       ? { serviceTier: input.serviceTier }
       : {}),
-    // [lane-1] thread-start-return
-    // [lane-2] thread-start-return
     ...(input.developerInstructions?.trim()
       ? { developerInstructions: input.developerInstructions }
       : {}),
-    // [lane-3] thread-start-return
-    // [lane-4] thread-start-return
-    // [lane-5] thread-start-return
     // Auto's auto-review is tested on OpenAI models only (step 3).
     ...(input.autoReviewOff && config.approvalsReviewer === "auto_review"
       ? { approvalsReviewer: "user" }
@@ -233,11 +223,6 @@ export function buildTurnStartParams(input: {
   serviceTier?: string;
   intent?: TurnIntent;
   extraDirs?: string[];
-  // [lane-1] turn-start-input
-  // [lane-2] turn-start-input
-  // [lane-3] turn-start-input
-  // [lane-4] turn-start-input
-  // [lane-5] turn-start-input
   /** Named Codex permissions profile; see `buildThreadStartParams`. */
   permissionsProfile?: string;
   /** The chat runs off OpenAI: Auto falls back to review by you. */
@@ -305,11 +290,6 @@ export function buildTurnStartParams(input: {
     ...(input.serviceTier && input.serviceTier !== "default"
       ? { serviceTier: input.serviceTier }
       : {}),
-    // [lane-1] turn-start-return
-    // [lane-2] turn-start-return
-    // [lane-3] turn-start-return
-    // [lane-4] turn-start-return
-    // [lane-5] turn-start-return
     ...(input.autoReviewOff && config.approvalsReviewer === "auto_review"
       ? { approvalsReviewer: "user" }
       : {}),
@@ -1875,11 +1855,6 @@ export function mapApprovalRequest(
 
   return null;
 }
-// [lane-1] exports
-// [lane-2] exports
-// [lane-3] exports
-// [lane-4] exports
-// [lane-5] exports
 /** A host from a network approval: bounded, host characters only. */
 function codexApprovalHost_l5(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;

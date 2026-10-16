@@ -219,7 +219,6 @@ export type HarnessEvent =
   | { type: "context"; used?: number; window?: number }
   /** Provider token accounting for the active user turn. */
   | ({ type: "turn.metrics" } & TurnMetrics)
-  // [lane-1] events
   /**
    * Everything the harness runs beside the turn, for the Running section.
    * Unlike `background.updated`, it is sent while the agent works too.
@@ -230,10 +229,6 @@ export type HarnessEvent =
     }
   /** MonoCode's own checkpoint for the turn the last user message started. */
   | { type: "turn.checkpoint"; checkpointTurnId: string }
-  // [lane-2] events
-  // [lane-3] events
-  // [lane-4] events
-  // [lane-5] events
 ;
 
 export type ApprovalDecision = "allow" | "deny";
@@ -319,8 +314,6 @@ export type HarnessSessionInput = {
    */
   modelProvider?: string;
   onEvent: (event: HarnessEvent) => void;
-  // [lane-1] session-input
-  // [lane-2] session-input
   /**
    * F2: a file of MonoCode's instructions for Claude Code's
    * `--append-system-prompt-file`. Applied only when a new conversation
@@ -337,9 +330,6 @@ export type HarnessSessionInput = {
    * beside an existing `CLAUDE.md`. Absent leaves Claude Code's default.
    */
   agentsMdPlugin?: string;
-  // [lane-3] session-input
-  // [lane-4] session-input
-  // [lane-5] session-input
   /**
    * A named permissions profile for the chat, by the harness's own id. Only
    * Codex honors it, in place of MonoCode's sandbox settings.

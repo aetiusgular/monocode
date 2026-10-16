@@ -34,14 +34,9 @@ export type SettingsSectionId =
   | "inbox"
   | "worktrees"
   | "archive"
-  // [lane-1] section-ids
-  // [lane-2] section-ids
   | "instructions"
   | "memory"
   | "environment"
-  // [lane-3] section-ids
-  // [lane-4] section-ids
-  // [lane-5] section-ids
 ;
 
 /** Rail buckets. Sections list in order under their group label. */
@@ -199,8 +194,6 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description: "Manage additional worktrees for each project.",
     keywords: "git branch worktree working copy project create delete",
   },
-  // [lane-1] sections
-  // [lane-2] sections
   {
     id: "instructions",
     group: "agents",
@@ -226,9 +219,6 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
       "Variables every harness starts with, for all projects or one. Secrets stay in the keychain.",
     keywords: "env environment variables secrets keychain dotenv token",
   },
-  // [lane-3] sections
-  // [lane-4] sections
-  // [lane-5] sections
 ];
 
 /** Whether this platform lists the section. */
@@ -584,8 +574,6 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     label: "Show archived in the sidebar",
     keywords: "hidden conversations list",
   },
-  // [lane-1] index
-  // [lane-2] index
   {
     id: "instructions-global",
     section: "instructions",
@@ -640,7 +628,6 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     label: "What reaches each harness",
     keywords: "codex hermes opencode shell mcp",
   },
-  // [lane-3] index
   {
     id: "chat-font",
     section: "appearance",
@@ -653,8 +640,6 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     label: "Transcript detail",
     keywords: "fold expand collapse steps thinking tool calls work verbose",
   },
-  // [lane-4] index
-  // [lane-5] index
   {
     id: "outbound-calls",
     section: "general",
@@ -1701,8 +1686,3 @@ export function filterKeybindings(
       row.when.toLowerCase().includes(needle),
   );
 }
-// [lane-1] loaders
-// [lane-2] loaders
-// [lane-3] loaders
-// [lane-4] loaders
-// [lane-5] loaders

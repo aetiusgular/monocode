@@ -67,11 +67,6 @@ import type {
   SendTurnInput,
   SteerTurnInput,
 } from "../../core/types";
-// [lane-1] imports
-// [lane-2] imports
-// [lane-3] imports
-// [lane-4] imports
-// [lane-5] imports
 import { codexMcpResultImages as codexMcpResultImages_l5 } from "../../../../features/browser-tools/model/codexMcpImages";
 import { keepToolResultImages as keepToolResultImages_l5 } from "../../../../features/tool-images/data/toolImageStore";
 import {
@@ -213,11 +208,6 @@ type Live = {
   rateLimits: Map<string, Record<string, unknown>>;
   /** The active turn failed on a spent usage limit. */
   usageLimited: boolean;
-  // [lane-1] live
-  // [lane-2] live
-  // [lane-3] live
-  // [lane-4] live
-  // [lane-5] live
   /** Paths of recent file change items, by item id. */
   fileChanges_l5: CodexFileChangeLog_l5;
   /** The chat's working folder and added folders, for automatic yeses. */
@@ -659,11 +649,6 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     ),
   );
   const gatewayKey = gatewayArgs.join("\n");
-  // [lane-1] reuse-key
-  // [lane-2] reuse-key
-  // [lane-3] reuse-key
-  // [lane-4] reuse-key
-  // [lane-5] reuse-key
   const identity_l5 = codexThreadIdentity_l5(input);
   const identityKey_l5 = codexThreadIdentityKey_l5(identity_l5);
   // Session 10: the edit adapter, when it is on for this chat's provider.
@@ -685,11 +670,6 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     existing.ephemeral === ephemeral &&
     existing.codexStore === codexStore &&
     existing.gatewayKey === gatewayKey
-    // [lane-1] reuse
-    // [lane-2] reuse
-    // [lane-3] reuse
-    // [lane-4] reuse
-    // [lane-5] reuse
     && existing.identityKey_l5 === identityKey_l5
     && existing.editAdapterKey_l5 === editAdapter_l5.key
   ) {
@@ -951,11 +931,6 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
           model,
           serviceTier,
           extraDirs: input.extraDirs,
-          // [lane-1] thread-resume-call
-          // [lane-2] thread-resume-call
-          // [lane-3] thread-resume-call
-          // [lane-4] thread-resume-call
-          // [lane-5] thread-resume-call
           ...identity_l5,
           providerConfig,
         });
@@ -983,12 +958,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
         model,
         serviceTier,
         extraDirs: input.extraDirs,
-        // [lane-1] thread-start-call
-        // [lane-2] thread-start-call
         developerInstructions: input.developerInstructions,
-        // [lane-3] thread-start-call
-        // [lane-4] thread-start-call
-        // [lane-5] thread-start-call
         ...identity_l5,
         providerConfig,
       });
@@ -1042,11 +1012,6 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       openAgentRows: new Map(),
       rateLimits: new Map(),
       usageLimited: false,
-      // [lane-1] live-init
-      // [lane-2] live-init
-      // [lane-3] live-init
-      // [lane-4] live-init
-      // [lane-5] live-init
       fileChanges_l5: new Map(),
       chatFolders_l5: chatFolders_l5(input.cwd, input.extraDirs),
       identityKey_l5,
@@ -1166,11 +1131,6 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
     serviceTier,
     intent: input.intent,
     extraDirs: input.extraDirs,
-    // [lane-1] turn-start-call
-    // [lane-2] turn-start-call
-    // [lane-3] turn-start-call
-    // [lane-4] turn-start-call
-    // [lane-5] turn-start-call
     ...noteCodexChatFolders_l5(live, input.extraDirs),
     permissionsProfile: codexThreadIdentity_l5(input).permissionsProfile,
     autoReviewOff: codexThreadIdentity_l5(input).autoReviewOff,
@@ -2048,7 +2008,6 @@ export function __codexTestReset(): void {
 export function __codexTestResumeMap(): Map<string, Resume> {
   return resumeByThread;
 }
-// [lane-1] exports
 /**
  * The adapter's `forkSession`: `thread/fork` on the source thread, through
  * `lastTurnId` (inclusive) when given. Returns the new thread's id, which the
@@ -2088,10 +2047,6 @@ export function codexLiveThread_l1(
   if (!live || !live.threadId) return null;
   return { rpc: live.rpc, threadId: live.threadId };
 }
-// [lane-2] exports
-// [lane-3] exports
-// [lane-4] exports
-// [lane-5] exports
 /**
  * Read before a notification is queued: the paths of file change items, for
  * the chat-folder check, and the images of finished MCP tool calls, such as

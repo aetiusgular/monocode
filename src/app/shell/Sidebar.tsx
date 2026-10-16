@@ -204,13 +204,8 @@ import {
   useRemoteProjectSessions,
 } from "../../features/connections/model/connections";
 import { parseRemotePath, remotePath, remoteProjectFor } from "../../features/connections/model/remoteProjects";
-// [lane-1] imports
-// [lane-2] imports
-// [lane-3] imports
 import { exportConversationFromMenu as exportConversationFromMenu_l3 } from "../../features/conversation-export/model/exportConversation";
-// [lane-4] imports
 import type { HelperTarget as HelperTarget_l4 } from "../../integrations/harness/core/helperPrompt";
-// [lane-5] imports
 
 const MIN_WIDTH = 260;
 const MAX_WIDTH = 560;
@@ -358,11 +353,6 @@ type Props = {
   monos?: MonoRailProps;
   /** A Mono fills the main area, which has no project sidebar. */
   monoViewActive?: boolean;
-  // [lane-1] props
-  // [lane-2] props
-  // [lane-3] props
-  // [lane-4] props
-  // [lane-5] props
 };
 
 function SidebarComponent({
@@ -457,11 +447,6 @@ function SidebarComponent({
   onDismissUpdate,
   monos,
   monoViewActive = false,
-  // [lane-1] destructure
-  // [lane-2] destructure
-  // [lane-3] destructure
-  // [lane-4] destructure
-  // [lane-5] destructure
 }: Props) {
   const remoteProject = isRemoteProjectPath(cwd);
   const tab: SidebarTabId = requestedTab;
@@ -1251,9 +1236,6 @@ function SidebarComponent({
             : []),
         ]
       : []),
-    // [lane-1] session-menu
-    // [lane-2] session-menu
-    // [lane-3] session-menu
     ...(!multipleMenuSessions
       ? [
           { kind: "sep" as const },
@@ -1264,8 +1246,6 @@ function SidebarComponent({
           },
         ]
       : []),
-    // [lane-4] session-menu
-    // [lane-5] session-menu
   ];
 
   const onSessionContextMenu = (
@@ -1385,15 +1365,10 @@ function SidebarComponent({
       }
       return;
     }
-    // [lane-1] session-menu-pick
-    // [lane-2] session-menu-pick
-    // [lane-3] session-menu-pick
     if (id === "export-markdown") {
       void exportConversationFromMenu_l3(sessionId);
       return;
     }
-    // [lane-4] session-menu-pick
-    // [lane-5] session-menu-pick
     if (id === "delete") {
       if (sessionIds.length > 1 && onDeleteSessions) {
         onDeleteSessions(sessionIds);

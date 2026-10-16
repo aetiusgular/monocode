@@ -29,14 +29,9 @@ export type SessionPanelSection =
   | "preview"
   | "used"
   | "facts"
-  // [lane-1] section-ids
   | "running"
-  // [lane-2] section-ids
   | "context"
-  // [lane-3] section-ids
   | "app-preview"
-  // [lane-4] section-ids
-  // [lane-5] section-ids
   | "privacy"
 ;
 
@@ -45,14 +40,9 @@ const SECTION_COLLAPSED_KEY: Record<SessionPanelSection, string> = {
   preview: "monocode.sessionPanel.previewCollapsed",
   used: "monocode.sessionPanel.usedCollapsed",
   facts: "monocode.sessionPanel.factsCollapsed",
-  // [lane-1] section-keys
   running: "monocode.sessionPanel.runningCollapsed",
-  // [lane-2] section-keys
   context: "monocode.sessionPanel.contextCollapsed",
-  // [lane-3] section-keys
   "app-preview": "monocode.sessionPanel.appPreviewCollapsed",
-  // [lane-4] section-keys
-  // [lane-5] section-keys
   privacy: "monocode.sessionPanel.privacyCollapsed",
 };
 
@@ -62,14 +52,9 @@ export const SECTION_COLLAPSED_DEFAULT: Record<SessionPanelSection, boolean> = {
   preview: false,
   used: false,
   facts: true,
-  // [lane-1] section-defaults
   running: false,
-  // [lane-2] section-defaults
   context: true,
-  // [lane-3] section-defaults
   "app-preview": false,
-  // [lane-4] section-defaults
-  // [lane-5] section-defaults
   privacy: false,
 };
 

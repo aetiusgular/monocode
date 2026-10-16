@@ -166,21 +166,16 @@ import {
   transcriptWordRanges,
 } from "../model/transcriptHighlights";
 import { ResearchLabel } from "../../research-mode/ui/ResearchLabel";
-// [lane-1] imports
 import type { TurnRewind as TurnRewind_l1 } from "../../rewind/model/turnRewind";
 import { TurnRewindMenu as TurnRewindMenu_l1 } from "../../rewind/ui/TurnRewindMenu";
-// [lane-2] imports
 import { rememberText as rememberText_l2 } from "../../project-memory/model/remember";
 import { rememberedNotice as rememberedNotice_s6 } from "../../project-memory/model/remember";
-// [lane-3] imports
 import {
   rowStartsOpen as rowStartsOpen_s6,
   useRowOpen as useRowOpen_s6,
   useTranscriptDetail as useTranscriptDetail_l3,
   workStartsOpen as workStartsOpen_l3,
 } from "../hooks/useTranscriptDetail";
-// [lane-4] imports
-// [lane-5] imports
 import {
   alwaysAllowHostOptions as alwaysAllowHostOptions_l5,
   networkApprovalView as networkApprovalView_l5,
@@ -301,15 +296,10 @@ type Props = {
   onScrollerChange?: (el: HTMLDivElement | null) => void;
   /** A worker's transcript: show the orchestrator's turns instead of hiding them. */
   managed?: boolean;
-  // [lane-1] props
   /** Rewind, restore and fork on each sent prompt, once the turn settles. */
   turnRewind_l1?: TurnRewind_l1;
-  // [lane-2] props
-  // [lane-3] props
   /** #38a: the verify card, under the latest turn once it settles. */
   latestTurnVerify_l3?: ReactNode;
-  // [lane-4] props
-  // [lane-5] props
 };
 
 function AgentTranscriptComponent({
@@ -371,13 +361,8 @@ function AgentTranscriptComponent({
   parked = false,
   onScrollerChange,
   managed = false,
-  // [lane-1] destructure
   turnRewind_l1,
-  // [lane-2] destructure
-  // [lane-3] destructure
   latestTurnVerify_l3,
-  // [lane-4] destructure
-  // [lane-5] destructure
 }: Props) {
   const isMonoChat = !!agentMascot;
   const blocks = useMemo(() => {
@@ -1076,8 +1061,6 @@ function AgentTranscriptComponent({
     historicalBlockIds,
   );
 
-  // [lane-1] body
-  // [lane-2] body
   const [rememberNotice_s6, setRememberNotice_s6] = useState<string | null>(
     null,
   );
@@ -1115,10 +1098,7 @@ function AgentTranscriptComponent({
           },
     [agentName, cwd, harness, model, showRememberNotice_s6],
   );
-  // [lane-3] body
   const transcriptDetail_l3 = useTranscriptDetail_l3();
-  // [lane-4] body
-  // [lane-5] body
   return (
     <div
       ref={setScroller}
@@ -1456,16 +1436,11 @@ function AgentTranscriptComponent({
                   item.block.role === "user" &&
                   item.block.id === editableUserBlockId
                 }
-                // [lane-1] block-pass
                 turnRewind_l1={
                   settled && item.block.role === "user" && !item.block.draft
                     ? turnRewind_l1
                     : undefined
                 }
-                // [lane-2] block-pass
-                // [lane-3] block-pass
-                // [lane-4] block-pass
-                // [lane-5] block-pass
               />
             );
           // The fold reaches across a stack of delegated runs, but those rows
@@ -2359,12 +2334,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
   planModelSettings,
   onEditLastTurn,
   editing = false,
-  // [lane-1] block-destructure
   turnRewind_l1,
-  // [lane-2] block-destructure
-  // [lane-3] block-destructure
-  // [lane-4] block-destructure
-  // [lane-5] block-destructure
 }: {
   block: Block;
   layout: TranscriptLayout;
@@ -2398,12 +2368,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
   planModelSettings?: Record<string, string>;
   onEditLastTurn?: () => void;
   editing?: boolean;
-  // [lane-1] block-props
   turnRewind_l1?: TurnRewind_l1;
-  // [lane-2] block-props
-  // [lane-3] block-props
-  // [lane-4] block-props
-  // [lane-5] block-props
 }) {
   if (block.role === "user") {
     return (

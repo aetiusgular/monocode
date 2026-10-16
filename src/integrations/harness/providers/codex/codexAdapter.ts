@@ -31,7 +31,6 @@ import {
   registerHarness,
   type HarnessAdapter,
 } from "../../core/registry";
-// [lane-1] imports
 import {
   listCodexBackgroundTasks as listCodexBackgroundTasks_l1,
   stopCodexBackgroundTask as stopCodexBackgroundTask_l1,
@@ -41,10 +40,6 @@ import {
   listCodexSessions as listCodexSessions_l1,
   readCodexSessionTurns as readCodexSessionTurns_l1,
 } from "./codexSessions";
-// [lane-2] imports
-// [lane-3] imports
-// [lane-4] imports
-// [lane-5] imports
 
 export const codexAdapter: HarnessAdapter = {
   id: "codex",
@@ -70,17 +65,12 @@ export const codexAdapter: HarnessAdapter = {
   runTextPrompt: runCodexTextPrompt,
   stopTextPrompt: stopCodexTextPrompt,
   listMcpServers: listCodexMcpServers,
-  // [lane-1] adapter
   listBackgroundTasks: listCodexBackgroundTasks_l1,
   stopBackgroundTask: stopCodexBackgroundTask_l1,
   forkSession: (input) =>
     forkCodexSession_l1({ source: input.source, boundary: input.boundary }),
   listSessions: listCodexSessions_l1,
   readSessionTurns: readCodexSessionTurns_l1,
-  // [lane-2] adapter
-  // [lane-3] adapter
-  // [lane-4] adapter
-  // [lane-5] adapter
 };
 
 let registered = false;

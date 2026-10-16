@@ -165,13 +165,8 @@ export type AgentAppHost = {
   ): Promise<string>;
   /** The clock entries are dated by; tests pin it. */
   now?(): Date;
-  // [lane-1] host-type
-  // [lane-2] host-type
   /** #39: start a manual run of a saved automation now. */
   runAutomation?(automationId: string): Promise<void>;
-  // [lane-3] host-type
-  // [lane-4] host-type
-  // [lane-5] host-type
 };
 
 const FIELDS = new Map<string, readonly string[]>([
@@ -226,8 +221,6 @@ const FIELDS = new Map<string, readonly string[]>([
   ["habits.run", ["id"]],
   ["habits.remove", ["id"]],
   ["chat.card", [...CARD_FIELDS]],
-  // [lane-1] fields
-  // [lane-2] fields
   ["automations.list", []],
   [
     "automations.create",
@@ -248,13 +241,10 @@ const FIELDS = new Map<string, readonly string[]>([
   ],
   ["automations.run", ["id"]],
   ["automations.remove", ["id"]],
-  // [lane-3] fields
   // #37: the calling chat's preview server.
   ["preview.status", []],
   ["preview.logs", ["lines", "errorsOnly"]],
   ["preview.restart", []],
-  // [lane-4] fields
-  // [lane-5] fields
 ]);
 
 function fields(action: string, input: Record<string, unknown>) {
@@ -992,21 +982,16 @@ export async function handleAgentApp(
     return handleMemory(source, action, input, host);
   if (action.startsWith("habits."))
     return handleHabits(source, action, input, host);
-  // [lane-1] routes
-  // [lane-2] routes
   // #39. A dynamic import keeps the file's import block untouched.
   if (action.startsWith("automations."))
     return (
       await import("../../automations/model/agentAutomations")
     ).handleAutomationAction(source, action, input, host);
-  // [lane-3] routes
   // #37. A dynamic import keeps the file's import block untouched.
   if (action.startsWith("preview."))
     return (
       await import("../../app-preview/model/previewActions")
     ).handlePreviewAction(source, action, input);
-  // [lane-4] routes
-  // [lane-5] routes
   if (action === "chat.card") {
     if (
       !host.postCard ||
@@ -1306,10 +1291,5 @@ export async function handleAgentApp(
         ...(looksLikeProject(source.cwd) ? { sourceCwd: source.cwd } : {}),
       });
     }
-    // [lane-1] cases
-    // [lane-2] cases
-    // [lane-3] cases
-    // [lane-4] cases
-    // [lane-5] cases
   }
 }

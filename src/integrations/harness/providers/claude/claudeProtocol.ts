@@ -91,13 +91,8 @@ export type ClaudeCliSettings = {
   disableAllHooks?: boolean;
   /** Plugins switched off for one chat, each `false`. */
   enabledPlugins?: Record<string, boolean>;
-  // [lane-1] cli-settings
-  // [lane-2] cli-settings
   /** Options for Claude Code's built-in plugins, such as AGENTS.md (#27). */
   pluginConfigs?: Record<string, { options: Record<string, string> }>;
-  // [lane-3] cli-settings
-  // [lane-4] cli-settings
-  // [lane-5] cli-settings
   /**
    * Launch-time permission rules. Only `ask` is passed, and only the git rule
    * (Mac test 10.1, `claudeGitAsk.ts`): Claude Code merges these with the
@@ -364,20 +359,15 @@ export function buildClaudeSpawnArgs(input: {
    * own servers. Never with `--strict-mcp-config`. Ignored when isolated.
    */
   gatewayConnectors?: HarnessLaunchMcpServer[];
-  // [lane-1] spawn-input
   /** With `resume`: copy the conversation into a new one (`--fork-session`). */
   forkSession?: boolean;
-  // [lane-2] spawn-input
   /** F2: MonoCode's instructions, for a new conversation only. */
   appendSystemPromptFile?: string;
-  // [lane-3] spawn-input
-  // [lane-4] spawn-input
   /**
    * #42: how connector tool definitions load, as `ENABLE_TOOL_SEARCH`.
    * Unset leaves the variable alone.
    */
   toolLoading?: "auto" | "upfront";
-  // [lane-5] spawn-input
 }): string[] {
   const args = [
     "--output-format",
@@ -452,17 +442,12 @@ export function buildClaudeSpawnArgs(input: {
   }
   if (input.sessionId) args.push("--session-id", input.sessionId);
   if (input.maxTurns) args.push("--max-turns", String(input.maxTurns));
-  // [lane-1] spawn-flags
   if (input.resume && input.forkSession) args.push("--fork-session");
-  // [lane-2] spawn-flags
   // Never on a resumed conversation: Claude Code keeps the system prompt it
   // started with, and MonoCode sends later changes in the message (F2).
   if (input.appendSystemPromptFile && !input.resume && !input.isolated) {
     args.push("--append-system-prompt-file", input.appendSystemPromptFile);
   }
-  // [lane-3] spawn-flags
-  // [lane-4] spawn-flags
-  // [lane-5] spawn-flags
   return args;
 }
 
@@ -1357,13 +1342,8 @@ export function claudeSettingsKey(input: {
   disabledPlugins?: string[];
   /** Docker gateway connectors, a launch-time `--mcp-config`. */
   gatewayConnectors?: HarnessLaunchMcpServer[];
-  // [lane-1] settings-key-input
-  // [lane-2] settings-key-input
-  // [lane-3] settings-key-input
-  // [lane-4] settings-key-input
   /** #42: connector tool loading, a launch-time `--settings` env value. */
   toolLoading?: "auto" | "upfront";
-  // [lane-5] settings-key-input
 }): string {
   const deniedTools = claudeToolDenyRules(input.deniedTools);
   const deniedSkills = claudeSkillDenyRules(input.disabledSkills);
@@ -1392,12 +1372,7 @@ export function claudeSettingsKey(input: {
           `gateway:${claudeGatewayMcpConfig(sortedByName(input.gatewayConnectors))}`,
         ]
       : []),
-    // [lane-1] settings-key-parts
-    // [lane-2] settings-key-parts
-    // [lane-3] settings-key-parts
-    // [lane-4] settings-key-parts
     ...(input.toolLoading ? [`tool-loading:${input.toolLoading}`] : []),
-    // [lane-5] settings-key-parts
   ].join("|");
 }
 

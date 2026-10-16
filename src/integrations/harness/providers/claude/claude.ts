@@ -122,15 +122,10 @@ import type {
   SendTurnInput,
   SteerTurnInput,
 } from "../../core/types";
-// [lane-1] imports
 import { claudeBackgroundItems as claudeBackgroundItems_l1 } from "./claudeBackground";
 import { backgroundItemsKey as backgroundItemsKey_l1 } from "../../core/background";
-// [lane-2] imports
 import { agentsMdPluginConfig as agentsMdPluginConfig_l2 } from "../../../../features/project-context/model/instructions";
-// [lane-3] imports
-// [lane-4] imports
 import { loadClaudeToolLoading as loadClaudeToolLoading_l4 } from "../../../../features/gateway-connectors/model/toolLoading";
-// [lane-5] imports
 import {
   chatFolders as chatFolders_l5,
   claudeWritePath as claudeWritePath_l5,
@@ -262,13 +257,8 @@ type Live = {
   pendingAssistantBoundary: boolean;
   manualCompaction: boolean;
   compactionConfirmed: boolean;
-  // [lane-1] live
   /** Last Running list sent to the UI, to skip repeats. */
   backgroundItemsKey_l1: string;
-  // [lane-2] live
-  // [lane-3] live
-  // [lane-4] live
-  // [lane-5] live
   /** The chat's working folder and added folders, for automatic yeses. */
   chatFolders_l5: string[];
 };
@@ -871,12 +861,7 @@ async function ensureLive(
     pendingAssistantBoundary: false,
     manualCompaction: false,
     compactionConfirmed: false,
-    // [lane-1] live-init
     backgroundItemsKey_l1: "",
-    // [lane-2] live-init
-    // [lane-3] live-init
-    // [lane-4] live-init
-    // [lane-5] live-init
     chatFolders_l5: chatFolders_l5(input.cwd, input.extraDirs),
   };
   liveRef.current = live;
@@ -913,11 +898,6 @@ async function ensureLive(
     },
   );
 
-  // [lane-1] ensure-live
-  // [lane-2] ensure-live
-  // [lane-3] ensure-live
-  // [lane-4] ensure-live
-  // [lane-5] ensure-live
   await spawnChild(
     input.sessionId,
     path,
@@ -2427,12 +2407,7 @@ function settingsKeyFor(input: HarnessSessionInput): string {
     disabledSkills: input.disabledSkills,
     disabledPlugins: input.disabledPlugins,
     gatewayConnectors: input.gatewayConnectors,
-    // [lane-1] settings-key
-    // [lane-2] settings-key
-    // [lane-3] settings-key
-    // [lane-4] settings-key
     toolLoading: loadClaudeToolLoading_l4(),
-    // [lane-5] settings-key
   })}`;
 }
 
@@ -2549,14 +2524,9 @@ function launchOptions(
   disallowedTools?: string[];
   disabledMcpServers?: string[];
   gatewayConnectors?: HarnessSessionInput["gatewayConnectors"];
-  // [lane-1] launch-type
   forkSession?: boolean;
-  // [lane-2] launch-type
   appendSystemPromptFile?: string;
-  // [lane-3] launch-type
-  // [lane-4] launch-type
   toolLoading?: "auto" | "upfront";
-  // [lane-5] launch-type
 } {
   const native = nativeModelId(input.model);
   const effortRaw = input.modelSettings?.effort;
@@ -2587,18 +2557,13 @@ function launchOptions(
   if (enabledPlugins) {
     settings.enabledPlugins = enabledPlugins;
   }
-  // [lane-1] launch-body
   // A fork resumes the source conversation once, as a copy. Once Claude has
   // bound the copy's own id, `resume` is that id and the fork is done.
   const fork_l1 = forkByThread_l1.get(input.sessionId);
   if (fork_l1 && fork_l1 !== resume) forkByThread_l1.delete(input.sessionId);
   const forkSession_l1 = fork_l1 !== undefined && fork_l1 === resume;
-  // [lane-2] launch-body
   const agentsMd_l2 = agentsMdPluginConfig_l2(input.agentsMdPlugin);
   if (agentsMd_l2) settings.pluginConfigs = agentsMd_l2;
-  // [lane-3] launch-body
-  // [lane-4] launch-body
-  // [lane-5] launch-body
   return {
     model: resolveClaudeApiModelId(native, context),
     effort: normalizeClaudeCliEffort(effortRaw, native),
@@ -2622,16 +2587,11 @@ function launchOptions(
     ],
     disabledMcpServers: input.disabledMcpServers,
     gatewayConnectors: input.gatewayConnectors,
-    // [lane-1] launch-return
     ...(forkSession_l1 ? { forkSession: true } : {}),
-    // [lane-2] launch-return
     ...(input.preambleFile && !resume
       ? { appendSystemPromptFile: input.preambleFile }
       : {}),
-    // [lane-3] launch-return
-    // [lane-4] launch-return
     toolLoading: loadClaudeToolLoading_l4(),
-    // [lane-5] launch-return
   };
 }
 
@@ -2644,7 +2604,6 @@ export function __claudeTestReset(): void {
   lastEntryByThread.clear();
   rewindByThread.clear();
 }
-// [lane-1] exports
 /**
  * Chats waiting to start as a fork, by MonoCode session id, with the source
  * Claude conversation they copy. In memory only: a fork must get its first
@@ -2731,10 +2690,6 @@ export async function stopClaudeBackgroundTask_l1(
   );
   return true;
 }
-// [lane-2] exports
-// [lane-3] exports
-// [lane-4] exports
-// [lane-5] exports
 async function claudeRuleHeldToFolders_l5(
   live: Live,
   toolName: string,

@@ -22,7 +22,6 @@ import type {
   SendTurnInput,
   SteerTurnInput,
 } from "./types";
-// [lane-1] imports
 import type { BackgroundItem as BackgroundItem_l1 } from "./background";
 import type { HarnessSessionInput as HarnessSessionInput_l1 } from "./types";
 import type {
@@ -31,10 +30,6 @@ import type {
   ListSessionsInput as ListSessionsInput_l1,
   ReadSessionInput as ReadSessionInput_l1,
 } from "../../../features/session-import/model/types";
-// [lane-2] imports
-// [lane-3] imports
-// [lane-4] imports
-// [lane-5] imports
 
 export type TitleInput = {
   sessionId: string;
@@ -143,7 +138,6 @@ export type HarnessAdapter = {
    * session can run with a configuration the app cannot read from disk.
    */
   listMcpServers?(input: ListMcpServersInput): Promise<HarnessMcpServer[]>;
-  // [lane-1] adapter
   /**
    * Stops one item the harness reports running beside the turn, by its id.
    * Resolves false when the item or the session is no longer live.
@@ -173,10 +167,6 @@ export type HarnessAdapter = {
   listSessions?(input: ListSessionsInput_l1): Promise<HarnessSessionRow_l1[]>;
   /** #45: a listed session's earlier turns, as text, where the harness can replay them. */
   readSessionTurns?(input: ReadSessionInput_l1): Promise<ImportedHistory_l1>;
-  // [lane-2] adapter
-  // [lane-3] adapter
-  // [lane-4] adapter
-  // [lane-5] adapter
 };
 
 const adapters = new Map<HarnessId, HarnessAdapter>();
@@ -707,7 +697,6 @@ export async function runHarnessTextPrompt(
 export async function stopHarnessTextPrompts(): Promise<void> {
   await Promise.all([...adapters.values()].map(stopTextPrompt));
 }
-// [lane-1] wrappers
 /**
  * Stops one background item. Not queued behind the turn: the turn is what
  * keeps running while the item does.
@@ -786,7 +775,3 @@ export async function readHarnessSessionTurns_l1(
   if (!adapter?.readSessionTurns) return null;
   return adapter.readSessionTurns(input);
 }
-// [lane-2] wrappers
-// [lane-3] wrappers
-// [lane-4] wrappers
-// [lane-5] wrappers

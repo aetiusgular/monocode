@@ -237,11 +237,6 @@ export function ModelsPage() {
         is a default and can be wrong, so set its traits here. Claude models are
         known and not listed. Nothing here is sent anywhere.
       </p>
-      {/* [lane-1] models-page */}
-      {/* [lane-2] models-page */}
-      {/* [lane-3] models-page */}
-      {/* [lane-4] models-page */}
-      {/* [lane-5] models-page */}
       <ModelSetupSection_l5 />
       <form
         className="flex flex-wrap items-center gap-2"

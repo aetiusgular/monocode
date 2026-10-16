@@ -194,7 +194,6 @@ type Shared = {
   onNewTerminal: (sessionId: string) => void;
   onTerminalMetaChange?: (fileId: string, patch: TerminalMetaPatch) => void;
   transcriptPool?: TranscriptPool;
-  // [lane-1] props
   onRewindChat_l1?: (sessionId: string, blockId: string) => Promise<void>;
   onForkTurn_l1?: (sessionId: string, blockId: string) => Promise<void>;
   onPickUpSession_l1?: (
@@ -204,12 +203,8 @@ type Shared = {
   pickUpBound_l1?: (
     harness: import("../../sessions/model/session").HarnessId,
   ) => ReadonlyMap<string, string>;
-  // [lane-2] props
   /** Finding 2.2: a new chat in the same project, harness, model and account. */
   onNewChatLike_s6?: (sessionId: string) => void;
-  // [lane-3] props
-  // [lane-4] props
-  // [lane-5] props
 };
 
 type Props = Shared & { layout: LayoutNode };
@@ -300,16 +295,11 @@ function PaneTreeComponent({
   onNewTerminal,
   onTerminalMetaChange,
   transcriptPool,
-  // [lane-1] destructure
   onRewindChat_l1,
   onForkTurn_l1,
   onPickUpSession_l1,
   pickUpBound_l1,
-  // [lane-2] destructure
   onNewChatLike_s6,
-  // [lane-3] destructure
-  // [lane-4] destructure
-  // [lane-5] destructure
 }: Props) {
   const treeRef = useRef<HTMLDivElement>(null);
   const layoutRef = useRef(layout);
@@ -602,16 +592,11 @@ function PaneTreeComponent({
                   onNewTerminal={onNewTerminal}
                   onPaneDragStart={onPaneDragStart}
                   transcriptPool={transcriptPool}
-                  // [lane-1] pane-props
                   onRewindChat_l1={onRewindChat_l1}
                   onForkTurn_l1={onForkTurn_l1}
                   onPickUpSession_l1={onPickUpSession_l1}
                   pickUpBound_l1={pickUpBound_l1}
-                  // [lane-2] pane-props
                   onNewChatLike_s6={onNewChatLike_s6}
-                  // [lane-3] pane-props
-                  // [lane-4] pane-props
-                  // [lane-5] pane-props
                 />
               ) : null}
             </div>

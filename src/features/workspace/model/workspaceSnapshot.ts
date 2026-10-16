@@ -71,11 +71,6 @@ export type WorkspaceSessionStub = {
   disabledPlugins?: string[];
   modelProvider?: string;
   gatewayOn?: string[];
-  // [lane-1] stub-fields
-  // [lane-2] stub-fields
-  // [lane-3] stub-fields
-  // [lane-4] stub-fields
-  // [lane-5] stub-fields
   permissionsProfile?: string;
 };
 
@@ -410,11 +405,6 @@ function sessionStub(session: Session): WorkspaceSessionStub | null {
       : {}),
     ...(session.modelProvider ? { modelProvider: session.modelProvider } : {}),
     ...(session.gatewayOn ? { gatewayOn: [...session.gatewayOn] } : {}),
-    // [lane-1] stub-from-session
-    // [lane-2] stub-from-session
-    // [lane-3] stub-from-session
-    // [lane-4] stub-from-session
-    // [lane-5] stub-from-session
     ...(session.permissionsProfile
       ? { permissionsProfile: session.permissionsProfile }
       : {}),
@@ -456,11 +446,6 @@ function sessionFromStub(stub: WorkspaceSessionStub): Session {
     ...(stub.disabledPlugins ? { disabledPlugins: stub.disabledPlugins } : {}),
     ...(stub.modelProvider ? { modelProvider: stub.modelProvider } : {}),
     ...(stub.gatewayOn ? { gatewayOn: stub.gatewayOn } : {}),
-    // [lane-1] session-from-stub
-    // [lane-2] session-from-stub
-    // [lane-3] session-from-stub
-    // [lane-4] session-from-stub
-    // [lane-5] session-from-stub
     ...(stub.permissionsProfile
       ? { permissionsProfile: stub.permissionsProfile }
       : {}),
@@ -493,11 +478,6 @@ function sanitizeStub(raw: unknown): WorkspaceSessionStub | null {
   const disabledPlugins = sanitizeDisabledPlugins(value.disabledPlugins);
   const modelProvider = sanitizeModelProvider(value.modelProvider);
   const gatewayOn = sanitizeGatewayOn(value.gatewayOn);
-  // [lane-1] sanitize-stub-body
-  // [lane-2] sanitize-stub-body
-  // [lane-3] sanitize-stub-body
-  // [lane-4] sanitize-stub-body
-  // [lane-5] sanitize-stub-body
   const permissionsProfile_l5 = sanitizeModelProvider(value.permissionsProfile);
   return {
     id: value.id,
@@ -534,11 +514,6 @@ function sanitizeStub(raw: unknown): WorkspaceSessionStub | null {
     ...(disabledPlugins ? { disabledPlugins } : {}),
     ...(modelProvider ? { modelProvider } : {}),
     ...(gatewayOn ? { gatewayOn } : {}),
-    // [lane-1] sanitize-stub
-    // [lane-2] sanitize-stub
-    // [lane-3] sanitize-stub
-    // [lane-4] sanitize-stub
-    // [lane-5] sanitize-stub
     ...(permissionsProfile_l5 ? { permissionsProfile: permissionsProfile_l5 } : {}),
   };
 }

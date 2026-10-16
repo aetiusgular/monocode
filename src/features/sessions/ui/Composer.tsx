@@ -258,17 +258,12 @@ import {
 } from "../../settings/model/mcpSettingsCache";
 import type { LastTurnRecall } from "../model/editLastTurn";
 import { useComposerAutocorrect } from "../../settings/model/displayPrefs";
-// [lane-1] imports
 import { PickUpMenuItem as PickUpMenuItem_l1 } from "../../session-import/ui/PickUpMenuItem";
 import { PickUpSessionPopover as PickUpSessionPopover_l1 } from "../../session-import/ui/PickUpSessionPopover";
 import type { PickUpTarget as PickUpTarget_l1 } from "../../session-import/model/pickUp";
-// [lane-2] imports
 import { SuggestedPromptChips as SuggestedPromptChips_l2 } from "../../suggested-prompts/ui/SuggestedPromptChips";
 import type { SuggestedPrompt as SuggestedPrompt_l2 } from "../../suggested-prompts/model/suggestions";
-// [lane-3] imports
-// [lane-4] imports
 import { helperRouteForSession as helperRouteForSession_l4 } from "../../../integrations/harness/core/helperPrompt";
-// [lane-5] imports
 import {
   BrowserToolsMenuItem as BrowserToolsMenuItem_l5,
   useBrowserServers as useBrowserServers_l5,
@@ -405,22 +400,17 @@ type Props = {
     restore: (text: string, attachments: Attachment[]) => boolean,
   ) => void;
   children?: ReactNode;
-  // [lane-1] props
   /** #45: offers the harness's own sessions for this folder, when set. */
   pickUp_l1?: PickUpTarget_l1;
-  // [lane-2] props
   /** #46: chips from the project's state; a click fills the input. */
   suggestedPrompts?: readonly SuggestedPrompt_l2[];
   onDismissSuggestedPrompts?: () => void;
-  // [lane-3] props
-  // [lane-4] props
   /**
    * The chat was used: a prompt was sent or the harness holds a conversation.
    * A blank chat's harness was never chosen for anything, so its Generate
    * asks before a diff leaves (Mac finding 10.2, security review F6).
    */
   sessionUsed_l4?: boolean;
-  // [lane-5] props
   /** The chat's provider, account and Codex permissions profile (lane 5). */
   privacySession_l5?: SessionProviderInput_l5 & PrivacyPanelSession_l5;
   /** Sets the chat's provider or profile; "" clears it. */
@@ -561,15 +551,10 @@ export function Composer({
   onEditingLastTurnChange,
   onRestorePromptReady,
   children,
-  // [lane-1] destructure
   pickUp_l1,
-  // [lane-2] destructure
   suggestedPrompts,
   onDismissSuggestedPrompts,
-  // [lane-3] destructure
-  // [lane-4] destructure
   sessionUsed_l4 = false,
-  // [lane-5] destructure
   privacySession_l5,
   onPrivacyPatch_l5,
 }: Props) {
@@ -638,12 +623,7 @@ export function Composer({
     | "skills"
     | "record-skill"
     | "plugins"
-    // [lane-1] chat-list
     | "pick-up"
-    // [lane-2] chat-list
-    // [lane-3] chat-list
-    // [lane-4] chat-list
-    // [lane-5] chat-list
     | null
   >(null);
   const [planSelected, setPlanSelected] = useState(false);
@@ -1988,8 +1968,6 @@ export function Composer({
     });
   };
 
-  // [lane-1] body
-  // [lane-2] body
   /** #46: fill the input with a suggestion; it is never sent from here. */
   const fillSuggestion_l2 = (prompt: SuggestedPrompt_l2) => {
     const el = ref.current;
@@ -2002,8 +1980,6 @@ export function Composer({
     el.focus();
     el.setSelectionRange(prompt.prompt.length, prompt.prompt.length);
   };
-  // [lane-3] body
-  // [lane-4] body
   // F6: a commit before a branch switch is written by this session's model.
   // A blank chat passes a bare harness id, so Generate asks first.
   const helperRoute_l4 = sessionUsed_l4
@@ -2016,7 +1992,6 @@ export function Composer({
         ...(sessionId ? { id: sessionId } : {}),
       })
     : harness;
-  // [lane-5] body
   const browserServers_l5 = useBrowserServers_l5({
     harness,
     cwd: executionCwd,
@@ -2346,8 +2321,6 @@ export function Composer({
               }}
             />
           ) : null}
-          {/* [lane-1] chips */}
-          {/* [lane-2] chips */}
           {!compact &&
           !busy &&
           !draft.trim() &&
@@ -2359,9 +2332,6 @@ export function Composer({
               onDismiss={() => onDismissSuggestedPrompts?.()}
             />
           ) : null}
-          {/* [lane-3] chips */}
-          {/* [lane-4] chips */}
-          {/* [lane-5] chips */}
 
           {attachments.length > 0 ? (
             <div className="flex flex-wrap gap-1.5 px-3 pt-2">
@@ -2587,7 +2557,6 @@ export function Composer({
                       }}
                     />
                   ) : null}
-                  {/* [lane-1] plus-menu */}
                   {pickUp_l1 && !remote ? (
                     <PickUpMenuItem_l1
                       harness={pickUp_l1.harness}
@@ -2597,10 +2566,6 @@ export function Composer({
                       }}
                     />
                   ) : null}
-                  {/* [lane-2] plus-menu */}
-                  {/* [lane-3] plus-menu */}
-                  {/* [lane-4] plus-menu */}
-                  {/* [lane-5] plus-menu */}
                   {connectorsSupported ? (
                     <BrowserToolsMenuItem_l5
                       servers={browserServers_l5}
@@ -2871,7 +2836,6 @@ export function Composer({
                   }}
                 />
               ) : null}
-              {/* [lane-1] popovers */}
               {chatList === "pick-up" && pickUp_l1 && !remote ? (
                 <PickUpSessionPopover_l1
                   anchor={plusRef}
@@ -2882,10 +2846,6 @@ export function Composer({
                   }}
                 />
               ) : null}
-              {/* [lane-2] popovers */}
-              {/* [lane-3] popovers */}
-              {/* [lane-4] popovers */}
-              {/* [lane-5] popovers */}
             </div>
             {compact && !remote ? (
               <SessionToolsSummary

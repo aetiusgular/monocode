@@ -24,8 +24,6 @@ const ACTION_LABELS: Record<string, string> = {
   "artifacts.list": "List artifacts",
   "artifacts.read": "Read an artifact",
   "artifacts.write": "Write an artifact",
-  // [lane-1] labels
-  // [lane-2] labels
   // F7: the 15 actions that had no label showed as a plain shell row.
   "worktrees.list": "List worktrees",
   "worktrees.create": "Create a worktree",
@@ -48,12 +46,9 @@ const ACTION_LABELS: Record<string, string> = {
   "automations.update": "Propose an automation change",
   "automations.run": "Run an automation",
   "automations.remove": "Propose removing an automation",
-  // [lane-3] labels
   "preview.status": "Check the preview",
   "preview.logs": "Read the preview's output",
   "preview.restart": "Restart the preview",
-  // [lane-4] labels
-  // [lane-5] labels
 };
 
 /** Conservatively parse one shell invocation; compound commands use the shell row. */

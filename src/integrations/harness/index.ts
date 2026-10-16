@@ -214,10 +214,6 @@ export type {
   UserQuestionReply,
 } from "../../features/sessions/model/userQuestion";
 export type { HarnessAdapter, TextPromptInput } from "./core/registry";
-// [lane-1] exports
-// [lane-2] exports
-// [lane-3] exports
-// [lane-4] exports
 export {
   helperRouteForCheckout,
   helperRouteForSession,
@@ -225,4 +221,3 @@ export {
   type HelperRoute,
   type HelperTarget,
 } from "./core/helperPrompt";
-// [lane-5] exports

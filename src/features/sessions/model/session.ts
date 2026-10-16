@@ -461,16 +461,11 @@ export type Block = {
    * when the chat renders; see `features/monos/model/monoReaction`.
    */
   monoReaction?: string;
-  // [lane-1] block-fields
   /**
    * On a user block: the id of MonoCode's own workspace checkpoint for the
    * turn it started. Restoring files to before this turn reads it.
    */
   checkpointTurnId?: string;
-  // [lane-2] block-fields
-  // [lane-3] block-fields
-  // [lane-4] block-fields
-  // [lane-5] block-fields
 };
 
 /** Session-level composer tools saved with the transcript. */
@@ -482,11 +477,6 @@ export type PersistedSessionTools = {
   disabledPlugins?: string[];
   modelProvider?: string;
   gatewayOn?: string[];
-  // [lane-1] persisted-tools
-  // [lane-2] persisted-tools
-  // [lane-3] persisted-tools
-  // [lane-4] persisted-tools
-  // [lane-5] persisted-tools
   permissionsProfile?: string;
 };
 
@@ -678,7 +668,6 @@ export type Session = {
    * In-memory; request ids do not survive restarts.
    */
   pendingQuestion?: UserQuestionPrompt;
-  // [lane-1] session-fields
   /**
    * Work the harness reports running beside the turn. Live only: never
    * saved, and cleared when the turn stops streaming.
@@ -686,10 +675,6 @@ export type Session = {
   backgroundItems?: import("../../../integrations/harness/core/background").BackgroundItem[];
   /** The prompt a chat rewind took back, for the composer. Not saved. */
   rewoundPrompt?: import("../../rewind/model/turnRewind").RewoundPrompt;
-  // [lane-2] session-fields
-  // [lane-3] session-fields
-  // [lane-4] session-fields
-  // [lane-5] session-fields
   /**
    * A named permissions profile this chat runs under, by the harness's own id
    * (a Codex permissions profile). Unset keeps MonoCode's sandbox settings.
