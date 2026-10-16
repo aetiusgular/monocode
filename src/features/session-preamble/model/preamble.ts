@@ -278,7 +278,7 @@ export function preambleBlock(
   // A body may hold saved memory an agent proposed. Its fence lines are
   // replaced, so nothing in it can close the note early and speak as the
   // user after it (security review, F9).
-  return `${noteStartLine(mark)}\n${MESSAGE_LEAD[kind]}\n\n${withoutFence(text)}\n\n${MESSAGE_NOTE_END}`;
+  return `${noteStartLine(mark)}\n${MESSAGE_LEAD[kind]}\n\n${withoutFence(text, undefined, { anywhere: true })}\n\n${MESSAGE_NOTE_END}`;
 }
 
 /** Characters the note adds around its body, so the whole fits the budget. */

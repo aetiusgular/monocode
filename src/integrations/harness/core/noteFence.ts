@@ -23,16 +23,29 @@ export const END_REMOVED = "[end marker removed]";
 export const MARK_REMOVED = "[line with this chat's mark removed]";
 
 /**
- * After `readableLine`: any opening bracket or quote, then the words with
- * any spacing (security review M3). `\s*` stays linear here: no quantified
- * group repeats.
+ * After `readableLine`, where every run of spacing is one space: a line that
+ * starts with any opening bracket or quote, then the words, each apart
+ * (security review M3). Only single optional characters, so matching is
+ * linear (N1), and camelCase or snake_case code does not read as the words
+ * (N2). The note is a whole line, so a line that only mentions the words
+ * further on is left alone; a line that names the chat's mark goes anyway.
  */
-const START_LINE =
-  /[\p{Ps}\p{Pi}(<]\s*note\s*from\s*mono\s*-?\s*code(?![a-z0-9])/u;
-const END_LINE = /[\p{Ps}\p{Pi}(<]\s*end\s*of\s*(?:the\s*)?note(?![a-z0-9])/u;
-const INVISIBLE = /[\p{Cf}\p{Mn}\p{Me}]/gu;
-/** Fillers that look like a space, and markdown emphasis. */
-const SPACE_LIKE = /[\u3164\u2800\u115f\u1160\uffa0*_`~]/g;
+const START_LINE = /^ ?[\p{Ps}\p{Pi}(<] ?note from mono ?-? ?code(?![a-z0-9])/u;
+const END_LINE = /^ ?[\p{Ps}\p{Pi}(<] ?end of (?:the )?note(?![a-z0-9])/u;
+/**
+ * Inside MonoCode's own note the body is the user's saved text and memory
+ * an agent proposed, so a fence word anywhere in a line goes (security
+ * review F9): nothing in it may close the note early.
+ */
+const START_ANYWHERE =
+  /[\p{Ps}\p{Pi}(<] ?note from mono ?-? ?code(?![a-z0-9])/u;
+const END_ANYWHERE = /[\p{Ps}\p{Pi}(<] ?end of (?:the )?note(?![a-z0-9])/u;
+const MARKS = /[\p{Mn}\p{Me}]/gu;
+const FORMAT = /\p{Cf}/gu;
+/** Markdown emphasis, dropped. */
+const EMPHASIS = /[*_`~]/g;
+/** Any run of spacing, fillers that look like a space included. */
+const SPACING = /[\s\u3164\u2800\u115f\u1160\uffa0]+/g;
 
 /**
  * Letters from other scripts that look like the Latin ones in the fence
@@ -60,7 +73,8 @@ const LOOK_ALIKES: Readonly<Record<string, string>> = {
   "\u043c": "m",
   "\u03bc": "m",
   "\ua4df": "m",
-  "\u13b7": "m",
+  // Cherokee Ꮇ lowercases to U+AB87 before the fold (N3).
+  "\uab87": "m",
   "\u0578": "n",
   "\u03bd": "v",
   "\u043f": "n",
@@ -78,20 +92,36 @@ const LOOK_ALIKES: Readonly<Record<string, string>> = {
 };
 const LOOK_ALIKE = new RegExp(`[${Object.keys(LOOK_ALIKES).join("")}]`, "g");
 
-/** A line as a reader sees it, for matching only. */
-export function readableLine(line: string): string {
+/**
+ * A line as a reader sees it, for matching only. An invisible format
+ * character (a zero-width space, a joiner, a bidi control) may stand inside
+ * a word or between two, so `asBreak` reads it as a space and the default
+ * drops it.
+ */
+export function readableLine(line: string, asBreak = false): string {
   return (
     line
       // NFKD folds compatibility forms and splits accents off their letters,
-      // so the accents go with the other invisible marks.
+      // so the accents go with the other marks.
       .normalize("NFKD")
-      .replace(INVISIBLE, "")
+      .replace(MARKS, "")
+      .replace(FORMAT, asBreak ? " " : "")
       .toLowerCase()
       // Only the listed characters reach the callback (security review M6).
       .replace(LOOK_ALIKE, (ch) => LOOK_ALIKES[ch] ?? ch)
-      .replace(SPACE_LIKE, " ")
+      .replace(EMPHASIS, "")
+      .replace(SPACING, " ")
   );
 }
+
+function readsAs(line: string, pattern: RegExp): boolean {
+  return (
+    pattern.test(readableLine(line)) || pattern.test(readableLine(line, true))
+  );
+}
+
+/** A mark spelled over more lines than this is not read as one (N6). */
+const MARK_LINES_MAX = 4;
 
 /**
  * The hex digits a reader could take for a mark: o as 0, l and i as 1,
@@ -109,13 +139,18 @@ function hexReading(seen: string): string {
  * note replaced, and, given the chat's mark, every line that spells it out
  * on its own or together with the lines next to it.
  */
-export function withoutFence(text: string, mark?: string): string {
+export function withoutFence(
+  text: string,
+  mark?: string,
+  { anywhere = false }: { anywhere?: boolean } = {},
+): string {
   if (typeof text !== "string" || !text) return text;
+  const start = anywhere ? START_ANYWHERE : START_LINE;
+  const end = anywhere ? END_ANYWHERE : END_LINE;
   const lines = text.split("\n");
-  const seen = lines.map(readableLine);
-  const out = lines.map((line, index) => {
-    if (START_LINE.test(seen[index]!)) return endWith(line, START_REMOVED);
-    if (END_LINE.test(seen[index]!)) return endWith(line, END_REMOVED);
+  const out = lines.map((line) => {
+    if (readsAs(line, start)) return endWith(line, START_REMOVED);
+    if (readsAs(line, end)) return endWith(line, END_REMOVED);
     return line;
   });
   if (isNoteMark(mark)) {
@@ -123,8 +158,8 @@ export function withoutFence(text: string, mark?: string): string {
     // split over lines is found too.
     let hex = "";
     const lineOf: number[] = [];
-    seen.forEach((line, index) => {
-      const digits = hexReading(line);
+    lines.forEach((line, index) => {
+      const digits = hexReading(readableLine(line));
       hex += digits;
       for (let i = 0; i < digits.length; i++) lineOf.push(index);
     });
@@ -132,8 +167,9 @@ export function withoutFence(text: string, mark?: string): string {
     while (from >= 0) {
       const first = lineOf[from]!;
       const last = lineOf[from + mark.length - 1]!;
-      for (let index = first; index <= last; index++)
-        out[index] = endWith(lines[index]!, MARK_REMOVED);
+      if (last - first < MARK_LINES_MAX)
+        for (let index = first; index <= last; index++)
+          out[index] = endWith(lines[index]!, MARK_REMOVED);
       from = hex.indexOf(mark, from + 1);
     }
   }

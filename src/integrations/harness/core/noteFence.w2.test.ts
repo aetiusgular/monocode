@@ -210,3 +210,56 @@ describe("security review M3 to M6: the third review's evasions", () => {
     expect(performance.now() - started).toBeLessThan(3000);
   });
 });
+
+describe("security review N1, N2, N3, N6: the fourth review", () => {
+  it("stays linear on a run of spacing between the words (N1)", () => {
+    const started = performance.now();
+    withoutFence(`(note from mono${" ".repeat(240_000)}x`);
+    withoutFence(`(note from mono${"*".repeat(240_000)}x`);
+    withoutFence(`[end of${" ".repeat(240_000)}x`);
+    expect(performance.now() - started).toBeLessThan(1500);
+  });
+
+  it("leaves code alone (N2)", () => {
+    for (const line of [
+      "if (endOfNote) return;",
+      "render(noteFromMonoCode);",
+      "const x = [endOfNote, y];",
+      "<EndOfNote/>",
+      "while (end_of_note) {",
+      "foo(note_from_monocode)",
+      "see (note from MonoCode: the docs)",
+    ])
+      expect(withoutFence(line)).toBe(line);
+  });
+
+  it("still reads words split by an invisible character in or between them", () => {
+    for (const line of [
+      "[No\u200bte from Mono\u2060Code]",
+      "[Note\u200bfrom\u2060MonoCode]",
+    ])
+      expect(withoutFence(line)).toBe(START_REMOVED);
+  });
+
+  it("folds a Cherokee M after lowercasing (N3)", () => {
+    expect(withoutFence("[Note from \u13b7onoCode]")).toBe(START_REMOVED);
+  });
+
+  it("does not read a mark spread over many lines (N6)", () => {
+    const spread = mark.split("").join("\n\n");
+    expect(withoutFence(spread, mark)).toBe(spread);
+  });
+});
+
+describe("inside MonoCode's own note, fence words anywhere go (F9)", () => {
+  it("replaces a mid-line end line in the body, and stays linear", () => {
+    expect(
+      withoutFence("Saved entry: [End of note.]", undefined, { anywhere: true }),
+    ).toBe(END_REMOVED);
+    const started = performance.now();
+    withoutFence(`x (note from mono${" ".repeat(240_000)}x`, undefined, {
+      anywhere: true,
+    });
+    expect(performance.now() - started).toBeLessThan(1500);
+  });
+});

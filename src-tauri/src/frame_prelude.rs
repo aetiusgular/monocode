@@ -59,10 +59,11 @@ fn after_leading_doctype(body: &str) -> Option<usize> {
     // Printable ASCII only, and no markup: anything else, such as an escape
     // that switches a decoder's character set, puts the prelude first
     // (security review M7).
-    if !rest[1..end]
-        .iter()
-        .all(|&byte| (0x20..0x7f).contains(&byte) && byte != b'<')
-    {
+    // Tab, line feeds and form feed may wrap a long doctype (N5).
+    if !rest[1..end].iter().all(|&byte| {
+        ((0x20..0x7f).contains(&byte) || matches!(byte, b'\t' | b'\n' | 0x0c | b'\r'))
+            && byte != b'<'
+    }) {
         return None;
     }
     Some(at + end + 1)
@@ -165,6 +166,11 @@ mod tests {
         assert_eq!(
             with_first_prelude("<!DOCTYPE html PUBLIC \"-//W3C//DTD\">x", P),
             "<!DOCTYPE html PUBLIC \"-//W3C//DTD\"><script>P</script>x"
+        );
+        // A doctype wrapped onto a second line keeps standards mode (N5).
+        assert_eq!(
+            with_first_prelude("<!DOCTYPE html PUBLIC \"-//W3C//DTD\"\n\t\"x.dtd\">x", P),
+            "<!DOCTYPE html PUBLIC \"-//W3C//DTD\"\n\t\"x.dtd\"><script>P</script>x"
         );
     }
 
