@@ -1014,7 +1014,7 @@ function initialPrStatus(
 /**
  * The checked-out branch's pull request (Mac 4.10, retest 3). A failed
  * lookup keeps the last known PR for this folder and branch, marked stale,
- * and retries; see `prLookup.ts`.
+ * and retries with lookups on; see `prLookup.ts`.
  */
 export function usePrStatus(
   cwd: string,
@@ -1025,17 +1025,22 @@ export function usePrStatus(
   );
   const [nonce, setNonce] = useState(0);
   const reload = useCallback(() => setNonce((value) => value + 1), []);
+  // The last reload a lookup ran for. A branch or folder change after it is
+  // not a new ask (K7).
+  const servedNonce = useRef(0);
 
   useEffect(() => {
     if (!cwd || cwd === "~" || !branch) {
       setState(NO_LOOKUP);
       return;
     }
+    const asked = nonce > servedNonce.current;
+    servedNonce.current = nonce;
     // 5.9: with "GitHub lookups" off, only a reload the user's own action
     // asked for (a commit, a push, a new pull request, the PR bar's Check
-    // now) runs gh. The last known PR shows, and Create PR stays as it was
-    // before.
-    if (!githubLookupAllowed(nonce > 0)) {
+    // now) runs gh, once for each ask. The last known PR shows, and Create
+    // PR stays as it was before.
+    if (!githubLookupAllowed(asked)) {
       setState({
         ...cachedPrLookupState(cwd, branch),
         answered: true,
@@ -1053,7 +1058,7 @@ export function usePrStatus(
       allowed: () => githubLookupAllowed(false),
     });
     setState(lookup.state());
-    if (nonce > 0) lookup.ask();
+    if (asked) lookup.ask();
     else lookup.run();
     const onResume = () => lookup.run();
     window.addEventListener("focus", onResume);

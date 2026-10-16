@@ -14,6 +14,8 @@ import { prRefFromUrl } from "../../pr-bar/model/prBar";
  *   the state is stale, and the bar's switches are off.
  * - A failure retries after 5 s, 15 s and 45 s, then waits for the normal
  *   triggers (opening the panel, window focus, the user's own git actions).
+ *   Retries are calls nobody asked for, so they run only with "GitHub
+ *   lookups" on. Off, a lookup you ask for runs once (K7).
  *
  * VS Code's GitHub extension, GitHub Desktop and lazygit keep the last good
  * value the same way; Superset's error-to-null is what this avoids.
@@ -134,6 +136,14 @@ export function lastCheckedText(checkedAt: number | null): string {
   })}`;
 }
 
+/**
+ * "lookup failed, last checked 10:42": a lookup you asked for with "GitHub
+ * lookups" off failed, and nothing retries it (K7).
+ */
+export function lookupFailedText(checkedAt: number | null): string {
+  return `lookup failed, ${lastCheckedText(checkedAt)}`;
+}
+
 /** Test seam: forget what this app run holds, as a reload does. */
 export function resetPrLookupMemory(): void {
   memory = null;
@@ -148,8 +158,8 @@ export type PrLookup = {
   run(): void;
   /**
    * Look the PR up now because the user asked (a commit, a push, a new PR,
-   * Check now). Runs with "GitHub lookups" off, once, and its retries after
-   * a failure run too. A later `run` that is not allowed leaves them be (J1).
+   * Check now). Runs with "GitHub lookups" off, once (J1). A failure then
+   * retries only with lookups on: off, nothing runs until you ask again (K7).
    */
   ask(): void;
   dispose(): void;
@@ -198,10 +208,13 @@ export function createPrLookup(input: {
       .catch(() => {
         if (disposed || mine !== generation) return;
         set({ ...state, answered: false, stale: true });
+        // A retry is a call nobody asked for: only with lookups on (K7).
+        if (input.allowed && !input.allowed()) return;
         if (retries < PR_RETRY_DELAYS_MS.length) {
           const delay = PR_RETRY_DELAYS_MS[retries];
           retries += 1;
-          timer = setTimeout(() => attempt(asked), delay);
+          // Checked again when it fires, in case lookups went off meanwhile.
+          timer = setTimeout(() => attempt(false), delay);
         }
       });
   };

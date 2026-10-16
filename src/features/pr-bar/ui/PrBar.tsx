@@ -28,7 +28,10 @@ import {
   type PrChecksRead,
   type PrRef,
 } from "../model/prBar";
-import { lastCheckedText } from "../../source-control/model/prLookup";
+import {
+  lastCheckedText,
+  lookupFailedText,
+} from "../../source-control/model/prLookup";
 import { useOutboundCallAllowed } from "../../settings/model/outboundCalls";
 
 /**
@@ -95,8 +98,9 @@ export function PrBar({
   confirmed?: boolean;
   checkedAt?: number | null;
   /**
-   * Run the PR lookup again: after Check now (J1), and when GitHub reports
-   * the PR merged or closed while the lookup still says otherwise (4.10).
+   * Run the PR lookup again: after Check now (J1), and, with "GitHub
+   * lookups" on, when GitHub reports the PR merged or closed while the
+   * lookup still says otherwise (4.10, K7).
    */
   reloadPr?: () => void;
   /** Test seam: checks to show before the first read. */
@@ -121,9 +125,10 @@ export function PrBar({
   const [note, setNote] = useState<string>();
   const [reads, setReads] = useState(0);
   // "GitHub lookups" off: the bar reads nothing on its own, only after you
-  // press Check now or change auto-merge (5.9; review of the 15 Oct pass, G2).
+  // press Check now or change auto-merge (5.9; review of the 15 Oct pass, G2),
+  // and once for each of those (K7).
   const lookupsOn = useOutboundCallAllowed("github-lookups");
-  const [asked, setAsked] = useState(false);
+  const servedReads = useRef(0);
   const [polls, setPolls] = useState(0);
   const locked = stale || !confirmed;
   const sending = useRef(false);
@@ -139,9 +144,12 @@ export function PrBar({
 
   // Checks: read once when the bar shows (or when you ask, with lookups off),
   // and again on each poll tick. Turning auto-merge on does not read twice.
+  // With lookups off a new PR address, or the bar opening again, is not an
+  // ask: only a new Check now or auto-merge change reads (K7).
   useEffect(() => {
     if (!ref || !open) return;
-    if (!lookupsOn && !asked && reads === 0) return;
+    if (!lookupsOn && reads === servedReads.current) return;
+    servedReads.current = reads;
     let cancelled = false;
     const number = ref.number;
     setLoading(true);
@@ -159,10 +167,13 @@ export function PrBar({
       });
     return () => {
       cancelled = true;
+      // A read cut short is not read again with lookups off, so the
+      // spinner must not stay.
+      setLoading(false);
     };
     // `ref` is rebuilt each render from the URL; its key is what matters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cwd, pr.url, open, reads, asked, lookupsOn, polls]);
+  }, [cwd, pr.url, open, reads, lookupsOn, polls]);
 
   // Every minute while auto-fix or auto-merge is on, with lookups on.
   useEffect(() => {
@@ -210,13 +221,16 @@ export function PrBar({
   // GitHub reports the PR merged or closed and the lookup does not say so
   // yet: run the lookup again, so the rest of the panel catches up. Once for
   // each state a read reports, so two reads that disagree cannot loop.
+  // With lookups off it does not run: nobody asked for it, and the bar
+  // already shows the state from the read (K7).
   useEffect(() => {
+    if (!lookupsOn) return;
     if (!reloadPr || !reported || reported === "open") return;
     if (pr.state.toLowerCase() === reported) return;
     if (reloadedFor.current === reported) return;
     reloadedFor.current = reported;
     reloadPr();
-  }, [reported, pr.state, reloadPr]);
+  }, [reported, pr.state, reloadPr, lookupsOn]);
 
   // Auto-archive: once the PR is merged or closed.
   useEffect(() => {
@@ -287,7 +301,11 @@ export function PrBar({
         <span className="min-w-0 flex-1 truncate">
           #{ref.number} · {open ? summary.description : state}
           {stale ? (
-            <span className="text-amber-400"> · {lastCheckedText(checkedAt)}</span>
+            <span data-pr-lookup-stale className="text-amber-400">
+              {" · "}
+              {/* Off, nothing retries, so say it failed (K7). */}
+              {lookupsOn ? lastCheckedText(checkedAt) : lookupFailedText(checkedAt)}
+            </span>
           ) : null}
         </span>
         {loading ? <Loader className="size-3 animate-spin" /> : null}
@@ -295,11 +313,10 @@ export function PrBar({
           <button
             type="button"
             onClick={() => {
-              setAsked(true);
               setReads((value) => value + 1);
               // J1: one PR lookup as well, which you asked for, so a cached PR
               // can be confirmed and the switches unlock. Nothing runs on its
-              // own after it.
+              // own after it: no retry, no reload after the read (K7).
               reloadPr?.();
             }}
             className="shrink-0 rounded px-1 text-[11px] text-content/60 hover:bg-content/10"

@@ -53,7 +53,10 @@ describe("a lookup the user asked for (J1)", () => {
     lookup.dispose();
   });
 
-  it("its retries after a failure still run, and a focus that may not ask leaves them be", async () => {
+  // Changed for K7: this asserted that the 5, 15 and 45 s retries ran with
+  // lookups off. Now a lookup you ask for with lookups off runs once, and a
+  // failure waits for you to ask again.
+  it("with lookups off, a failure is not retried, and a focus that may not ask asks nothing", async () => {
     vi.useFakeTimers();
     const fetch = vi.fn(async (): Promise<GitPr | null> => {
       throw new Error("dial tcp: lookup api.github.com: no such host");
@@ -70,11 +73,15 @@ describe("a lookup the user asked for (J1)", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     lookup.run();
     await vi.advanceTimersByTimeAsync(5_000);
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(15_000 + 45_000);
-    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(fetch).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(10 * 60_000);
-    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    // Asking again runs one more, and again no retry.
+    lookup.ask();
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(fetch).toHaveBeenCalledTimes(2);
     lookup.dispose();
   });
 

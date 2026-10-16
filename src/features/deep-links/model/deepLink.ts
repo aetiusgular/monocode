@@ -1,8 +1,12 @@
+import { consumeOperatorCommand } from "../../sessions/model/operatorCommand";
+
 /**
  * Deep links (#44): `monocode-harness://new?prompt=<text>` fills a prompt in
  * the main window. A link never sends anything. Anyone can write a link, on a
  * web page, in an email or in a file, so the text is treated as a stranger's:
  * it is cleaned, bounded, and shown in the composer for you to read first.
+ * A prompt that starts with /operator (or /mono, /monocode) is refused: sent,
+ * it would give that chat app access, so only you may type it.
  *
  * The scheme is the fork's own, so it does not collide with an installed
  * upstream MonoCode. It must match `plugins.deep-link.desktop.schemes` in
@@ -15,6 +19,9 @@ export const DEEP_LINK_ACTION = "new";
 export const MAX_LINK_LENGTH = 32_768;
 /** Longest prompt a link may fill, after cleaning. Longer ones are refused, not cut. */
 export const MAX_PROMPT_LENGTH = 8_000;
+/** Why a link that starts with /operator is not used. */
+export const OPERATOR_LINK_REASON =
+  "A link cannot turn on app access. Type /operator yourself.";
 
 export type DeepLinkPrompt = {
   ok: true;
@@ -106,6 +113,10 @@ export function parseDeepLink(raw: unknown): DeepLinkResult {
       `The link's prompt is longer than ${MAX_PROMPT_LENGTH.toLocaleString("en-US")} characters.`,
     );
   }
+  // The same match the composer uses to grant app access, after cleaning,
+  // so hidden characters cannot slip it past. Agent-sent prompts refuse it
+  // the same way (`agentPrompt`).
+  if (consumeOperatorCommand(text).matched) return refuse(OPERATOR_LINK_REASON);
   return { ok: true, prompt: text, removed };
 }
 
