@@ -19,6 +19,7 @@ pub mod edit_adapter;
 mod edit_adapter_commands;
 mod env_store;
 mod external_editor;
+mod frame_prelude;
 mod fs;
 mod git_guard;
 mod gitlab;

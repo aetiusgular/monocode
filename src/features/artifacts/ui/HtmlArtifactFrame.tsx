@@ -5,6 +5,11 @@ import {
   artifactLinkTarget,
   confirmArtifactLink,
 } from "../model/artifactLinks";
+import {
+  createFrameLoadGuard,
+  FRAME_BLOCKED_NOTE,
+  FRAME_RELOADED_NOTE,
+} from "../../sandbox-frame/model/frameLoads";
 
 type FrameTheme = { scheme: "dark" | "light"; vars: Record<string, string> };
 
@@ -97,6 +102,14 @@ export function HtmlArtifactFrame({
   const [contentHeight, setContentHeight] = useState<number | null>(null);
   // One question at a time: a page that posts links in a loop gets one dialog.
   const askingRef = useRef(false);
+  // Security review K6: after a No, the page's links are ignored until it
+  // is saved again, so a page cannot keep a dialog up in a loop.
+  const declinedRef = useRef(false);
+  // Security review K3: a page that navigates itself is loaded again once,
+  // then not shown.
+  const loadGuard = useRef(createFrameLoadGuard()).current;
+  const [frameKey, setFrameKey] = useState(0);
+  const [leftPage, setLeftPage] = useState<"reloaded" | "blocked" | null>(null);
   const postTheme = () =>
     frameRef.current?.contentWindow?.postMessage(
       { type: "monocode:theme", ...themeRef.current },
@@ -106,7 +119,10 @@ export function HtmlArtifactFrame({
   useEffect(() => {
     setReady(false);
     setContentHeight(null);
-  }, [version]);
+    declinedRef.current = false;
+    loadGuard.reset();
+    setLeftPage(null);
+  }, [version, loadGuard]);
   // Listen from the commit that inserts the frame, so a fast page's first
   // messages are not missed.
   useLayoutEffect(() => {
@@ -126,11 +142,19 @@ export function HtmlArtifactFrame({
         const url = artifactLinkTarget((data as { url?: unknown }).url);
         // Only while the frame holds focus, as after a click in it, and only
         // after you confirm the address: the page's script can post too.
-        if (!url || document.activeElement !== frame || askingRef.current)
+        if (
+          !url ||
+          document.activeElement !== frame ||
+          askingRef.current ||
+          declinedRef.current
+        )
           return;
         askingRef.current = true;
         void confirmArtifactLink(url)
-          .then((open) => (open ? openUrl(url) : undefined))
+          .then((open) => {
+            if (open) return openUrl(url);
+            declinedRef.current = true;
+          })
           .catch(() => undefined)
           .finally(() => {
             askingRef.current = false;
@@ -141,27 +165,52 @@ export function HtmlArtifactFrame({
     return () => window.removeEventListener("message", receive);
   }, []);
   const height = contentHeight ?? PLACEHOLDER_HEIGHT;
+  if (leftPage === "blocked")
+    return (
+      <p role="status" className="p-4 text-[13px] text-content/60">
+        {FRAME_BLOCKED_NOTE}
+      </p>
+    );
   return (
-    <iframe
-      ref={frameRef}
-      data-html-artifact={id}
-      src={`${htmlArtifactUrl(id)}?v=${version}`}
-      title={title}
-      sandbox="allow-scripts"
-      referrerPolicy="no-referrer"
-      onLoad={() => {
-        // Covers a theme change that landed while the page was loading.
-        postTheme();
-        setReady(true);
-      }}
-      // Hidden until the page has the theme, so a dark app never flashes the
-      // blank white document a frame starts with.
-      className="block w-full border-0 transition-opacity duration-150"
-      style={{
-        height,
-        opacity: ready ? 1 : 0,
-        colorScheme: ready ? theme.scheme : "light",
-      }}
-    />
+    <>
+      {leftPage === "reloaded" ? (
+        <p role="status" className="px-1 pb-1 text-[12px] text-content/50">
+          {FRAME_RELOADED_NOTE}
+        </p>
+      ) : null}
+      <iframe
+        key={frameKey}
+        ref={frameRef}
+        data-html-artifact={id}
+        src={`${htmlArtifactUrl(id)}?v=${version}`}
+        title={title}
+        sandbox="allow-scripts"
+        referrerPolicy="no-referrer"
+        onLoad={() => {
+          const load = loadGuard.onLoad();
+          if (load === "block") {
+            setLeftPage("blocked");
+            return;
+          }
+          if (load === "reload") {
+            setLeftPage("reloaded");
+            setReady(false);
+            setFrameKey((key) => key + 1);
+            return;
+          }
+          // Covers a theme change that landed while the page was loading.
+          postTheme();
+          setReady(true);
+        }}
+        // Hidden until the page has the theme, so a dark app never flashes the
+        // blank white document a frame starts with.
+        className="block w-full border-0 transition-opacity duration-150"
+        style={{
+          height,
+          opacity: ready ? 1 : 0,
+          colorScheme: ready ? theme.scheme : "light",
+        }}
+      />
+    </>
   );
 }

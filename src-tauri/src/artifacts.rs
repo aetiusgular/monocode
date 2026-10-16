@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::frame_prelude::{with_first_prelude, NO_NETWORK_PRELUDE};
 use crate::notes::{save_content, Note, NoteUpsert};
 use crate::session_store::{validate_id, SessionStore};
 
@@ -194,13 +195,14 @@ pub const HTML_SCHEME: &str = "monoartifact";
 
 /// The page may run inline scripts and styles, but it loads nothing from the
 /// network: no script, style, image, font or media from any host, no fetch,
-/// no frame, no form. The fork keeps no new outbound call from the app, so a
-/// visual that needs a library must inline it. Even opened outside a
-/// sandboxed frame, the page stays sandboxed.
+/// no frame, no form, no worker. The fork keeps no new outbound call from the
+/// app, so a visual that needs a library must inline it. A top-level load is
+/// refused in `serve_html` (security review K4), and the page runs the
+/// no-network prelude first (K3).
 const HTML_CSP: &str = "sandbox allow-scripts; default-src 'none'; \
     script-src 'unsafe-inline'; style-src 'unsafe-inline'; \
     img-src data: blob:; font-src data:; media-src data: blob:; \
-    worker-src blob:; connect-src 'none'; frame-src 'none'; child-src 'none'; \
+    worker-src 'none'; connect-src 'none'; frame-src 'none'; child-src 'none'; \
     manifest-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'";
 
 /// Runs first in every page: applies the theme the app posts, reports the
@@ -220,6 +222,12 @@ pub fn serve_html<R: tauri::Runtime>(
             .unwrap_or_default()
     };
     if request.method() != tauri::http::Method::GET {
+        return not_found();
+    }
+    // Security review K4: as for the fork's own frame, a top-level load is
+    // the one case a sandboxed iframe cannot cover. A page on a custom scheme
+    // in the main frame could reach the app's commands.
+    if is_top_level(request) {
         return not_found();
     }
     let id = request.uri().path().trim_start_matches('/');
@@ -242,8 +250,19 @@ pub fn serve_html<R: tauri::Runtime>(
         .header("Content-Security-Policy", HTML_CSP)
         .header("Cache-Control", "no-store")
         .header("X-Content-Type-Options", "nosniff")
-        .body(with_bootstrap(&artifact.body).into_bytes())
+        .header("X-DNS-Prefetch-Control", "off")
+        .header("Referrer-Policy", "no-referrer")
+        .body(with_first_prelude(&with_bootstrap(&artifact.body), NO_NETWORK_PRELUDE).into_bytes())
         .unwrap_or_else(|_| not_found())
+}
+
+/// A request the webview marks as a top-level document.
+fn is_top_level(request: &tauri::http::Request<Vec<u8>>) -> bool {
+    request
+        .headers()
+        .get("sec-fetch-dest")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|dest| dest.eq_ignore_ascii_case("document"))
 }
 
 /// Inserts the bootstrap at the start of `<head>`, else after `<html>` or the
@@ -374,10 +393,27 @@ mod tests {
             "frame-src 'none'",
             "form-action 'none'",
             "object-src 'none'",
+            // K3: a worker would be a second place for a script to run.
+            "worker-src 'none'",
         ] {
             assert!(HTML_CSP.contains(needed), "missing {needed}");
         }
         assert!(HTML_CSP.starts_with("sandbox allow-scripts;"));
+    }
+
+    #[test]
+    fn a_top_level_load_is_refused_and_a_frame_load_is_not() {
+        let request = |dest: Option<&str>| {
+            let mut builder = tauri::http::Request::builder().uri("monoartifact://localhost/a1");
+            if let Some(dest) = dest {
+                builder = builder.header("Sec-Fetch-Dest", dest);
+            }
+            builder.body(Vec::new()).unwrap()
+        };
+        assert!(is_top_level(&request(Some("document"))));
+        assert!(is_top_level(&request(Some("Document"))));
+        assert!(!is_top_level(&request(Some("iframe"))));
+        assert!(!is_top_level(&request(None)));
     }
 
     #[test]

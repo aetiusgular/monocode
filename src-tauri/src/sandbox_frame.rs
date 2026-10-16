@@ -19,6 +19,7 @@
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
+use crate::frame_prelude::{with_first_prelude, NO_NETWORK_PRELUDE};
 use tauri::http::{header, Request, Response, StatusCode};
 use tauri::plugin::{Builder as PluginBuilder, TauriPlugin};
 use tauri::{Manager, Runtime, State, Url};
@@ -183,6 +184,11 @@ pub fn respond(store: &FrameStore, request: &Request<Vec<u8>>) -> Response<Vec<u
     let Some(html) = store.get(&token) else {
         return refuse(StatusCode::NOT_FOUND);
     };
+    // Security review K3: the no-network prelude runs before the page.
+    let html = match String::from_utf8(html) {
+        Ok(text) => with_first_prelude(&text, NO_NETWORK_PRELUDE).into_bytes(),
+        Err(_) => return refuse(StatusCode::UNSUPPORTED_MEDIA_TYPE),
+    };
     with_headers(Response::builder().status(StatusCode::OK))
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
         .body(html)
@@ -195,6 +201,7 @@ fn with_headers(builder: tauri::http::response::Builder) -> tauri::http::respons
         .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
         .header(header::CACHE_CONTROL, "no-store")
         .header(header::REFERRER_POLICY, "no-referrer")
+        .header("X-DNS-Prefetch-Control", "off")
 }
 
 fn refuse(status: StatusCode) -> Response<Vec<u8>> {
@@ -242,7 +249,16 @@ mod tests {
         let token = store.put("<p>hi</p>".into()).unwrap();
         let response = respond(&store, &request(&format!("mcpreview://localhost/{token}")));
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.body(), b"<p>hi</p>");
+        // The no-network prelude first, then the document as given (K3).
+        assert_eq!(
+            response.body(),
+            with_first_prelude("<p>hi</p>", NO_NETWORK_PRELUDE).as_bytes()
+        );
+        assert!(response.body().ends_with(b"<p>hi</p>"));
+        assert_eq!(
+            response.headers().get("X-DNS-Prefetch-Control").unwrap(),
+            "off"
+        );
         let csp = response.headers()[header::CONTENT_SECURITY_POLICY]
             .to_str()
             .unwrap();

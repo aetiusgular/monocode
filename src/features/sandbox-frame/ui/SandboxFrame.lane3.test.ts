@@ -142,3 +142,38 @@ it("debounces rapid edits into one store call", async () => {
   expect(puts).toHaveLength(1);
   expect(puts[0][1].html).toContain("<p>123</p>");
 });
+
+it("loads a page that navigates itself again once, then stops showing it (security review K3)", async () => {
+  tauri.invoke.mockImplementation(async (command: string) =>
+    command === "sandbox_frame_put" ? TOKEN : undefined,
+  );
+  act(() =>
+    root.render(
+      createElement(SandboxFrame, {
+        html: "<script>location='blob:x'</script>",
+        title: "leaves.html",
+        mode: "scripts",
+      }),
+    ),
+  );
+  await settle();
+  const load = () =>
+    act(() => {
+      container.querySelector("iframe")?.dispatchEvent(new Event("load"));
+    });
+  const first = container.querySelector("iframe");
+  load(); // the page
+  expect(container.textContent).not.toContain("another page");
+  load(); // it left itself
+  expect(container.textContent).toContain(
+    "This page tried to open another page, so it was loaded again.",
+  );
+  // Loaded again in a new frame element.
+  expect(container.querySelector("iframe")).not.toBe(first);
+  load(); // the page again
+  load(); // and it left again
+  expect(container.querySelector("iframe")).toBeNull();
+  expect(container.textContent).toContain(
+    "This page kept opening other pages, so it is not shown.",
+  );
+});

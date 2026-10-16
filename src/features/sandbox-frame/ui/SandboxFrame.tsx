@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   frameUrlForToken,
   MAX_FRAME_DOCUMENT_BYTES,
@@ -12,6 +12,11 @@ import {
   withFrameMeta,
   type FrameMode,
 } from "../model/frameDocument";
+import {
+  createFrameLoadGuard,
+  FRAME_BLOCKED_NOTE,
+  FRAME_RELOADED_NOTE,
+} from "../model/frameLoads";
 
 type Props = {
   /** The document to show. Treated as untrusted. */
@@ -51,6 +56,16 @@ export function SandboxFrame({
       ? { status: "static", srcDoc: withFrameMeta(html) }
       : { status: "loading" },
   );
+  // Security review K3: a page that navigates itself is loaded again once,
+  // then not shown. A new document starts over.
+  const loadGuard = useRef(createFrameLoadGuard()).current;
+  const [frameKey, setFrameKey] = useState(0);
+  const [leftPage, setLeftPage] = useState<"reloaded" | "blocked" | null>(null);
+  const src = state.status === "scheme" ? state.src : undefined;
+  useEffect(() => {
+    loadGuard.reset();
+    setLeftPage(null);
+  }, [src, loadGuard]);
 
   useEffect(() => {
     if (utf8Length(html) > MAX_FRAME_DOCUMENT_BYTES) {
@@ -112,12 +127,36 @@ export function SandboxFrame({
       />
     );
   }
+  if (state.status === "scheme" && leftPage === "blocked") {
+    return (
+      <p role="status" className="p-4 text-[13px] text-content/60">
+        {FRAME_BLOCKED_NOTE}
+      </p>
+    );
+  }
   return (
     <div className={`sandbox-frame flex min-h-0 flex-col ${className ?? ""}`}>
+      {state.status === "scheme" && leftPage === "reloaded" ? (
+        <p
+          role="status"
+          className="shrink-0 px-3 py-1 text-[12px] text-content/50"
+        >
+          {FRAME_RELOADED_NOTE}
+        </p>
+      ) : null}
       {state.status === "scheme" ? (
         <iframe
+          key={frameKey}
           title={title}
           src={state.src}
+          onLoad={() => {
+            const load = loadGuard.onLoad();
+            if (load === "block") setLeftPage("blocked");
+            else if (load === "reload") {
+              setLeftPage("reloaded");
+              setFrameKey((key) => key + 1);
+            }
+          }}
           sandbox={frameSandbox("scripts")}
           referrerPolicy="no-referrer"
           className="sandbox-frame-view min-h-0 w-full flex-1 border-0 bg-white"

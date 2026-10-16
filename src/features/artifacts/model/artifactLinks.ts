@@ -23,13 +23,24 @@ export function artifactLinkTarget(value: unknown): string | null {
   return url.href;
 }
 
-/** The question shown before the link opens, with the whole address readable. */
+/**
+ * The question shown before the link opens. The site is always named whole;
+ * a long address shows both ends and says how much is left out (security
+ * review K6).
+ */
 export function artifactLinkQuestion(url: string): string {
+  let host = "";
+  try {
+    host = new URL(url).host;
+  } catch {
+    host = "";
+  }
+  const hidden = url.length - SHOWN_LINK;
   const shown =
-    url.length > SHOWN_LINK
-      ? `${url.slice(0, SHOWN_LINK / 2)}…${url.slice(-SHOWN_LINK / 2)}`
+    hidden > 0
+      ? `${url.slice(0, SHOWN_LINK / 2)}…${url.slice(-SHOWN_LINK / 2)}\n(${hidden.toLocaleString("en-US")} characters not shown)`
       : url;
-  return `Open this link in your browser?\n\n${shown}\n\nIt comes from a page an agent wrote.`;
+  return `Open this link in your browser?\n\nSite: ${host}\n${shown}\n\nIt comes from a page an agent wrote.`;
 }
 
 type Ask = (message: string, options: { title: string; kind: "warning" }) => Promise<boolean>;

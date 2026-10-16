@@ -60,7 +60,16 @@ describe("artifactLinkQuestion", () => {
     expect(question).toContain("https://example.com/?q=");
     expect(question).toContain("&end=TAIL");
     expect(question).toContain("…");
-    expect(question.length).toBeLessThan(500);
+    expect(question.length).toBeLessThan(560);
+    // K6: the site is named whole, and the left-out part is counted.
+    expect(question).toContain("Site: example.com");
+    expect(question).toMatch(/\(7\d\d characters not shown\)/);
+  });
+
+  it("names the site of a short address too", () => {
+    expect(artifactLinkQuestion("https://sub.example.org:8443/a")).toContain(
+      "Site: sub.example.org:8443",
+    );
   });
 });
 
