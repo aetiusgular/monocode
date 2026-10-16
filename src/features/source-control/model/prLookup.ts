@@ -1,4 +1,5 @@
 import type { GitPr } from "../../../platform/tauri/fs";
+import { prRefFromUrl } from "../../pr-bar/model/prBar";
 
 /**
  * The pull request lookup behind the Changes panel's PR bar and Create PR
@@ -56,8 +57,9 @@ function sanitizePr(value: unknown): GitPr | null | undefined {
     !Number.isSafeInteger(number) ||
     number <= 0 ||
     typeof record.url !== "string" ||
-    // Only a web address is kept: View PR opens it.
-    !record.url.startsWith("https://") ||
+    // Only a github.com pull request address is kept: View PR opens it
+    // (review of the 15 Oct pass, G3).
+    !prRefFromUrl(record.url) ||
     typeof record.state !== "string" ||
     typeof record.title !== "string"
   ) {

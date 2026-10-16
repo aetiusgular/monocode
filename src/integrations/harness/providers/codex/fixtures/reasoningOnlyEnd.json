@@ -1,51 +1,101 @@
 {
   "about": "Codex 0.161.0 app-server notifications for one turn: request 1 is one exec_command call (cat hello.py), request 2 a reasoning item only. Written by tests/cli-contract check reasoning-only-end. Full access, so no approval request.",
   "codex": "codex-cli 0.161.0",
-  "threadId": "01a143b0-264d-7e41-9111-573e37f60d6f",
-  "turnId": "01a143b0-265e-76f0-8f32-b507dd967064",
+  "threadId": "01a143e7-3b45-7cd2-a118-76193a576c33",
+  "turnId": "01a143e7-3b9f-7c00-88d1-ea412ce04b27",
   "notifications": [
+    {
+      "method": "thread/started",
+      "params": {
+        "thread": {
+          "id": "01a143e7-3b45-7cd2-a118-76193a576c33",
+          "environments": [
+            {
+              "environmentId": "local",
+              "cwd": "/work",
+              "runtimeWorkspaceRoots": [
+                "/work"
+              ]
+            }
+          ],
+          "extra": null,
+          "sessionId": "01a143e7-3b45-7cd2-a118-76193a576c33",
+          "forkedFromId": null,
+          "parentThreadId": null,
+          "preview": "",
+          "ephemeral": false,
+          "section": null,
+          "sectionEnteredAt": null,
+          "projectId": null,
+          "historyMode": "paginated",
+          "modelProvider": "fake_local",
+          "model": "fake-model",
+          "reasoningEffort": null,
+          "createdAt": 1792140589,
+          "updatedAt": 1792140589,
+          "recencyAt": 1792140589,
+          "status": {
+            "type": "idle"
+          },
+          "path": "/run/codex-home/sessions/2026/10/16/rollout-2026-10-16T08-49-49-01a143e7-3b45-7cd2-a118-76193a576c33.jsonl",
+          "cwd": "/work",
+          "cliVersion": "0.161.0",
+          "originator": "monocode",
+          "source": "vscode",
+          "canAcceptDirectInput": true,
+          "threadSource": null,
+          "agentNickname": null,
+          "agentRole": null,
+          "gitInfo": null,
+          "name": null,
+          "daybreakEnabled": null,
+          "turns": []
+        }
+      },
+      "emittedAtMs": 1792140589979
+    },
     {
       "method": "warning",
       "params": {
-        "threadId": "01a143b0-264d-7e41-9111-573e37f60d6f",
+        "threadId": "01a143e7-3b45-7cd2-a118-76193a576c33",
         "message": "Model metadata for `fake-model` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
       },
-      "emittedAtMs": 1792136980064
+      "emittedAtMs": 1792140589989
     },
     {
       "method": "thread/status/changed",
       "params": {
-        "threadId": "01a143b0-264d-7e41-9111-573e37f60d6f",
+        "threadId": "01a143e7-3b45-7cd2-a118-76193a576c33",
         "status": {
           "type": "active",
           "activeFlags": []
         }
       },
-      "emittedAtMs": 1792136980101
+      "emittedAtMs": 1792140590016
     },
     {
       "method": "turn/started",
       "params": {
-        "threadId": "01a143b0-264d-7e41-9111-573e37f60d6f",
+        "threadId": "01a143e7-3b45-7cd2-a118-76193a576c33",
         "turn": {
-          "id": "01a143b0-265e-76f0-8f32-b507dd967064",
+          "id": "01a143e7-3b9f-7c00-88d1-ea412ce04b27",
           "items": [],
           "itemsView": "notLoaded",
           "status": "inProgress",
           "error": null,
-          "startedAt": 1792136980,
+          "startedAt": 1792140589,
           "completedAt": null,
           "durationMs": null
         }
       },
-      "emittedAtMs": 1792136980102
+      "emittedAtMs": 1792140590016
     },
     {
       "method": "item/started",
       "params": {
         "item": {
           "type": "userMessage",
-          "id": "01a143b0-2699-7030-af3f-0534d3836600",
+          "id": "01a143e7-3bd7-7ab0-bfe7-6a6f6ff276f5",
           "clientId": null,
           "content": [
             {
@@ -55,18 +105,18 @@
             }
           ]
         },
-        "threadId": "01a143b0-264d-7e41-9111-573e37f60d6f",
-        "turnId": "01a143b0-265e-76f0-8f32-b507dd967064",
-        "startedAtMs": 1792136980126
+        "threadId": "01a143e7-3b45-7cd2-a118-76193a576c33",
+        "turnId": "01a143e7-3b9f-7c00-88d1-ea412ce04b27",
+        "startedAtMs": 1792140590040
       },
-      "emittedAtMs": 1792136980126
+      "emittedAtMs": 1792140590041
     },
     {
       "method": "item/completed",
       "params": {
         "item": {
           "type": "userMessage",
-          "id": "01a143b0-2699-7030-af3f-0534d3836600",
+          "id": "01a143e7-3bd7-7ab0-bfe7-6a6f6ff276f5",
           "clientId": null,
           "content": [
             {
@@ -76,11 +126,11 @@
             }
           ]
         },
-        "threadId": "01a143b0-264d-7e41-9111-573e37f60d6f",
-        "turnId": "01a143b0-265e-76f0-8f32-b507dd967064",
-        "completedAtMs": 1792136980126
+        "threadId": "01a143e7-3b45-7cd2-a118-76193a576c33",
+        "turnId": "01a143e7-3b9f-7c00-88d1-ea412ce04b27",
+        "completedAtMs": 1792140590041
       },
-      "emittedAtMs": 1792136980131
+      "emittedAtMs": 1792140590044
     },
     {
       "method": "item/started",
@@ -92,7 +142,7 @@
           "scriptPath": null,
           "command": "/bin/bash -lc 'cat hello.py'",
           "cwd": "/work",
-          "processId": "11658",
+          "processId": "86484",
           "source": "unifiedExecStartup",
           "status": "inProgress",
           "commandActions": [
@@ -107,11 +157,11 @@
           "exitCode": null,
           "durationMs": null
         },
-        "threadId": "01a143b0-264d-7e41-9111-573e37f60d6f",
-        "turnId": "01a143b0-265e-76f0-8f32-b507dd967064",
-        "startedAtMs": 1792136980222
+        "threadId": "01a143e7-3b45-7cd2-a118-76193a576c33",
+        "turnId": "01a143e7-3b9f-7c00-88d1-ea412ce04b27",
+        "startedAtMs": 1792140590130
       },
-      "emittedAtMs": 1792136980224
+      "emittedAtMs": 1792140590134
     },
     {
       "method": "item/completed",
@@ -123,7 +173,7 @@
           "scriptPath": null,
           "command": "/bin/bash -lc 'cat hello.py'",
           "cwd": "/work",
-          "processId": "11658",
+          "processId": "86484",
           "source": "unifiedExecStartup",
           "status": "completed",
           "commandActions": [
@@ -138,17 +188,17 @@
           "exitCode": 0,
           "durationMs": 0
         },
-        "threadId": "01a143b0-264d-7e41-9111-573e37f60d6f",
-        "turnId": "01a143b0-265e-76f0-8f32-b507dd967064",
-        "completedAtMs": 1792136980222
+        "threadId": "01a143e7-3b45-7cd2-a118-76193a576c33",
+        "turnId": "01a143e7-3b9f-7c00-88d1-ea412ce04b27",
+        "completedAtMs": 1792140590131
       },
-      "emittedAtMs": 1792136980227
+      "emittedAtMs": 1792140590136
     },
     {
       "method": "thread/tokenUsage/updated",
       "params": {
-        "threadId": "01a143b0-264d-7e41-9111-573e37f60d6f",
-        "turnId": "01a143b0-265e-76f0-8f32-b507dd967064",
+        "threadId": "01a143e7-3b45-7cd2-a118-76193a576c33",
+        "turnId": "01a143e7-3b9f-7c00-88d1-ea412ce04b27",
         "tokenUsage": {
           "total": {
             "totalTokens": 110,
@@ -169,7 +219,7 @@
           "modelContextWindow": 15564
         }
       },
-      "emittedAtMs": 1792136980234
+      "emittedAtMs": 1792140590144
     },
     {
       "method": "account/rateLimits/updated",
@@ -187,14 +237,14 @@
           "rateLimitReachedType": null
         }
       },
-      "emittedAtMs": 1792136980234
+      "emittedAtMs": 1792140590144
     },
     {
       "method": "item/started",
       "params": {
         "item": {
           "type": "reasoning",
-          "id": "rs_a3b5e5ca",
+          "id": "rs_a8934274",
           "summary": [
             "I read hello.py. I should change the greeting next."
           ],
@@ -202,18 +252,18 @@
             "I read hello.py. I should change the greeting next."
           ]
         },
-        "threadId": "01a143b0-264d-7e41-9111-573e37f60d6f",
-        "turnId": "01a143b0-265e-76f0-8f32-b507dd967064",
-        "startedAtMs": 1792136980255
+        "threadId": "01a143e7-3b45-7cd2-a118-76193a576c33",
+        "turnId": "01a143e7-3b9f-7c00-88d1-ea412ce04b27",
+        "startedAtMs": 1792140590161
       },
-      "emittedAtMs": 1792136980255
+      "emittedAtMs": 1792140590161
     },
     {
       "method": "item/completed",
       "params": {
         "item": {
           "type": "reasoning",
-          "id": "rs_a3b5e5ca",
+          "id": "rs_a8934274",
           "summary": [
             "I read hello.py. I should change the greeting next."
           ],
@@ -221,17 +271,17 @@
             "I read hello.py. I should change the greeting next."
           ]
         },
-        "threadId": "01a143b0-264d-7e41-9111-573e37f60d6f",
-        "turnId": "01a143b0-265e-76f0-8f32-b507dd967064",
-        "completedAtMs": 1792136980255
+        "threadId": "01a143e7-3b45-7cd2-a118-76193a576c33",
+        "turnId": "01a143e7-3b9f-7c00-88d1-ea412ce04b27",
+        "completedAtMs": 1792140590161
       },
-      "emittedAtMs": 1792136980258
+      "emittedAtMs": 1792140590163
     },
     {
       "method": "thread/tokenUsage/updated",
       "params": {
-        "threadId": "01a143b0-264d-7e41-9111-573e37f60d6f",
-        "turnId": "01a143b0-265e-76f0-8f32-b507dd967064",
+        "threadId": "01a143e7-3b45-7cd2-a118-76193a576c33",
+        "turnId": "01a143e7-3b9f-7c00-88d1-ea412ce04b27",
         "tokenUsage": {
           "total": {
             "totalTokens": 220,
@@ -252,7 +302,7 @@
           "modelContextWindow": 15564
         }
       },
-      "emittedAtMs": 1792136980264
+      "emittedAtMs": 1792140590168
     },
     {
       "method": "account/rateLimits/updated",
@@ -270,34 +320,34 @@
           "rateLimitReachedType": null
         }
       },
-      "emittedAtMs": 1792136980264
+      "emittedAtMs": 1792140590168
     },
     {
       "method": "thread/status/changed",
       "params": {
-        "threadId": "01a143b0-264d-7e41-9111-573e37f60d6f",
+        "threadId": "01a143e7-3b45-7cd2-a118-76193a576c33",
         "status": {
           "type": "idle"
         }
       },
-      "emittedAtMs": 1792136980269
+      "emittedAtMs": 1792140590173
     },
     {
       "method": "turn/completed",
       "params": {
-        "threadId": "01a143b0-264d-7e41-9111-573e37f60d6f",
+        "threadId": "01a143e7-3b45-7cd2-a118-76193a576c33",
         "turn": {
-          "id": "01a143b0-265e-76f0-8f32-b507dd967064",
+          "id": "01a143e7-3b9f-7c00-88d1-ea412ce04b27",
           "items": [],
           "itemsView": "notLoaded",
           "status": "completed",
           "error": null,
-          "startedAt": 1792136980,
-          "completedAt": 1792136980,
-          "durationMs": 202
+          "startedAt": 1792140589,
+          "completedAt": 1792140590,
+          "durationMs": 182
         }
       },
-      "emittedAtMs": 1792136980269
+      "emittedAtMs": 1792140590173
     }
   ]
 }

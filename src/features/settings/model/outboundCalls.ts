@@ -56,7 +56,7 @@ export const OUTBOUND_CALLS: readonly OutboundCall[] = [
     label: "GitHub lookups",
     hosts: ["api.github.com (through gh)"],
     description:
-      "Asks gh which GitHub repository and fork parent a project has, and whether its branch has a pull request, at launch, on the Inbox's background check, when a project opens, when a window gains focus, and when a first message names an issue or pull request by number. Off, none of these run on their own: the Inbox, the pull request bar and linked issues fill in when you open the Inbox or act on a pull request. Every gh MonoCode starts runs with gh's telemetry off.",
+      "Asks gh which GitHub repository and fork parent a project has, and whether its branch has a pull request, at launch, on the Inbox's background check, when a project opens, when a window gains focus, and when a first message names an issue or pull request by number. The pull request bar also reads its pull request's checks and auto-merge state when it shows, every minute while auto-fix or auto-merge is on, and again 5, 15 and 45 seconds after a lookup fails. Off, none of these run on their own: the Inbox, the pull request bar and linked issues fill in when you open the Inbox, press Check now on the bar, or act on a pull request. Every gh MonoCode starts runs with gh's telemetry off.",
   },
 ];
 

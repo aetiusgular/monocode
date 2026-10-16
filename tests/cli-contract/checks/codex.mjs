@@ -8,6 +8,7 @@
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { homedir, userInfo } from "node:os";
 import { fileURLToPath } from "node:url";
 import { startFakeResponses, text, call, callOutputs, inputText, reasoning } from "../lib/fakeResponses.mjs";
 import { CodexClient, makeTempDirs, SUPERVISED, SUPERVISED_TURN, userInput } from "../lib/codexDriver.mjs";
@@ -857,9 +858,25 @@ async function checkReasoningOnlyEnd({ codexPath }) {
     seen.completedTurn = { status: turn.completed?.turn?.status, items: turn.completed?.turn?.items?.length ?? 0 };
     if (process.env.CLI_CONTRACT_WRITE_FIXTURES === "1") {
       // Paths in the temp home are this machine's; the replay needs none of them.
-      const work = s.dirs.work;
-      const root = s.dirs.root;
-      const scrub = (value) => JSON.parse(JSON.stringify(value).split(work).join("/work").split(root).join("/run"));
+      // Longest first, so a path inside another is replaced whole. The
+      // write is refused if this machine's user name is still in it (review
+      // of the 15 Oct pass, G6).
+      const swaps = [
+        [s.dirs.work, "/work"],
+        [s.dirs.root, "/run"],
+        [path.dirname(path.resolve(codexPath)), "/codex-bin"],
+        [path.dirname(process.execPath), "/node-bin"],
+        [homedir(), "/home"],
+      ].sort((a, b) => b[0].length - a[0].length);
+      const scrub = (value) => {
+        let text = JSON.stringify(value);
+        for (const [from, to] of swaps) if (from && from !== "/") text = text.split(from).join(to);
+        const user = userInfo().username;
+        if (user && user.length > 2 && new RegExp(`\\b${user}\\b`).test(text)) {
+          throw new Error(`fixture still names the user ${user}; not written`);
+        }
+        return JSON.parse(text);
+      };
       mkdirSync(path.dirname(REASONING_ONLY_FIXTURE), { recursive: true });
       writeFileSync(
         REASONING_ONLY_FIXTURE,

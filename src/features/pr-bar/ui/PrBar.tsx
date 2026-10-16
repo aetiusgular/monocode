@@ -26,6 +26,7 @@ import {
   type PrRef,
 } from "../model/prBar";
 import { lastCheckedText } from "../../source-control/model/prLookup";
+import { outboundCallAllowed } from "../../settings/model/outboundCalls";
 
 /**
  * How often the bar re-reads the PR while auto-fix or auto-merge is on. GitHub
@@ -74,6 +75,7 @@ export function PrBar({
   pr,
   owner,
   stale = false,
+  confirmed = true,
   checkedAt = null,
   initialChecks = null,
 }: {
@@ -82,6 +84,11 @@ export function PrBar({
   owner?: HelperTarget;
   /** The PR lookup failed; this is the last known PR (4.10). Switches are off. */
   stale?: boolean;
+  /**
+   * A lookup in this app run answered for this PR. Until then the PR may be
+   * a cached one, and the switches are off (review of the 15 Oct pass, G4).
+   */
+  confirmed?: boolean;
   checkedAt?: number | null;
   /** Test seam: checks to show before the first read. */
   initialChecks?: GithubPrChecks | null;
@@ -96,40 +103,51 @@ export function PrBar({
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string>();
   const [reads, setReads] = useState(0);
+  // "GitHub lookups" off: the bar reads nothing on its own, only after you
+  // press Check now or change auto-merge (5.9; review of the 15 Oct pass, G2).
+  const lookupsOn = outboundCallAllowed("github-lookups");
+  const [asked, setAsked] = useState(false);
+  const [polls, setPolls] = useState(0);
+  const locked = stale || !confirmed;
   const sending = useRef(false);
   const open = pr.state.toLowerCase() === "open";
   const merge = autoMergeView(checks);
   const autoMergeOn = merge.kind === "on";
 
-  // Checks: read once, then every minute while auto-fix or auto-merge is on.
+  // Checks: read once when the bar shows (or when you ask, with lookups off),
+  // and again on each poll tick. Turning auto-merge on does not read twice.
   useEffect(() => {
     if (!ref || !open) return;
+    if (!lookupsOn && !asked && reads === 0) return;
     let cancelled = false;
-    const load = () => {
-      setLoading(true);
-      fetchGithubPrChecks(cwd, ref.repo, ref.number)
-        .then((next) => {
-          if (cancelled) return;
-          setChecks(next);
-          setChecksError(null);
-        })
-        .catch((error: unknown) => {
-          if (!cancelled) setChecksError(String(error));
-        })
-        .finally(() => {
-          if (!cancelled) setLoading(false);
-        });
-    };
-    load();
-    const timer =
-      settings.autoFix || autoMergeOn ? setInterval(load, CHECK_POLL_MS) : undefined;
+    setLoading(true);
+    fetchGithubPrChecks(cwd, ref.repo, ref.number)
+      .then((next) => {
+        if (cancelled) return;
+        setChecks(next);
+        setChecksError(null);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setChecksError(String(error));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
     return () => {
       cancelled = true;
-      if (timer) clearInterval(timer);
     };
     // `ref` is rebuilt each render from the URL; its key is what matters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cwd, pr.url, open, settings.autoFix, autoMergeOn, reads]);
+  }, [cwd, pr.url, open, reads, asked, lookupsOn, polls]);
+
+  // Every minute while auto-fix or auto-merge is on, with lookups on.
+  useEffect(() => {
+    if (!ref || !open || !lookupsOn) return;
+    if (!settings.autoFix && !autoMergeOn) return;
+    const timer = setInterval(() => setPolls((value) => value + 1), CHECK_POLL_MS);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pr.url, open, lookupsOn, settings.autoFix, autoMergeOn]);
 
   // Auto-fix: send the repair prompt when checks fail, within the limits.
   useEffect(() => {
@@ -238,6 +256,18 @@ export function PrBar({
           ) : null}
         </span>
         {loading ? <Loader className="size-3 animate-spin" /> : null}
+        {!lookupsOn && open && !loading ? (
+          <button
+            type="button"
+            onClick={() => {
+              setAsked(true);
+              setReads((value) => value + 1);
+            }}
+            className="shrink-0 rounded px-1 text-[11px] text-content/60 hover:bg-content/10"
+          >
+            Check now
+          </button>
+        ) : null}
       </div>
       {open ? (
         <div className="mt-1.5 flex flex-col gap-1">
@@ -250,7 +280,7 @@ export function PrBar({
               <Switch
                 label="Auto-merge"
                 on={autoMergeOn}
-                disabled={busy || stale || merge.kind === "unknown"}
+                disabled={busy || locked || merge.kind === "unknown"}
                 onChange={(on) => void setAutoMerge(on)}
               />
               <span className="flex-1">Auto-merge</span>
@@ -259,7 +289,7 @@ export function PrBar({
                 value={merge.kind === "on" ? (merge.method ?? preferred) : preferred}
                 // The method of a request GitHub holds is shown, not changed
                 // here; off, then on, changes it.
-                disabled={busy || stale || merge.kind !== "available"}
+                disabled={busy || locked || merge.kind !== "available"}
                 onChange={(event) =>
                   savePrBarSettings(ref, { mergeMethod: event.target.value as MergeMethod })
                 }
@@ -280,7 +310,7 @@ export function PrBar({
             <Switch
               label="Auto-fix failed checks"
               on={settings.autoFix}
-              disabled={!sessionId || stale}
+              disabled={!sessionId || locked}
               onChange={(on) => savePrBarSettings(ref, on ? { autoFix: true, fixAttempts: 0 } : { autoFix: false })}
             />
             <span className="flex-1">
@@ -294,7 +324,7 @@ export function PrBar({
             <Switch
               label="Archive the chat when merged or closed"
               on={settings.autoArchive}
-              disabled={!sessionId || stale}
+              disabled={!sessionId || locked}
               onChange={(on) => savePrBarSettings(ref, { autoArchive: on, archived: false })}
             />
             <span className="flex-1">Archive the chat when merged or closed</span>

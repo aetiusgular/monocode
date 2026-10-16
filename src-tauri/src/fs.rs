@@ -2965,14 +2965,23 @@ fn git_pr_status_for(root: &Path) -> Result<Option<GitPr>, String> {
 /// its token is refused, or the folder has no GitHub remote. Every other
 /// failure (a network error, a rate limit, GitHub's own error) says nothing
 /// about whether a pull request exists.
+///
+/// Matched at the start of a line of gh's own message, never anywhere in the
+/// text, so a branch name or remote URL a repository supplies cannot turn a
+/// real failure into "no PR" (review of the 15 Oct pass, G5).
 fn gh_cannot_be_asked(error: &str) -> bool {
-    let error = error.to_ascii_lowercase();
-    error.contains("`gh`) is not installed")
-        || error.contains("gh auth login")
-        || error.contains("not logged into any")
-        || error.contains("no git remotes found")
-        || error.contains("http 401")
-        || error.contains("bad credentials")
+    const STARTS: &[&str] = &[
+        "github cli (`gh`) is not installed",
+        "to get started with github cli",
+        "you are not logged into any github hosts",
+        "none of the git remotes configured for this repository point to a known github host",
+        "no git remotes found",
+        "http 401",
+    ];
+    error.lines().any(|line| {
+        let line = line.trim().to_ascii_lowercase();
+        STARTS.iter().any(|start| line.starts_with(start))
+    })
 }
 
 /// The pull request for the checked-out branch, found the way `gh pr view`
@@ -4414,7 +4423,39 @@ fn git_github_pr_auto_merge_with(
         parse_github_pr_checks(&json)
     };
     let mutation = if enable {
-        pr_auto_merge_args(true, pr_id, method, expected_head_oid)?
+        pr_auto_merge_args(true, pr_id, method, expected_head_oid)?;
+        // On only for the pull request the bar showed: GitHub's id for
+        // repo#number and its head must be the ones sent. A bar that moved to
+        // another PR while a read was pending cannot arm the old one (review
+        // of the 15 Oct pass, G1).
+        let before = match read() {
+            Ok(before) => before,
+            Err(error) => {
+                return Ok(GitHubPrAutoMergeResult {
+                    refusal: None,
+                    pr: None,
+                    read_error: Some(error),
+                })
+            }
+        };
+        let expected = expected_head_oid.unwrap_or_default().trim();
+        let same_pr = before.pr_id.as_deref() == Some(pr_id.trim());
+        let same_head = before.head_oid.eq_ignore_ascii_case(expected);
+        if !same_pr || !same_head {
+            return Ok(GitHubPrAutoMergeResult {
+                refusal: Some(
+                    if same_pr {
+                        "The pull request has new commits since the bar read it. Check it again, then turn auto-merge on."
+                    } else {
+                        "This is not the pull request the bar showed. Check it again, then turn auto-merge on."
+                    }
+                    .to_string(),
+                ),
+                pr: Some(before),
+                read_error: None,
+            });
+        }
+        pr_auto_merge_args(true, pr_id, method, Some(expected))?
     } else {
         pr_auto_merge_args(false, pr_id, None, None)?;
         // Off only when GitHub reports an auto-merge request, and for the
@@ -10592,9 +10633,84 @@ mod tests {
             Some("SQUASH".into())
         );
         let calls = calls.borrow();
-        assert_eq!(calls.len(), 2);
-        assert_eq!(&calls[0][..2], ["api", "graphql"]);
-        assert_eq!(&calls[1][..2], ["pr", "view"]);
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call[0].as_str())
+                .collect::<Vec<_>>(),
+            ["pr", "api", "pr"],
+            "read, mutation, read again"
+        );
+        assert_eq!(&calls[1][..2], ["api", "graphql"]);
+    }
+
+    #[test]
+    fn auto_merge_on_refuses_a_pr_the_bar_no_longer_shows() {
+        // Review G1: the bar moved to PR #2 while its read was pending, and
+        // one click sent PR #1's id and head with PR #2's number.
+        for (id, head) in [
+            ("PR_one", HEAD),
+            (
+                "PR_kwDOQ7aZ3s6abcde",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ),
+        ] {
+            let calls = std::cell::RefCell::new(Vec::new());
+            let views = std::cell::RefCell::new(vec![pr_view_json("OPEN", "BLOCKED", None)]);
+            let gh = auto_merge_gh(&views, Ok("{}".into()), &calls);
+            let result = git_github_pr_auto_merge_with(
+                "acme/web",
+                2,
+                true,
+                id,
+                Some("squash"),
+                Some(head),
+                &gh,
+            )
+            .unwrap();
+            assert!(result.refusal.is_some(), "{id} {head}");
+            assert!(result.pr.unwrap().auto_merge_request.is_none());
+            assert!(
+                calls.borrow().iter().all(|call| call[0] != "api"),
+                "no mutation for {id} {head}"
+            );
+        }
+    }
+
+    #[test]
+    fn auto_merge_on_does_nothing_when_the_pr_cannot_be_read() {
+        let calls = std::cell::RefCell::new(Vec::new());
+        let views = std::cell::RefCell::new(Vec::new());
+        let gh = auto_merge_gh(&views, Ok("{}".into()), &calls);
+        let result = git_github_pr_auto_merge_with(
+            "acme/web",
+            7,
+            true,
+            "PR_x",
+            Some("squash"),
+            Some(HEAD),
+            &gh,
+        )
+        .unwrap();
+        assert!(result.read_error.is_some());
+        assert!(calls.borrow().iter().all(|call| call[0] != "api"));
+    }
+
+    #[test]
+    fn cannot_be_asked_is_read_from_the_start_of_ghs_own_lines() {
+        // Review G5: text a repository supplies cannot flip a failure.
+        assert!(!gh_cannot_be_asked(
+            "fatal: couldn't find remote ref refs/heads/x-gh-auth-login-http-401"
+        ));
+        assert!(!gh_cannot_be_asked(
+            "could not resolve host: github.com (branch \"please run gh auth login\")"
+        ));
+        assert!(!gh_cannot_be_asked(
+            "GraphQL: Bad credentials in branch name"
+        ));
+        assert!(gh_cannot_be_asked(
+            "something first\nTo get started with GitHub CLI, please run:  gh auth login"
+        ));
     }
 
     #[test]

@@ -861,10 +861,14 @@ function ChangedFiles({
         ) : null}
         {pr && pr.url && !isRemoteProjectPath(cwd) ? (
           <PrBar
+            // A new PR gets a new bar, so nothing read for the old one can
+            // act on it (review of the 15 Oct pass, G1).
+            key={pr.url}
             cwd={cwd}
             pr={pr}
             owner={textHarness}
             stale={prStatus.stale}
+            confirmed={prStatus.answered}
             checkedAt={prStatus.checkedAt}
           />
         ) : null}
