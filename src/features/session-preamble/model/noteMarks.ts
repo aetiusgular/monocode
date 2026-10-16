@@ -1,4 +1,7 @@
-import { isNoteMark } from "../../../integrations/harness/core/noteFence";
+import {
+  isNoteMark,
+  setNoteMarkLookup,
+} from "../../../integrations/harness/core/noteFence";
 
 /**
  * The mark each chat's launch notice names (security review K1). A new
@@ -7,7 +10,12 @@ import { isNoteMark } from "../../../integrations/harness/core/noteFence";
  * note after a restart still carries it; bounded like the receipts.
  */
 const KEY = "monocode.noteMarks";
-export const NOTE_MARKS_MAX = 500;
+/**
+ * Security review L4: a running chat whose mark dropped out would get notes
+ * its model rejects, so the bound is far above the chats anyone keeps. A
+ * chat's mark goes when the chat is deleted.
+ */
+export const NOTE_MARKS_MAX = 5000;
 
 type Entry = { mark: string; at: number };
 
@@ -59,6 +67,10 @@ export function recordNoteMark(sessionId: string, mark: string): void {
   marks.set(sessionId, { mark, at: Date.now() });
   save(marks);
 }
+
+// The harness core reads marks through this, so guidance sent mid-turn is
+// cleaned with the chat's own mark too.
+setNoteMarkLookup(noteMarkFor);
 
 export function forgetNoteMark(sessionId: string): void {
   const marks = load();

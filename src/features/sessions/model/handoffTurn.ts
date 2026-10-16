@@ -1,3 +1,4 @@
+import { withoutFenceFor } from "../../../integrations/harness/core/noteFence";
 import { buildOutgoingHandoffPrompt } from "./handoff";
 import {
   cancelHarnessTurn,
@@ -71,7 +72,10 @@ export async function requestOutgoingHandoff(input: {
       ...(input.permissionsProfile
         ? { permissionsProfile: input.permissionsProfile }
         : {}),
-      text: buildOutgoingHandoffPrompt(input.userRequest),
+      // Text MonoCode did not write carries no note fence (security review L6).
+      text: buildOutgoingHandoffPrompt(
+        withoutFenceFor(input.sessionId, input.userRequest),
+      ),
       onEvent: (event) => {
         if (event.type === "message.delta") {
           brief = mergeStream(brief, event.text);

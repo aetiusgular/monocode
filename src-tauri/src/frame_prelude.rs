@@ -12,11 +12,15 @@ pub const NO_NETWORK_PRELUDE: &str = concat!(
     r#"<script>(function(){var w=window,n=["RTCPeerConnection","webkitRTCPeerConnection","RTCDataChannel","RTCRtpSender","RTCRtpReceiver","RTCRtpTransceiver","RTCIceCandidate","RTCIceTransport","RTCSessionDescription","RTCCertificate"];for(var i=0;i<n.length;i++){try{Object.defineProperty(w,n[i],{value:undefined,writable:false,configurable:false});}catch(e){}}try{Object.defineProperty(navigator,"mediaDevices",{value:undefined,configurable:false});}catch(e){}})();</script>"#
 );
 
-/// `body` with `prelude` first: after the doctype and any comment or
-/// whitespace before it, so the page keeps standards mode, and before every
-/// tag of the page, so no script of the page runs before it.
+/// `body` with `prelude` first: after a leading doctype, so the page keeps
+/// standards mode, and otherwise at the very start, so no script of the page
+/// runs before it. Comments are not skipped (security review L1): the HTML
+/// parser ends a comment at `-->`, `--!>` and a few other forms, and a
+/// skipper that misread one would put the prelude after page script. A page
+/// that starts with a comment before its doctype loses standards mode, which
+/// only changes how it lays out.
 pub fn with_first_prelude(body: &str, prelude: &str) -> String {
-    let at = first_content(body);
+    let at = after_leading_doctype(body).unwrap_or(0);
     let mut page = String::with_capacity(body.len() + prelude.len());
     page.push_str(&body[..at]);
     page.push_str(prelude);
@@ -24,35 +28,28 @@ pub fn with_first_prelude(body: &str, prelude: &str) -> String {
     page
 }
 
-/// The byte offset just past a leading doctype, or, with none, just past the
-/// whitespace and comments the page starts with.
-fn first_content(body: &str) -> usize {
-    let bytes = body.as_bytes();
+/// The byte offset just past a doctype the page starts with, after an
+/// optional byte order mark and whitespace. `None` when it does not start
+/// with one, or the doctype has no closing `>`.
+fn after_leading_doctype(body: &str) -> Option<usize> {
     let mut at = 0;
     if body.starts_with('\u{feff}') {
         at = '\u{feff}'.len_utf8();
     }
-    loop {
-        while at < bytes.len() && bytes[at].is_ascii_whitespace() {
-            at += 1;
-        }
-        let rest = &body[at..];
-        if rest.starts_with("<!--") {
-            match rest.find("-->") {
-                Some(end) => at += end + 3,
-                // An unclosed comment would hide the prelude; put it first.
-                None => return 0,
-            }
-            continue;
-        }
-        if rest.len() >= 9 && rest[..9].eq_ignore_ascii_case("<!doctype") {
-            return match rest.find('>') {
-                Some(end) => at + end + 1,
-                None => 0,
-            };
-        }
-        return at;
+    let bytes = body.as_bytes();
+    while at < bytes.len() && bytes[at].is_ascii_whitespace() {
+        at += 1;
     }
+    let rest = &body[at..];
+    if rest.len() < 9 || !rest[..9].eq_ignore_ascii_case("<!doctype") {
+        return None;
+    }
+    // A doctype has no markup inside it; `<` before `>` means it is not one.
+    let end = rest.find('>')?;
+    if rest[1..end].contains('<') {
+        return None;
+    }
+    Some(at + end + 1)
 }
 
 #[cfg(test)]
@@ -74,10 +71,34 @@ mod tests {
     }
 
     #[test]
-    fn keeps_leading_comments_before_the_doctype() {
+    fn a_comment_first_puts_it_before_the_comment() {
         assert_eq!(
             with_first_prelude("<!-- made by an agent -->\n<!DOCTYPE html><p>", P),
-            "<!-- made by an agent -->\n<!DOCTYPE html><script>P</script><p>"
+            "<script>P</script><!-- made by an agent -->\n<!DOCTYPE html><p>"
+        );
+    }
+
+    #[test]
+    fn a_comment_closed_by_bang_cannot_put_page_script_first() {
+        // L1: the parser ends this comment at `--!>`, so the page's script
+        // runs; the prelude must still come before it.
+        let page = "<!-- a --!><script>leak()</script><!-- b --><!DOCTYPE html><head>";
+        let out = with_first_prelude(page, P);
+        assert!(out.starts_with(P));
+        assert!(out.find(P).unwrap() < out.find("leak()").unwrap());
+    }
+
+    #[test]
+    fn a_doctype_holding_markup_is_not_taken_for_one() {
+        let page = "<!doctype <script>leak()</script>>";
+        assert!(with_first_prelude(page, P).starts_with(P));
+    }
+
+    #[test]
+    fn a_byte_order_mark_and_whitespace_may_come_before_the_doctype() {
+        assert_eq!(
+            with_first_prelude("\u{feff}  <!DOCTYPE html><p>", P),
+            "\u{feff}  <!DOCTYPE html><script>P</script><p>"
         );
     }
 
@@ -89,7 +110,7 @@ mod tests {
         );
         assert_eq!(
             with_first_prelude("  <html><body>", P),
-            "  <script>P</script><html><body>"
+            "<script>P</script>  <html><body>"
         );
         assert_eq!(with_first_prelude("", P), P);
     }

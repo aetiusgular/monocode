@@ -1,4 +1,4 @@
-import { withoutFence } from "./noteFence";
+import { withoutFenceFor } from "./noteFence";
 import type {
   Block,
   HarnessId,
@@ -426,7 +426,10 @@ export function steerHarnessTurn(
     cancelIdlePark(input.sessionId);
     // MonoCode never adds its note to guidance mid-turn, so no guidance may
     // carry the note's fence lines (security review K1).
-    await adapter.steerTurn({ ...input, text: withoutFence(input.text) });
+    await adapter.steerTurn({
+      ...input,
+      text: withoutFenceFor(input.sessionId, input.text),
+    });
   });
 }
 
