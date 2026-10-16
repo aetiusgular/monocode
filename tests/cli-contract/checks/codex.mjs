@@ -7,8 +7,9 @@
 
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { startFakeResponses, text, call, callOutputs, inputText } from "../lib/fakeResponses.mjs";
+import { startFakeResponses, text, call, callOutputs, inputText, reasoning } from "../lib/fakeResponses.mjs";
 import { CodexClient, makeTempDirs, SUPERVISED, SUPERVISED_TURN, userInput } from "../lib/codexDriver.mjs";
 import { mockReply } from "../codex-mock/mockReply.mjs";
 
@@ -813,6 +814,84 @@ async function checkMcpStartup({ codexPath }) {
   };
 }
 
+// Mac test 3.7, retest 3: a turn whose last model request returns only a
+// reasoning item, after a tool call. Codex 0.161.0 takes last_agent_message
+// from the last request alone, so the turn completes with no agent message.
+// The app-server notifications are saved as the fixture
+// src/integrations/harness/providers/codex/fixtures/reasoningOnlyEnd.json
+// (with CLI_CONTRACT_WRITE_FIXTURES=1), which a vitest replays through
+// MonoCode's Codex event handling and withEmptyTurnNotice.
+export const REASONING_ONLY_FIXTURE = path.join(
+  HERE, "..", "..", "..", "src", "integrations", "harness", "providers", "codex", "fixtures", "reasoningOnlyEnd.json",
+);
+
+function codexVersion(codexPath) {
+  try {
+    const PATH = [path.dirname(process.execPath), "/usr/bin", "/bin"].join(":");
+    return execFileSync(codexPath, ["--version"], { env: { PATH, HOME: "/nonexistent" }, encoding: "utf8", timeout: 20000 }).trim();
+  } catch {
+    return null;
+  }
+}
+
+async function checkReasoningOnlyEnd({ codexPath }) {
+  const seen = {};
+  const s = await open({
+    codexPath,
+    script: (body, n) => {
+      if (n === 0) return [call("exec_command", { cmd: "cat hello.py" }, "read1")];
+      return [reasoning("I read hello.py. I should change the greeting next.")];
+    },
+  });
+  try {
+    writeFileSync(path.join(s.dirs.work, "hello.py"), 'def greet():\n    return "hi"\n');
+    const started = await s.client.request("thread/start", { cwd: s.dirs.work, ...FULL_ACCESS });
+    const threadId = started.thread.id;
+    const before = s.client.notifications.length;
+    const turn = await s.client.runTurn({ threadId, input: userInput("Change the greeting in hello.py to hello."), ...FULL_ACCESS_TURN });
+    const notes = s.client.notifications.slice(before);
+    seen.modelRequests = s.fake.turnRequests().length;
+    seen.methods = notes.map((n) => `${n.method}${n.params?.item?.type ? `:${n.params.item.type}` : ""}`);
+    seen.items = notes.filter((n) => n.method === "item/completed").map((n) => n.params?.item?.type);
+    seen.agentMessages = seen.items.filter((t) => t === "agentMessage").length;
+    seen.completedTurn = { status: turn.completed?.turn?.status, items: turn.completed?.turn?.items?.length ?? 0 };
+    if (process.env.CLI_CONTRACT_WRITE_FIXTURES === "1") {
+      // Paths in the temp home are this machine's; the replay needs none of them.
+      const work = s.dirs.work;
+      const root = s.dirs.root;
+      const scrub = (value) => JSON.parse(JSON.stringify(value).split(work).join("/work").split(root).join("/run"));
+      mkdirSync(path.dirname(REASONING_ONLY_FIXTURE), { recursive: true });
+      writeFileSync(
+        REASONING_ONLY_FIXTURE,
+        `${JSON.stringify(
+          {
+            about:
+              "Codex 0.161.0 app-server notifications for one turn: request 1 is one exec_command call (cat hello.py), request 2 a reasoning item only. Written by tests/cli-contract check reasoning-only-end. Full access, so no approval request.",
+            codex: codexVersion(codexPath),
+            threadId,
+            turnId: turn.turnId,
+            notifications: scrub(notes),
+          },
+          null,
+          2,
+        )}\n`,
+      );
+      seen.fixture = REASONING_ONLY_FIXTURE;
+    }
+  } finally {
+    await shut(s);
+  }
+  const ranTool = seen.items.includes("commandExecution");
+  const ok = seen.modelRequests >= 2 && ranTool && seen.agentMessages === 0 && seen.completedTurn.status === "completed";
+  return {
+    status: ok ? "pass" : "fail",
+    finding: ok
+      ? `After an exec_command step, a last request that returns only reasoning completes the turn with no agentMessage item (turn/completed status ${seen.completedTurn.status}, ${seen.completedTurn.items} items). MonoCode must say so itself.`
+      : `Expected a completed turn with a commandExecution and no agentMessage; saw items [${seen.items.join(", ")}], ${seen.modelRequests} model requests, status ${seen.completedTurn.status}.`,
+    seen,
+  };
+}
+
 export const codexChecks = [
   { id: "check-3", title: "Codex developerInstructions on thread/start, resume and turn/start", flag: "capabilities: codex instructions \"session\"", run: check3 },
   { id: "check-4", title: "Codex thread/revert three turns back", flag: "capabilities: codex rewind \"anyTurn\"", run: check4 },
@@ -829,5 +908,6 @@ export const codexChecks = [
   { id: "web-search-off", title: "Codex web search off through thread config", flag: "Mac test 11.15 codexWebSearchConfig", run: checkWebSearchOff },
   { id: "mcp-startup", title: "Codex MCP startup reports and the first turn", flag: "Mac test 8.3 codexMcpStartup", run: checkMcpStartup },
   { id: "commands-always", title: "Codex Commands = Always: on-request with the read-only sandbox", flag: "Mac test 11.T2.3 commandsAlwaysPolicy", run: checkCommandsAlways },
+  { id: "reasoning-only-end", title: "Codex ends a turn on a reasoning-only last step with no agent message", flag: "Mac test 3.7 withEmptyTurnNotice steps notice", run: checkReasoningOnlyEnd },
 ];
 

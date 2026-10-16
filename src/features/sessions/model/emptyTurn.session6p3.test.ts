@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { Block, Session } from "./session";
-import { EMPTY_TURN_NOTICE, withEmptyTurnNotice } from "./emptyTurn";
+import {
+  EMPTY_TURN_NOTICE,
+  stoppedAfterStepsNotice,
+  withEmptyTurnNotice,
+} from "./emptyTurn";
 
 // Mac 3.7 retest: a turn that ended with only a reasoning item showed
 // "Thinking…" and no notice.
@@ -32,18 +36,26 @@ describe("a turn that ends with only reasoning", () => {
     expect(next.blocks.at(-1)?.text).toBe(EMPTY_TURN_NOTICE);
   });
 
-  it("is left alone when reasoning is followed by a reply or a tool call", () => {
-    for (const block of [
+  it("is left alone when reasoning is followed by a reply", () => {
+    const before = session([
+      user,
+      { id: "r", role: "reasoning", text: "Plan" },
       { id: "a", role: "assistant", text: "Here it is." },
-      { id: "t", role: "tool", text: "write circle.svg" },
-    ] as Block[]) {
-      const before = session([
+    ]);
+    expect(withEmptyTurnNotice(before)).toBe(before);
+  });
+
+  // Changed by design in the 15 Oct fix pass (Mac 3.7, retest 3): reasoning,
+  // then a tool call, then nothing is a turn with no reply after its steps.
+  it("gets the steps notice when reasoning is followed by a tool call and nothing", () => {
+    const next = withEmptyTurnNotice(
+      session([
         user,
         { id: "r", role: "reasoning", text: "Plan" },
-        block,
-      ]);
-      expect(withEmptyTurnNotice(before)).toBe(before);
-    }
+        { id: "t", role: "tool", text: "write circle.svg" },
+      ]),
+    );
+    expect(next.blocks.at(-1)?.text).toBe(stoppedAfterStepsNotice(1));
   });
 
   it("is left alone when a stop already explains the turn", () => {

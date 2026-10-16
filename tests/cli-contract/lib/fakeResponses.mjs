@@ -9,6 +9,7 @@
 //   text("hi")                               an assistant message
 //   call("exec_command", { cmd: "ls" })      a function call
 //   custom("apply_patch", "*** Begin Patch") a freeform (custom) tool call
+//   reasoning("I should edit it.")           a reasoning item, no text
 
 import http from "node:http";
 import { randomUUID } from "node:crypto";
@@ -42,6 +43,20 @@ export function custom(name, input, callId = `call_${randomUUID().slice(0, 8)}`)
     name,
     input,
     call_id: callId,
+  };
+}
+
+/**
+ * A reasoning item and nothing else, as a local model's last step can be:
+ * a summary and the raw reasoning text, no encrypted content (Mac 3.7).
+ */
+export function reasoning(value) {
+  return {
+    type: "reasoning",
+    id: `rs_${randomUUID().slice(0, 8)}`,
+    summary: [{ type: "summary_text", text: value }],
+    content: [{ type: "reasoning_text", text: value }],
+    encrypted_content: null,
   };
 }
 
