@@ -171,6 +171,9 @@ type Live = {
    * They are process flags, so a different set starts a new app-server.
    */
   gatewayKey: string;
+  // [w3-a] live
+  // [w3-b] live
+  // [w3-c] live
   runtimeMode: RuntimeMode;
   planning: boolean;
   /**
@@ -646,6 +649,9 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       a.name.localeCompare(b.name),
     ),
   );
+  // [w3-a] app-server-flags
+  // [w3-b] app-server-flags
+  // [w3-c] app-server-flags
   const gatewayKey = gatewayArgs.join("\n");
   const identity = codexThreadIdentity(input);
   const identityKey = codexThreadIdentityKey(identity);
@@ -670,6 +676,9 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     existing.gatewayKey === gatewayKey
     && existing.identityKey === identityKey
     && existing.editAdapterKey === editAdapter.key
+    // [w3-a] reuse
+    // [w3-b] reuse
+    // [w3-c] reuse
   ) {
     if (existing.mcpRequested === mcpRequested) {
       existing.onEvent = input.onEvent;
@@ -984,6 +993,9 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       mcpKey: mcpRejected ? "" : mcpSwitches.key,
       mcpRequested,
       gatewayKey,
+      // [w3-a] live-init
+      // [w3-b] live-init
+      // [w3-c] live-init
       runtimeMode: input.runtimeMode,
       planning: input.intent === "plan",
       onEvent: input.onEvent,

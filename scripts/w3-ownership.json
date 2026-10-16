@@ -1,0 +1,66 @@
+{
+  "wave": 3,
+  "about": "Who edits what during wave 3 (plans/parallel_build_w3.md, section 4). A path ending in / is a folder. Read by scripts/lane-scope.mjs. Shared files are found from the [w3-a] marker lines in the base commit, not listed here. requestOnly files hold no markers and no lane edits them: write the edit under Requests for integration.",
+  "readOnly": [
+    "src/integrations/harness/core/capabilities.ts",
+    "src/features/model-traits/model/modelTraits.ts",
+    "scripts/lane-scope.mjs",
+    "scripts/w3-ownership.json",
+    "CHANGELOG.md",
+    "README.md",
+    "macos/README.md",
+    ".github/"
+  ],
+  "requestOnly": [
+    "src-tauri/tauri.conf.json",
+    "src-tauri/tauri.linux.conf.json",
+    "src-tauri/tauri.stable.conf.json",
+    "src-tauri/tauri.windows.conf.json",
+    "src-tauri/capabilities/",
+    "src-tauri/gen/"
+  ],
+  "lanes": {
+    "a": {
+      "name": "harness telemetry",
+      "owns": [
+        "package.json",
+        "package-lock.json",
+        "Cargo.toml",
+        "Cargo.lock",
+        "src-tauri/Cargo.toml"
+      ],
+      "newPaths": [
+        "src-tauri/src/otel_receiver.rs",
+        "src-tauri/src/otel_receiver/",
+        "src/features/harness-telemetry/",
+        "tests/cli-contract/checks/otel.mjs"
+      ]
+    },
+    "b": {
+      "name": "activity log",
+      "owns": [
+        "src/features/activity/",
+        "src-tauri/src/activity/",
+        "macos/activity-collector/"
+      ],
+      "newPaths": [
+        "src/features/activity/",
+        "src-tauri/src/activity/",
+        "macos/activity-collector/"
+      ]
+    },
+    "c": {
+      "name": "computer use",
+      "owns": [
+        "src/features/computer-use/",
+        "macos/computer-use-helper/"
+      ],
+      "newPaths": [
+        "src/features/computer-use/",
+        "src-tauri/src/computer_use.rs",
+        "src-tauri/src/computer_use/",
+        "macos/computer-use-helper/"
+      ]
+    }
+  }
+}

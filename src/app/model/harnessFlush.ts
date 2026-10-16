@@ -42,6 +42,9 @@ export class HarnessEventQueue {
   ) {}
 
   enqueue = (sessionId: string, event: HarnessEvent) => {
+    // [w3-a] enqueue
+    // [w3-b] enqueue
+    // [w3-c] enqueue
     const events = this.queued.get(sessionId);
     if (events) events.push(event);
     else this.queued.set(sessionId, [event]);

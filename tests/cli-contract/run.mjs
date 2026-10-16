@@ -17,6 +17,9 @@ import { runsDir } from "./lib/codexDriver.mjs";
 import { codexChecks } from "./checks/codex.mjs";
 import { claudeChecks } from "./checks/claude.mjs";
 import { editAdapterChecks } from "./checks/editAdapter.mjs";
+// [w3-a] imports
+// [w3-b] imports
+// [w3-c] imports
 
 function parseArgs(argv) {
   const out = { codex: null, claude: [], only: null, json: null, timeout: 240 };
@@ -82,10 +85,16 @@ async function main() {
   // The edit adapter check also needs the adapter binary (session 10).
   if (args.editAdapter) process.env.EDIT_ADAPTER_BIN = path.resolve(args.editAdapter);
   for (const c of editAdapterChecks) plan.push({ ...c, harness: "codex", bin: codexVersion ? args.codex : null, cliVersion: codexVersion });
+  // [w3-a] codex-plan
+  // [w3-b] codex-plan
+  // [w3-c] codex-plan
   const claudes = args.claude.length ? args.claude : [null];
   for (const bin of claudes) {
     const v = bin && existsSync(bin) ? version(bin) : null;
     for (const c of claudeChecks) plan.push({ ...c, harness: "claude", bin: v ? bin : null, cliVersion: v, id: v ? `${c.id}@${v.split(" ")[0]}` : c.id, baseId: c.id });
+    // [w3-a] claude-plan
+    // [w3-b] claude-plan
+    // [w3-c] claude-plan
   }
 
   const results = [];

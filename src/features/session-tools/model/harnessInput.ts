@@ -58,6 +58,9 @@ export function sessionToolsInput(
   disabledPlugins?: string[];
   modelProvider?: string;
   permissionsProfile?: string;
+  // [w3-a] tools-input-type
+  // [w3-b] tools-input-type
+  // [w3-c] tools-input-type
 } {
   const extraDirs = harnessExtraDirs(
     session.harness,
@@ -85,6 +88,9 @@ export function sessionToolsInput(
     session.harness,
     session.disabledPlugins,
   );
+  // [w3-a] tools-input-body
+  // [w3-b] tools-input-body
+  // [w3-c] tools-input-body
   return {
     ...(extraDirs ? { extraDirs } : {}),
     ...(disabledMcpServers ? { disabledMcpServers } : {}),
@@ -97,6 +103,9 @@ export function sessionToolsInput(
     ...(session.permissionsProfile
       ? { permissionsProfile: session.permissionsProfile }
       : {}),
+    // [w3-a] tools-input-return
+    // [w3-b] tools-input-return
+    // [w3-c] tools-input-return
   };
 }
 

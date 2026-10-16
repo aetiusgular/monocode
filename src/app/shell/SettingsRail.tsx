@@ -19,6 +19,9 @@ import {
   SquarePlus,
   StickyNote,
   Terminal,
+  // [w3-a] icon-imports
+  // [w3-b] icon-imports
+  // [w3-c] icon-imports
   type IconComponent,
 } from "../../shared/ui/icons";
 import { useLockOverscroll } from "../../shared/hooks/useLockOverscroll";
@@ -47,6 +50,9 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   instructions: FileScript,
   memory: StickyNote,
   environment: Terminal,
+  // [w3-a] icons
+  // [w3-b] icons
+  // [w3-c] icons
 };
 
 type Props = {

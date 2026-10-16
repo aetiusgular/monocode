@@ -37,6 +37,9 @@ export type SettingsSectionId =
   | "instructions"
   | "memory"
   | "environment"
+  // [w3-a] section-ids
+  // [w3-b] section-ids
+  // [w3-c] section-ids
 ;
 
 /** Rail buckets. Sections list in order under their group label. */
@@ -219,6 +222,9 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
       "Variables every harness starts with, for all projects or one. Secrets stay in the keychain.",
     keywords: "env environment variables secrets keychain dotenv token",
   },
+  // [w3-a] sections
+  // [w3-b] sections
+  // [w3-c] sections
 ];
 
 /** Whether this platform lists the section. */
@@ -676,6 +682,9 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     label: "GitHub lookups",
     keywords: "outbound privacy network gh github repo view fork pull request telemetry",
   },
+  // [w3-a] index
+  // [w3-b] index
+  // [w3-c] index
 ];
 
 export type SettingsSearchResult = {
@@ -1686,3 +1695,6 @@ export function filterKeybindings(
       row.when.toLowerCase().includes(needle),
   );
 }
+// [w3-a] loaders
+// [w3-b] loaders
+// [w3-c] loaders

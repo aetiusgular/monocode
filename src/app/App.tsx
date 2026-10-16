@@ -884,6 +884,9 @@ import {
 } from "../integrations/harness/core/helperPrompt";
 import { setPrBarHost } from "../features/pr-bar/model/prBar";
 import { forgetSiteRules } from "../features/browser-tools/model/siteRules";
+// [w3-a] imports
+// [w3-b] imports
+// [w3-c] imports
 
 const SearchView = lazySurface(
   async () => {
@@ -13269,6 +13272,9 @@ function Workspace({
     onPickUpSession,
     pickUpBound,
     onNewChatLike,
+    // [w3-a] pane-props
+    // [w3-b] pane-props
+    // [w3-c] pane-props
   };
 
   // Renames, mascot picks and new projects show up on the rail.
@@ -14244,6 +14250,9 @@ function Workspace({
               }}
             />
           ) : null}
+          {/* [w3-a] mounts */}
+          {/* [w3-b] mounts */}
+          {/* [w3-c] mounts */}
           {providerSignInRequest ? (
             <ProviderSignInDialog
               key={providerSignInRequest.key}

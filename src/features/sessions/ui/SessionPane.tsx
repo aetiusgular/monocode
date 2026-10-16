@@ -149,6 +149,9 @@ import { StaleInstructionsLine } from "../../session-preamble/ui/StaleInstructio
 import { useSuggestedPrompts } from "../../suggested-prompts/hooks/useSuggestedPrompts";
 import { VerifyCard } from "../../verify/ui/VerifyCard";
 import { sessionWasUsed } from "../../../integrations/harness/core/helperPrompt";
+// [w3-a] imports
+// [w3-b] imports
+// [w3-c] imports
 
 export type SessionPaneProps = {
   session: Session;
@@ -308,6 +311,9 @@ export type SessionPaneProps = {
   pickUpBound?: (harness: Session["harness"]) => ReadonlyMap<string, string>;
   /** Finding 2.2: a new chat in the same project, harness, model and account. */
   onNewChatLike?: (sessionId: string) => void;
+  // [w3-a] props
+  // [w3-b] props
+  // [w3-c] props
 };
 
 type Props = SessionPaneProps & {
@@ -420,6 +426,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onPickUpSession,
   pickUpBound,
   onNewChatLike,
+  // [w3-a] destructure
+  // [w3-b] destructure
+  // [w3-c] destructure
 }: Props) {
   const orchestrationRuns = useSyncExternalStore(
     orchestrator.subscribe,
@@ -825,6 +834,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
     busy: !!session.busy,
     remote,
   });
+  // [w3-a] body
+  // [w3-b] body
+  // [w3-c] body
   const composer = (
     <Composer
       key={session.id}
@@ -1546,6 +1558,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
             onNewChatLike ? () => onNewChatLike(session.id) : undefined
           }
         />
+        {/* [w3-a] overlays */}
+        {/* [w3-b] overlays */}
+        {/* [w3-c] overlays */}
         <ToolImageGalleryHost blocks={session.blocks} cwd={workCwd} />
       </div>
     </div>

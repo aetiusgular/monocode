@@ -38,6 +38,9 @@ import {
   SessionPrivacySection,
   SessionPrivateBadge,
 } from "../../privacy-view/ui/SessionPrivacy";
+// [w3-a] imports
+// [w3-b] imports
+// [w3-c] imports
 
 type PanelSession = Pick<
   Session,
@@ -61,6 +64,9 @@ type PanelSession = Pick<
   | "providerAccountId"
   | "permissionsProfile"
   | "disabledMcpServers"
+  // [w3-a] panel-session
+  // [w3-b] panel-session
+  // [w3-c] panel-session
 >;
 
 type PanelActions = {
@@ -298,6 +304,9 @@ export function SessionPanelView({
             workCwd={workCwd}
           />
           <SessionPrivacySection session={session} />
+          {/* [w3-a] sections */}
+          {/* [w3-b] sections */}
+          {/* [w3-c] sections */}
           <PanelSection title="Session" fold="facts">
             <dl className="flex flex-col gap-0.5 px-2">
               {facts.map((fact) => (

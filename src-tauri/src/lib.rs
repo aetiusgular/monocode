@@ -72,6 +72,9 @@ mod window_transfer;
 mod windows;
 mod worktree_lifecycle;
 mod worktrees;
+// [w3-a] mods
+// [w3-b] mods
+// [w3-c] mods
 
 // Phase 1 seam: spawn / kill harness children per MonoCode thread.
 // Adapters own the protocol; this host only supervises processes.
@@ -297,6 +300,9 @@ pub fn run() {
         .manage(pty::PtyHost::new())
         .manage(remote::RemoteConnections::default())
         .manage(window_transfer::WindowTransferState::new())
+        // [w3-a] manage
+        // [w3-b] manage
+        // [w3-c] manage
         .setup(|app| {
             harness::reap_orphaned_harness_processes();
             session_store::init(app.handle())?;
@@ -322,6 +328,9 @@ pub fn run() {
                     let _ = window.set_shadow(true);
                 }
             }
+            // [w3-a] setup
+            // [w3-b] setup
+            // [w3-c] setup
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -702,6 +711,9 @@ pub fn run() {
             model_setup::approval_paths_within,
             edit_adapter_commands::edit_adapter_open,
             edit_adapter_commands::edit_adapter_close,
+            // [w3-a] commands
+            // [w3-b] commands
+            // [w3-c] commands
         ])
         .build(tauri::generate_context!())
         .expect("error while building MonoCode");

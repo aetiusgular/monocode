@@ -118,6 +118,9 @@ export type ClaudeCliSettings = {
  */
 export const CLAUDE_SESSION_ENV = {
   CLAUDE_CODE_ENABLE_TODO_TOOLS: "1",
+  // [w3-a] session-env
+  // [w3-b] session-env
+  // [w3-c] session-env
 } as const;
 
 export function asRecord(value: unknown): Record<string, unknown> | null {
@@ -368,6 +371,9 @@ export function buildClaudeSpawnArgs(input: {
    * Unset leaves the variable alone.
    */
   toolLoading?: "auto" | "upfront";
+  // [w3-a] spawn-input
+  // [w3-b] spawn-input
+  // [w3-c] spawn-input
 }): string[] {
   const args = [
     "--output-format",
@@ -398,18 +404,26 @@ export function buildClaudeSpawnArgs(input: {
     const gateway = claudeGatewayMcpConfig(input.gatewayConnectors);
     // `--mcp-config` is variadic too: the flag after it ends its list.
     if (gateway) args.push("--mcp-config", gateway);
+    // [w3-a] mcp-config
+    // [w3-b] mcp-config
+    // [w3-c] mcp-config
     args.push(`--setting-sources=${CLAUDE_SETTING_SOURCES}`);
     args.push(
       "--settings",
       JSON.stringify({
         ...settings,
-        env: input.toolLoading
-          ? {
-              ...CLAUDE_SESSION_ENV,
-              ENABLE_TOOL_SEARCH:
-                input.toolLoading === "upfront" ? "false" : "auto",
-            }
-          : CLAUDE_SESSION_ENV,
+        env: {
+          ...CLAUDE_SESSION_ENV,
+          ...(input.toolLoading
+            ? {
+                ENABLE_TOOL_SEARCH:
+                  input.toolLoading === "upfront" ? "false" : "auto",
+              }
+            : {}),
+          // [w3-a] settings-env
+          // [w3-b] settings-env
+          // [w3-c] settings-env
+        },
       }),
     );
   }
@@ -1344,6 +1358,9 @@ export function claudeSettingsKey(input: {
   gatewayConnectors?: HarnessLaunchMcpServer[];
   /** #42: connector tool loading, a launch-time `--settings` env value. */
   toolLoading?: "auto" | "upfront";
+  // [w3-a] settings-key-input
+  // [w3-b] settings-key-input
+  // [w3-c] settings-key-input
 }): string {
   const deniedTools = claudeToolDenyRules(input.deniedTools);
   const deniedSkills = claudeSkillDenyRules(input.disabledSkills);
@@ -1373,6 +1390,9 @@ export function claudeSettingsKey(input: {
         ]
       : []),
     ...(input.toolLoading ? [`tool-loading:${input.toolLoading}`] : []),
+    // [w3-a] settings-key-parts
+    // [w3-b] settings-key-parts
+    // [w3-c] settings-key-parts
   ].join("|");
 }
 

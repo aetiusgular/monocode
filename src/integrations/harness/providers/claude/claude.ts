@@ -2417,6 +2417,9 @@ function settingsKeyFor(input: HarnessSessionInput): string {
     disabledPlugins: input.disabledPlugins,
     gatewayConnectors: input.gatewayConnectors,
     toolLoading: loadClaudeToolLoading(),
+    // [w3-a] settings-key
+    // [w3-b] settings-key
+    // [w3-c] settings-key
   })}`;
 }
 
@@ -2536,6 +2539,9 @@ function launchOptions(
   forkSession?: boolean;
   appendSystemPromptFile?: string;
   toolLoading?: "auto" | "upfront";
+  // [w3-a] launch-type
+  // [w3-b] launch-type
+  // [w3-c] launch-type
 } {
   const native = nativeModelId(input.model);
   const effortRaw = input.modelSettings?.effort;
@@ -2601,6 +2607,9 @@ function launchOptions(
       ? { appendSystemPromptFile: input.preambleFile }
       : {}),
     toolLoading: loadClaudeToolLoading(),
+    // [w3-a] launch-return
+    // [w3-b] launch-return
+    // [w3-c] launch-return
   };
 }
 

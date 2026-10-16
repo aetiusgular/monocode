@@ -278,6 +278,9 @@ import {
   type SessionProviderInput,
 } from "../../model-setup/model/sessionProvider";
 import { harnessCan } from "../../../integrations/harness/core/capabilities";
+// [w3-a] imports
+// [w3-b] imports
+// [w3-c] imports
 
 type Props = {
   enabled?: boolean;
@@ -557,6 +560,9 @@ export function Composer({
   sessionUsed = false,
   privacySession,
   onPrivacyPatch,
+  // [w3-a] destructure
+  // [w3-b] destructure
+  // [w3-c] destructure
 }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -2003,6 +2009,9 @@ export function Composer({
         : undefined),
     on: connectorsSupported,
   });
+  // [w3-a] body
+  // [w3-b] body
+  // [w3-c] body
   return (
     <div
       data-composer
@@ -3004,6 +3013,9 @@ export function Composer({
               </button>
             ) : null}
             <div className="flex shrink-0 items-center gap-1">
+              {/* [w3-a] actions */}
+              {/* [w3-b] actions */}
+              {/* [w3-c] actions */}
               <VoiceInputButton textareaRef={ref} disabled={disabled} />
               <ComposerAction
                 busy={busy}

@@ -265,6 +265,9 @@ export function applyHarnessEvent(
       };
       return { ...session, blocks };
     }
+    // [w3-a] events
+    // [w3-b] events
+    // [w3-c] events
     default:
       return session;
   }

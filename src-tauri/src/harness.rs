@@ -966,6 +966,9 @@ pub fn harness_spawn(
         }
     };
 
+    // [w3-a] child-env
+    // [w3-b] child-env
+    // [w3-c] child-env
     crate::control::configure_child(&app, &session_id, &mut cmd);
 
     let mut child =
@@ -1063,6 +1066,9 @@ pub fn harness_spawn(
                 host.stop_sse(&wait_id);
             }
         }
+        // [w3-a] exited
+        // [w3-b] exited
+        // [w3-c] exited
         let _ = wait_app.emit(
             EXIT_EVENT,
             HarnessExit {
@@ -1073,6 +1079,9 @@ pub fn harness_spawn(
         );
     });
 
+    // [w3-a] spawned
+    // [w3-b] spawned
+    // [w3-c] spawned
     Ok(pid)
 }
 

@@ -622,6 +622,9 @@ describe("settings navigation", () => {
       "archive",
       "worktrees",
       "environment",
+      // [w3-a] rail-workspace
+      // [w3-b] rail-workspace
+      // [w3-c] rail-workspace
     ]);
   });
 

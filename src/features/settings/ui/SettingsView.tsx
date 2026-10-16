@@ -435,6 +435,9 @@ import { InstructionsPage } from "../../project-context/ui/InstructionsPage";
 import { MemoryPage } from "../../project-memory/ui/MemoryPage";
 import { EnvironmentPage } from "../../environment/ui/EnvironmentPage";
 import { OutboundCallsSettings } from "../../privacy-view/ui/OutboundCallsSettings";
+// [w3-a] imports
+// [w3-b] imports
+// [w3-c] imports
 
 /**
  * The `data-setting-id` Settings should reveal when it opens: one of the ids in
@@ -679,6 +682,9 @@ export function SettingsView({
                   onDeleteProject={onDeleteProject}
                 />
               ) : null}
+              {/* [w3-a] section-switch */}
+              {/* [w3-b] section-switch */}
+              {/* [w3-c] section-switch */}
             </div>
           </div>
         </RevealedSetting.Provider>

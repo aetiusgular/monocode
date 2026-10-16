@@ -335,6 +335,9 @@ export type HarnessSessionInput = {
    * Codex honors it, in place of MonoCode's sandbox settings.
    */
   permissionsProfile?: string;
+  // [w3-a] session-input
+  // [w3-b] session-input
+  // [w3-c] session-input
 };
 
 export type SendTurnInput = HarnessSessionInput & {

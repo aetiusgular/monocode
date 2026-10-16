@@ -33,6 +33,9 @@ export type SessionPanelSection =
   | "context"
   | "app-preview"
   | "privacy"
+  // [w3-a] section-ids
+  // [w3-b] section-ids
+  // [w3-c] section-ids
 ;
 
 const SECTION_COLLAPSED_KEY: Record<SessionPanelSection, string> = {
@@ -44,6 +47,9 @@ const SECTION_COLLAPSED_KEY: Record<SessionPanelSection, string> = {
   context: "monocode.sessionPanel.contextCollapsed",
   "app-preview": "monocode.sessionPanel.appPreviewCollapsed",
   privacy: "monocode.sessionPanel.privacyCollapsed",
+  // [w3-a] section-keys
+  // [w3-b] section-keys
+  // [w3-c] section-keys
 };
 
 /** What the session runs on rarely changes, so it starts folded. */
@@ -56,6 +62,9 @@ export const SECTION_COLLAPSED_DEFAULT: Record<SessionPanelSection, boolean> = {
   context: true,
   "app-preview": false,
   privacy: false,
+  // [w3-a] section-defaults
+  // [w3-b] section-defaults
+  // [w3-c] section-defaults
 };
 
 /** Fired on `window` when a section of the panel is folded or unfolded. */
