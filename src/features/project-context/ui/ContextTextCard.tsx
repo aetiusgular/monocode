@@ -5,6 +5,13 @@ import { CHARS_PER_TOKEN } from "../../session-preamble/model/preamble";
 const NOTE = "text-[11px] leading-4 text-content/45";
 
 /**
+ * What a save says. Finding 2.2 (13 Oct, your decision): a change reaches new
+ * chats only, so the line says so, as the page's own note does.
+ */
+export const SAVED_STATUS =
+  "Saved. New chats get it. Open chats keep what they started with.";
+
+/**
  * One text file MonoCode keeps outside the repository, edited in place:
  * global instructions or a project's private notes. A save names the hash it
  * was loaded at, so another window's edit is never overwritten.
@@ -66,7 +73,7 @@ export function ContextTextCard({
             save(draft, loaded.hash)
               .then((hash) => {
                 setLoaded({ text: draft, hash });
-                setStatus("Saved. Sessions get it with their next message.");
+                setStatus(SAVED_STATUS);
               })
               .catch((error) =>
                 setStatus(

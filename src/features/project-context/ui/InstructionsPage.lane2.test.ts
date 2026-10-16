@@ -42,6 +42,7 @@ vi.mock("../../projects/ui/SearchableProjectPicker", () => ({
 }));
 
 import { InstructionsPage } from "./InstructionsPage";
+import { SAVED_STATUS } from "./ContextTextCard";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -113,6 +114,9 @@ describe("#27: the Instructions page", () => {
       expectedHash: "h:",
     });
     expect(container.textContent).toContain("Saved.");
+    // 2.2 (Low, 15 Oct): the line matches "a change applies to new chats".
+    expect(container.textContent).toContain(SAVED_STATUS);
+    expect(container.textContent).not.toContain("next message");
   });
 
   it("refuses to overwrite another window's save", async () => {

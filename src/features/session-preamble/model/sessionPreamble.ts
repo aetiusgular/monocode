@@ -26,6 +26,7 @@ import {
 } from "./chatContext";
 import {
   buildPreamble,
+  nativeLaunchText,
   nativePreambleText,
   preambleBlock,
   preambleBlockOverhead,
@@ -251,12 +252,15 @@ export async function prepareSessionPreamble(
 
   let preambleFile: string | undefined;
   let developerInstructions: string | undefined;
-  if (built.text && channel === "system") {
+  // A system channel gets a launch file even with no parts: the notice that
+  // later notes from MonoCode are the user's (finding 2.2). The adapter uses
+  // it only when a conversation starts.
+  if (channel === "system" && (built.text || firstTurn)) {
     preambleFile = await safe(
       () =>
         invoke<string>("session_preamble_write", {
           sessionId: session.id,
-          text: nativePreambleText(built.text),
+          text: nativeLaunchText(built.text),
         }),
       undefined,
     );
