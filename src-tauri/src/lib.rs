@@ -1,6 +1,7 @@
 use tauri::Manager;
 
 mod account_identity;
+mod activity;
 mod artifacts;
 mod automations;
 mod azure_devops;

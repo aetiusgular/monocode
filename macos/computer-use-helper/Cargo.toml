@@ -1,0 +1,14 @@
+# The computer-use helper (wave 3, lane C): a separate app that holds
+# Accessibility and Screen Recording and embeds Cua Driver. Its own workspace
+# and lock file, so it never touches the app's. Lane C decides from Cua's docs
+# whether the shell around this core is Rust or Swift, and records why.
+[package]
+name = "monocode-computer-use-helper"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[dependencies]
