@@ -821,6 +821,7 @@ import { withEmptyTurnNotice as withEmptyTurnNotice_s6 } from "../features/sessi
 import { inlineMentionSource as inlineMentionSource_s6 } from "../features/sessions/model/promptPreparation";
 import { gatewayOnAtFirstTurn as gatewayOnAtFirstTurn_s6 } from "../features/gateway-connectors/model/localDefault";
 import { newChatLike as newChatLike_s6 } from "../features/session-preamble/model/newChatLike";
+import { sessionAfterCatalogRefresh as sessionAfterCatalogRefresh_s6 } from "../features/sessions/model/bootModel";
 // [lane-1] imports
 import { rewindOptions as rewindOptions_l1 } from "../features/rewind/model/rewind";
 import { cutChatTranscript as cutChatTranscript_l1 } from "../features/rewind/model/turnRewind";
@@ -1879,22 +1880,14 @@ function Workspace({
       ...new Set(sessionsRef.current.map((session) => session.harness)),
     ];
     void refreshHarnessCatalogs(harnesses).then(() => {
+      // Mac 5.3, retest 3: a chat keeps the model it ran on when this
+      // catalog does not list it; only a resolved id is rewritten.
       setSessions((prev) =>
-        prev.map((session) => {
-          if (!isLiveHarness(session.harness)) return session;
-          const resolved = resolveModel(session.harness, session.model);
-          const modelSettings = mergeModelSettings(
-            resolved,
-            session.modelSettings,
-          );
-          if (
-            resolved.id === session.model &&
-            sameSettings(modelSettings, session.modelSettings)
-          ) {
-            return session;
-          }
-          return { ...session, model: resolved.id, modelSettings };
-        }),
+        prev.map((session) =>
+          isLiveHarness(session.harness)
+            ? sessionAfterCatalogRefresh_s6(session)
+            : session,
+        ),
       );
     });
   }, []);
@@ -14339,15 +14332,3 @@ function nudgeOpenEditors(event: HarnessEvent, cwd: string) {
   }
 }
 
-function sameSettings(
-  a: Record<string, string> | undefined,
-  b: Record<string, string> | undefined,
-): boolean {
-  const left = a ?? {};
-  const right = b ?? {};
-  const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
-  for (const key of keys) {
-    if (left[key] !== right[key]) return false;
-  }
-  return true;
-}

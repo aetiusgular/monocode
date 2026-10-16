@@ -472,16 +472,29 @@ export function resolveModel(harness: HarnessId, id?: string): AgentModel {
  */
 export function modelLabelFor(resolved: AgentModel, id?: string): string {
   const requested = id?.trim();
-  if (!requested || resolved.id === requested) return resolved.name;
+  if (!requested) return resolved.name;
+  return storedModelResolved(resolved, requested)
+    ? resolved.name
+    : nativeIdFrom(requested);
+}
+
+/**
+ * Whether `resolveModel` found the saved id itself, or a catalog entry it
+ * matched by native id, rather than falling back to the catalog's default.
+ * An empty id has nothing to keep, so it counts as resolved. Shared by the
+ * label above and the boot pass that may rewrite a chat's saved model
+ * (Mac finding 5.3, retest 3).
+ */
+export function storedModelResolved(resolved: AgentModel, id?: string): boolean {
+  const requested = id?.trim();
+  if (!requested || resolved.id === requested) return true;
   const slug = comparableNativeId(resolved.harness, nativeIdFrom(requested));
-  if (!slug) return resolved.name;
+  if (!slug) return true;
   const native = comparableNativeId(
     resolved.harness,
     resolved.nativeId ?? nativeIdFrom(resolved.id),
   );
-  if (native && (native.startsWith(slug) || slug.startsWith(native)))
-    return resolved.name;
-  return nativeIdFrom(requested);
+  return Boolean(native && (native.startsWith(slug) || slug.startsWith(native)));
 }
 
 /** `modelLabelFor` on this computer's catalog. */
