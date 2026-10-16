@@ -283,6 +283,56 @@ export function decideAutoFix(input: {
   return { send: true, failed };
 }
 
+/** A read of the PR's checks: what it asked for, and when it answered. */
+export type PrChecksRead = {
+  checks: GithubPrChecks | null;
+  /** The PR number the read asked GitHub for. */
+  number: number | null;
+  /** When it answered. Null for checks that were not read in this run. */
+  at: number | null;
+};
+
+const PR_STATES = ["open", "closed", "merged"] as const;
+export type PrState = (typeof PR_STATES)[number];
+
+/**
+ * The state a checks read reports for the bar's PR, or null. Only for the
+ * PR the bar shows: the read asked for its number, and GitHub's answer names
+ * that number or none. The state, head and checks the bar shows then all
+ * come from this one read.
+ */
+export function checksStateFor(number: number, read: PrChecksRead): PrState | null {
+  const { checks } = read;
+  if (!checks || read.number !== number) return null;
+  if (checks.number != null && checks.number !== number) return null;
+  const state = checks.state?.trim().toLowerCase();
+  return PR_STATES.find((known) => known === state) ?? null;
+}
+
+/**
+ * The PR's state as the bar shows it (Mac 4.10, 16 Oct). After auto-merge
+ * merged PR #3, the bar showed it open with its switches for minutes: it
+ * took the state from the PR lookup, which runs on focus or an action, while
+ * the checks read already said MERGED. Now the newer of the two reads wins.
+ * A merged PR never opens again, so merged from either read stands.
+ */
+export function prBarState(input: {
+  number: number;
+  /** `pr.state` from the PR lookup. */
+  lookupState: string;
+  /** When the lookup last answered. */
+  lookupAt: number | null;
+  read: PrChecksRead;
+}): string {
+  const fromLookup = input.lookupState.trim().toLowerCase();
+  const reported = checksStateFor(input.number, input.read);
+  if (!reported) return fromLookup;
+  if (fromLookup === "merged" || reported === "merged") return "merged";
+  if (input.read.at == null) return fromLookup;
+  if (input.lookupAt == null || input.read.at >= input.lookupAt) return reported;
+  return fromLookup;
+}
+
 /** Archive when the PR is merged or closed, once, with the switch on. */
 export function shouldAutoArchive(input: {
   settings: PrBarSettings;

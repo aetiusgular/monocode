@@ -126,6 +126,66 @@ describe("with GitHub lookups off (review H1)", () => {
   });
 });
 
+describe("J1: a lookup you ask for with GitHub lookups off", () => {
+  it("runs once and confirms the PR, and a window focus asks nothing after it", async () => {
+    gitPrStatus.mockResolvedValue(PR);
+    await mountProbe();
+    act(() => root.unmount());
+    vi.resetModules();
+    gitPrStatus.mockClear();
+    const outbound = await import("../../settings/model/outboundCalls");
+    outbound.setOutboundCallAllowed("github-lookups", false);
+    try {
+      const panel = await import("./GitChangesPanel");
+      let seen: import("./GitChangesPanel").PrStatus | undefined;
+      function Probe() {
+        seen = panel.usePrStatus("/Users/t/s7r2-prtest", "s7r2-pr1");
+        return null;
+      }
+      root = createRoot(container);
+      await act(async () => root.render(createElement(Probe)));
+      expect(gitPrStatus).not.toHaveBeenCalled();
+      expect(seen).toMatchObject({ pr: PR, cachedOnly: true });
+
+      // Check now on the bar (or a commit, a push, a new PR) reloads.
+      await act(async () => seen!.reload());
+      await act(async () => {});
+      expect(gitPrStatus).toHaveBeenCalledTimes(1);
+      expect(seen).toMatchObject({ pr: PR, answered: true, stale: false });
+      // What the bar's `confirmed` reads: a lookup in this run answered.
+      expect(seen!.answered && !seen!.cachedOnly).toBe(true);
+
+      await act(async () => {
+        window.dispatchEvent(new Event("focus"));
+      });
+      await act(async () => {});
+      expect(gitPrStatus).toHaveBeenCalledTimes(1);
+    } finally {
+      outbound.setOutboundCallAllowed("github-lookups", true);
+    }
+  });
+
+  it("with lookups on, a window focus still looks the PR up after a reload", async () => {
+    gitPrStatus.mockResolvedValue(PR);
+    const panel = await import("./GitChangesPanel");
+    let seen: import("./GitChangesPanel").PrStatus | undefined;
+    function Probe() {
+      seen = panel.usePrStatus("/Users/t/s7r2-prtest", "s7r2-pr1");
+      return null;
+    }
+    await act(async () => root.render(createElement(Probe)));
+    await act(async () => {});
+    await act(async () => seen!.reload());
+    await act(async () => {});
+    const calls = gitPrStatus.mock.calls.length;
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await act(async () => {});
+    expect(gitPrStatus).toHaveBeenCalledTimes(calls + 1);
+  });
+});
+
 describe("Create PR", () => {
   it("shows only after a lookup answered and found none", async () => {
     const { GitSyncActions } = await import("./GitChangesPanel");

@@ -22,6 +22,11 @@ export type GithubPrChecks = {
   headOid: string;
   checks: GithubPrCheck[];
   /**
+   * The PR's number as GitHub names it. The PR bar takes `state` from this
+   * read only for its own number (Mac 4.10, 16 Oct).
+   */
+  number?: number | null;
+  /**
    * What the PR bar's auto-merge reads (Mac 4.10, retest 3). Optional: the
    * inbox reads only the checks.
    */

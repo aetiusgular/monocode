@@ -1578,6 +1578,9 @@ pub struct GitHubPrCheck {
 pub struct GitHubPrChecks {
     pub head_oid: String,
     pub checks: Vec<GitHubPrCheck>,
+    /// The pull request's number, as GitHub names it in the answer. The PR
+    /// bar takes `state` from this read only for its own number (Mac 4.10).
+    pub number: Option<i64>,
     /// The pull request's GraphQL node id, for the auto-merge mutations.
     pub pr_id: Option<String>,
     /// `OPEN`, `CLOSED` or `MERGED`, as GitHub reports it.
@@ -1644,7 +1647,7 @@ pub async fn git_github_pr_auto_merge(
             &pr_id,
             method.as_deref(),
             expected_head_oid.as_deref(),
-            &|args: &[&str]| gh_run(&root, args, true),
+            &|args: &[&str]| gh_run_timed(&root, args, true, gh_bar_timeout(args)),
         )
     })
     .await
@@ -2957,7 +2960,9 @@ fn git_range_context_for(root: &Path) -> Result<GitRangeContext, String> {
 }
 
 fn git_pr_status_for(root: &Path) -> Result<Option<GitPr>, String> {
-    git_pr_status_with(root, &|args: &[&str]| gh_run(root, args, false))
+    git_pr_status_with(root, &|args: &[&str]| {
+        gh_run_timed(root, args, false, GH_READ_TIMEOUT)
+    })
 }
 
 /// A `gh` failure that means it cannot be asked here, which the PR lookup
@@ -4307,7 +4312,7 @@ fn git_github_pr_checks_for(
 ) -> Result<GitHubPrChecks, String> {
     let args = github_pr_checks_args(repo, number)?;
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let json = gh_checked(root, &refs)?;
+    let json = gh_run_timed(root, &refs, false, GH_READ_TIMEOUT)?;
     parse_github_pr_checks(&json)
 }
 
@@ -4329,9 +4334,10 @@ fn github_pr_checks_args(repo: &str, number: i64) -> Result<Vec<String>, String>
     ])
 }
 
-/// What the PR bar's poll reads: the checks, and what decides auto-merge.
+/// What the PR bar's poll reads: the checks, what decides auto-merge, and the
+/// number and state the bar shows (Mac 4.10: a merged PR showed as open).
 const PR_CHECKS_FIELDS: &str =
-    "id,state,isDraft,mergeable,mergeStateStatus,autoMergeRequest,headRefOid,statusCheckRollup";
+    "number,id,state,isDraft,mergeable,mergeStateStatus,autoMergeRequest,headRefOid,statusCheckRollup";
 
 /// The two auto-merge mutations. Fixed text: every value goes in as a
 /// GraphQL variable through its own `-f name=value` argument, never into the
@@ -4539,6 +4545,8 @@ fn parse_github_pr_checks(json: &str) -> Result<GitHubPrChecks, String> {
         #[serde(default)]
         status_check_rollup: Option<Vec<GitHubStatusCheckRow>>,
         #[serde(default)]
+        number: Option<i64>,
+        #[serde(default)]
         id: String,
         #[serde(default)]
         state: String,
@@ -4562,6 +4570,7 @@ fn parse_github_pr_checks(json: &str) -> Result<GitHubPrChecks, String> {
     };
     Ok(GitHubPrChecks {
         head_oid,
+        number: row.number.filter(|number| *number > 0),
         pr_id: Some(row.id.trim().to_string()).filter(|id| !id.is_empty()),
         state: word(row.state),
         is_draft: row.is_draft,
@@ -4942,7 +4951,48 @@ fn gh_run(root: &Path, args: &[&str], allow_empty: bool) -> Result<String, Strin
         &GITHUB_RATE_LIMIT_BACKOFF,
         args,
         allow_empty,
-        |args, allow_empty| gh_run_raw(root, args, allow_empty),
+        |args, allow_empty| gh_run_raw(root, args, allow_empty, None),
+    )
+}
+
+/// How long the PR bar waits on one `gh` read (the PR lookup, the checks
+/// read) before gh is stopped (security review G7). A firewall that drops
+/// packets otherwise holds the bar until gh gives up on its own.
+const GH_READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long the PR bar waits on GitHub's auto-merge mutation.
+const GH_MUTATION_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The timeout for one of the PR bar's `gh` calls: its only write is the
+/// auto-merge mutation, `gh api graphql`; the rest are reads.
+fn gh_bar_timeout(args: &[&str]) -> Duration {
+    match args {
+        ["api", "graphql", ..] => GH_MUTATION_TIMEOUT,
+        _ => GH_READ_TIMEOUT,
+    }
+}
+
+/// What a `gh` stopped by its timeout reports. An error, so the PR lookup
+/// keeps the last known PR and never reads it as "no PR".
+fn gh_timed_out_text(timeout: Duration) -> String {
+    format!(
+        "gh did not answer in {} s and was stopped. Check the network, then try again.",
+        timeout.as_secs()
+    )
+}
+
+/// `gh_run` with a timeout: past it, gh and anything it started are stopped
+/// and the call fails with `gh_timed_out_text`.
+fn gh_run_timed(
+    root: &Path,
+    args: &[&str],
+    allow_empty: bool,
+    timeout: Duration,
+) -> Result<String, String> {
+    gh_with_backoff(
+        &GITHUB_RATE_LIMIT_BACKOFF,
+        args,
+        allow_empty,
+        |args, allow_empty| gh_run_raw(root, args, allow_empty, Some(timeout)),
     )
 }
 
@@ -5066,20 +5116,19 @@ pub(crate) fn gh_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     cmd
 }
 
-fn gh_run_raw(root: &Path, args: &[&str], allow_empty: bool) -> Result<String, String> {
+fn gh_run_raw(
+    root: &Path,
+    args: &[&str],
+    allow_empty: bool,
+    timeout: Option<Duration>,
+) -> Result<String, String> {
     let program = crate::harness::resolve_gui_binary("gh")
         .ok_or_else(|| "GitHub CLI (`gh`) is not installed.".to_string())?;
     let mut cmd = gh_command(&program);
     cmd.current_dir(root).args(args);
     crate::harness::apply_gui_env(&mut cmd);
     crate::hide_window_console(&mut cmd);
-    let output = cmd.output().map_err(|error| {
-        if error.kind() == ErrorKind::NotFound {
-            "GitHub CLI (`gh`) is not installed.".to_string()
-        } else {
-            error.to_string()
-        }
-    })?;
+    let output = gh_output(&mut cmd, timeout)?;
     if output.status.success() {
         let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if text.is_empty() {
@@ -5100,6 +5149,27 @@ fn gh_run_raw(root: &Path, args: &[&str], allow_empty: bool) -> Result<String, S
         format!("gh {} failed", args.join(" "))
     };
     Err(detail)
+}
+
+/// Run a built `gh` and collect its output. With a timeout it runs through
+/// the harness's timed runner (G7): past the timeout gh's process tree is
+/// stopped and the call is an error. Without one it runs to the end, as
+/// before.
+fn gh_output(cmd: &mut Command, timeout: Option<Duration>) -> Result<std::process::Output, String> {
+    let not_started = |error: std::io::Error| {
+        if error.kind() == ErrorKind::NotFound {
+            "GitHub CLI (`gh`) is not installed.".to_string()
+        } else {
+            error.to_string()
+        }
+    };
+    let Some(timeout) = timeout else {
+        return cmd.output().map_err(not_started);
+    };
+    crate::harness::command_output_with_timeout(cmd, timeout).map_err(|error| match error {
+        crate::harness::TimedRunError::Io(error) => not_started(error),
+        crate::harness::TimedRunError::TimedOut => gh_timed_out_text(timeout),
+    })
 }
 
 pub(crate) fn resolve_repo_path(root: &Path, relative: &str) -> Result<String, String> {
@@ -10885,6 +10955,180 @@ mod tests {
     }
 
     #[test]
+    fn pr_checks_name_the_number_and_state_github_reports() {
+        // Mac 4.10 (16 Oct): auto-merge merged PR #3, and the bar showed it
+        // open for minutes while this read already said MERGED.
+        assert!(PR_CHECKS_FIELDS.split(',').any(|field| field == "state"));
+        assert!(PR_CHECKS_FIELDS.split(',').any(|field| field == "number"));
+        let merged = parse_github_pr_checks(&format!(
+            r#"{{"number":3,"id":"PR_x","state":"MERGED","headRefOid":"{HEAD}","statusCheckRollup":[]}}"#
+        ))
+        .unwrap();
+        assert_eq!(merged.number, Some(3));
+        assert_eq!(merged.state.as_deref(), Some("MERGED"));
+        let json = serde_json::to_value(&merged).unwrap();
+        assert_eq!(json["number"], 3);
+        assert_eq!(json["state"], "MERGED");
+        // No number, or one that is not a pull request's, reads as none.
+        for number in ["", r#""number":0,"#, r#""number":-4,"#] {
+            let checks = parse_github_pr_checks(&format!(
+                r#"{{{number}"state":"OPEN","headRefOid":"{HEAD}","statusCheckRollup":[]}}"#
+            ))
+            .unwrap();
+            assert_eq!(checks.number, None, "{number}");
+        }
+    }
+
+    #[test]
+    fn the_bars_gh_calls_each_have_a_timeout() {
+        // G7: 30 s for a read, 60 s for the auto-merge mutation.
+        assert_eq!(GH_READ_TIMEOUT, Duration::from_secs(30));
+        assert_eq!(GH_MUTATION_TIMEOUT, Duration::from_secs(60));
+        for enable in [true, false] {
+            let args = pr_auto_merge_args(enable, "PR_x", Some("squash"), Some(HEAD)).unwrap();
+            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            assert_eq!(gh_bar_timeout(&refs), GH_MUTATION_TIMEOUT);
+        }
+        let read = github_pr_checks_args("acme/web", 7).unwrap();
+        let refs: Vec<&str> = read.iter().map(String::as_str).collect();
+        assert_eq!(gh_bar_timeout(&refs), GH_READ_TIMEOUT);
+        let list = pr_list_for_branch_args("s7r2-pr1");
+        let refs: Vec<&str> = list.iter().map(String::as_str).collect();
+        assert_eq!(gh_bar_timeout(&refs), GH_READ_TIMEOUT);
+        assert_eq!(
+            gh_bar_timeout(&["repo", "view", "--json", "nameWithOwner,defaultBranchRef"]),
+            GH_READ_TIMEOUT
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_gh_call_past_its_timeout_is_stopped_and_is_an_error() {
+        // A stand-in for a gh that hangs behind a firewall that drops packets.
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        let started = Instant::now();
+        let error = gh_output(&mut cmd, Some(Duration::from_secs(1))).unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "returned at the timeout, not when the command ended"
+        );
+        assert_eq!(error, gh_timed_out_text(Duration::from_secs(1)));
+        assert_eq!(
+            error,
+            "gh did not answer in 1 s and was stopped. Check the network, then try again."
+        );
+        // An error, never "gh cannot be asked", so the lookup keeps the last
+        // known PR and does not read the timeout as "no PR".
+        assert!(!gh_cannot_be_asked(&error));
+        assert!(!gh_cannot_be_asked(&gh_timed_out_text(GH_READ_TIMEOUT)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_timed_gh_that_answers_in_time_gives_its_output() {
+        let mut cmd = Command::new("echo");
+        cmd.arg("[]");
+        let output = gh_output(&mut cmd, Some(Duration::from_secs(10))).unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "[]");
+    }
+
+    #[test]
+    fn a_timed_gh_that_is_missing_still_reads_as_not_installed() {
+        let missing = std::env::temp_dir()
+            .join(format!("monocode-no-gh-{}", Uuid::new_v4()))
+            .join("gh");
+        let mut cmd = gh_command(&missing);
+        let error = gh_output(&mut cmd, Some(Duration::from_secs(5))).unwrap_err();
+        assert_eq!(error, "GitHub CLI (`gh`) is not installed.");
+        assert!(gh_cannot_be_asked(&error));
+    }
+
+    #[test]
+    fn a_lookup_that_times_out_is_an_error_not_no_pr() {
+        // G7: the PR lookup keeps the last known PR on an error ("last
+        // checked <time>"), as for any failed lookup.
+        let Some(dir) = published_pr_branch("pr-status-timeout") else {
+            return;
+        };
+        let timed_out = gh_timed_out_text(GH_READ_TIMEOUT);
+        let repo_view_hangs = |_: &[&str]| -> Result<String, String> { Err(timed_out.clone()) };
+        assert_eq!(
+            git_pr_status_with(&dir.0, &repo_view_hangs),
+            Err(timed_out.clone())
+        );
+        let list_hangs = |args: &[&str]| -> Result<String, String> {
+            match args {
+                ["repo", "view", ..] => Ok(PR_TEST_BASE.to_string()),
+                _ => Err(timed_out.clone()),
+            }
+        };
+        assert_eq!(
+            git_pr_status_with(&dir.0, &list_hangs),
+            Err(timed_out.clone())
+        );
+    }
+
+    #[test]
+    fn a_mutation_that_times_out_is_inconclusive_and_the_read_decides() {
+        // G7: the switch is busy only until the mutation's timeout. The PR is
+        // read again, and the bar shows what GitHub then reports.
+        let timed_out = gh_timed_out_text(GH_MUTATION_TIMEOUT);
+        let calls = std::cell::RefCell::new(Vec::new());
+        let views = std::cell::RefCell::new(vec![pr_view_json("OPEN", "BLOCKED", None)]);
+        let gh = auto_merge_gh(&views, Err(timed_out.clone()), &calls);
+        let result = git_github_pr_auto_merge_with(
+            "acme/web",
+            7,
+            true,
+            "PR_kwDOQ7aZ3s6abcde",
+            Some("squash"),
+            Some(HEAD),
+            &gh,
+        )
+        .unwrap();
+        assert_eq!(result.refusal.as_deref(), Some(timed_out.as_str()));
+        assert!(result.pr.unwrap().auto_merge_request.is_none());
+        assert_eq!(result.read_error, None);
+        assert_eq!(
+            calls
+                .borrow()
+                .iter()
+                .map(|call| call[0].as_str())
+                .collect::<Vec<_>>(),
+            ["pr", "api", "pr"]
+        );
+    }
+
+    #[test]
+    fn a_read_that_times_out_before_the_mutation_sends_nothing() {
+        let timed_out = gh_timed_out_text(GH_READ_TIMEOUT);
+        let calls = std::cell::RefCell::new(Vec::<Vec<String>>::new());
+        let gh = |args: &[&str]| -> Result<String, String> {
+            calls
+                .borrow_mut()
+                .push(args.iter().map(|arg| arg.to_string()).collect());
+            Err(timed_out.clone())
+        };
+        for enable in [true, false] {
+            let result = git_github_pr_auto_merge_with(
+                "acme/web",
+                7,
+                enable,
+                "PR_kwDOQ7aZ3s6abcde",
+                enable.then_some("squash"),
+                enable.then_some(HEAD),
+                &gh,
+            )
+            .unwrap();
+            assert_eq!(result.read_error.as_deref(), Some(timed_out.as_str()));
+            assert!(result.pr.is_none());
+        }
+        assert!(calls.borrow().iter().all(|call| call[0] != "api"));
+    }
+
+    #[test]
     fn refusal_text_keeps_githubs_words() {
         assert_eq!(
             github_refusal_text("GraphQL: Pull request Auto merge is not allowed for this repository (enablePullRequestAutoMerge)"),
@@ -10908,7 +11152,7 @@ mod tests {
                 "--repo",
                 "acme/web",
                 "--json",
-                "id,state,isDraft,mergeable,mergeStateStatus,autoMergeRequest,headRefOid,statusCheckRollup"
+                "number,id,state,isDraft,mergeable,mergeStateStatus,autoMergeRequest,headRefOid,statusCheckRollup"
             ]
         );
         assert!(github_pr_checks_args("acme/web", 0).is_err());

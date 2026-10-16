@@ -1537,8 +1537,45 @@ pub(crate) fn exec_output_configured(
             cmd.current_dir(workdir);
         }
     }
+    run_isolated_output(&mut cmd, timeout, input).map_err(|error| match error {
+        TimedRunError::Io(e) => format!("Failed to run {command}: {e}"),
+        TimedRunError::TimedOut => format!("{command} timed out"),
+    })
+}
 
-    let mut child = spawn_managed(&mut cmd).map_err(|e| format!("Failed to run {command}: {e}"))?;
+/// Why [`command_output_with_timeout`] has no output.
+#[derive(Debug)]
+pub(crate) enum TimedRunError {
+    /// It could not start, or its output could not be read.
+    Io(std::io::Error),
+    /// It ran past the timeout, and its process tree was stopped.
+    TimedOut,
+}
+
+/// [`exec_output`]'s timeout for a command its caller built, such as a `gh`
+/// from `fs::gh_command`. Output is captured and stdin is empty. The command
+/// gets its own process group, so past `timeout` the whole tree is stopped
+/// and `TimedOut` comes back at once.
+pub(crate) fn command_output_with_timeout(
+    cmd: &mut Command,
+    timeout: Duration,
+) -> Result<std::process::Output, TimedRunError> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    isolate_child(cmd);
+    run_isolated_output(cmd, timeout, None)
+}
+
+/// Start `cmd`, already isolated and with its output piped, and wait for it.
+/// Past `timeout` its process tree is stopped and the reader thread is left
+/// to finish on its own, so the caller never waits on the child.
+fn run_isolated_output(
+    cmd: &mut Command,
+    timeout: Duration,
+    input: Option<&[u8]>,
+) -> Result<std::process::Output, TimedRunError> {
+    let mut child = spawn_managed(cmd).map_err(TimedRunError::Io)?;
     if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
         // Small enough for the pipe buffer. A child that exits before reading
         // reports its own error below; dropping the handle closes stdin.
@@ -1552,10 +1589,10 @@ pub(crate) fn exec_output_configured(
 
     match rx.recv_timeout(timeout) {
         Ok(Ok(output)) => Ok(output),
-        Ok(Err(e)) => Err(format!("Failed to run {command}: {e}")),
+        Ok(Err(e)) => Err(TimedRunError::Io(e)),
         Err(_) => {
             terminate(pid);
-            Err(format!("{command} timed out"))
+            Err(TimedRunError::TimedOut)
         }
     }
 }
@@ -3290,6 +3327,60 @@ mod tests {
             let _ = child.kill();
             panic!("process group survived terminate");
         }
+    }
+
+    #[test]
+    fn command_output_with_timeout_returns_what_the_command_printed() {
+        let mut cmd = Command::new("echo");
+        cmd.arg("answered");
+        let output = command_output_with_timeout(&mut cmd, Duration::from_secs(10)).unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "answered");
+    }
+
+    #[test]
+    fn command_output_with_timeout_stops_a_command_that_runs_past_it() {
+        // G7: a gh that hangs on a firewall that drops packets. A stand-in
+        // that sleeps, with an argument no other test uses, so the check
+        // below finds only this process.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos();
+        let seconds = format!("41.{:04}", nanos % 10_000);
+        let mut cmd = Command::new("sleep");
+        cmd.arg(&seconds);
+        let started = Instant::now();
+        let result = command_output_with_timeout(&mut cmd, Duration::from_millis(300));
+        assert!(matches!(result, Err(TimedRunError::TimedOut)), "{result:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "returned when the timeout fired, not when the command ended"
+        );
+        let running = || {
+            snapshot_processes()
+                .iter()
+                .any(|row| row.args.split_whitespace().any(|part| part == seconds))
+        };
+        for _ in 0..60 {
+            if !running() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        panic!("the command that timed out is still running");
+    }
+
+    #[test]
+    fn exec_output_still_says_which_command_timed_out() {
+        let error = exec_output(
+            "sleep",
+            &["30".to_string()],
+            None,
+            Duration::from_millis(200),
+        )
+        .unwrap_err();
+        assert_eq!(error, "sleep timed out");
     }
 
     #[test]

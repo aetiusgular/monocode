@@ -15,14 +15,17 @@ import {
   autoFixWarning,
   autoMergeRefusalText,
   autoMergeView,
+  checksStateFor,
   decideAutoFix,
   MAX_FIX_ATTEMPTS,
   prBarHost,
+  prBarState,
   prRefFromUrl,
   savePrBarSettings,
   shouldAutoArchive,
   usePrBarSettings,
   type MergeMethod,
+  type PrChecksRead,
   type PrRef,
 } from "../model/prBar";
 import { lastCheckedText } from "../../source-control/model/prLookup";
@@ -77,6 +80,7 @@ export function PrBar({
   stale = false,
   confirmed = true,
   checkedAt = null,
+  reloadPr,
   initialChecks = null,
 }: {
   cwd: string;
@@ -90,6 +94,11 @@ export function PrBar({
    */
   confirmed?: boolean;
   checkedAt?: number | null;
+  /**
+   * Run the PR lookup again: after Check now (J1), and when GitHub reports
+   * the PR merged or closed while the lookup still says otherwise (4.10).
+   */
+  reloadPr?: () => void;
   /** Test seam: checks to show before the first read. */
   initialChecks?: GithubPrChecks | null;
 }) {
@@ -97,7 +106,15 @@ export function PrBar({
   const settings = usePrBarSettings(ref);
   const route = isHelperRoute(owner) ? owner : undefined;
   const sessionId = route?.sessionId;
-  const [checks, setChecks] = useState<GithubPrChecks | null>(initialChecks);
+  // The latest checks, with the PR number they were read for and when.
+  const [read, setRead] = useState<PrChecksRead>(() => ({
+    checks: initialChecks,
+    number: initialChecks ? (ref?.number ?? null) : null,
+    at: null,
+  }));
+  const checks = read.checks;
+  const setChecks = (next: GithubPrChecks, number: number) =>
+    setRead({ checks: next, number, at: Date.now() });
   const [checksError, setChecksError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -110,9 +127,15 @@ export function PrBar({
   const [polls, setPolls] = useState(0);
   const locked = stale || !confirmed;
   const sending = useRef(false);
-  const open = pr.state.toLowerCase() === "open";
+  // The newer of the lookup and the checks read (Mac 4.10, 16 Oct).
+  const state = ref
+    ? prBarState({ number: ref.number, lookupState: pr.state, lookupAt: checkedAt, read })
+    : pr.state.toLowerCase();
+  const reported = ref ? checksStateFor(ref.number, read) : null;
+  const open = state === "open";
   const merge = autoMergeView(checks);
   const autoMergeOn = merge.kind === "on";
+  const reloadedFor = useRef<string | null>(null);
 
   // Checks: read once when the bar shows (or when you ask, with lookups off),
   // and again on each poll tick. Turning auto-merge on does not read twice.
@@ -120,11 +143,12 @@ export function PrBar({
     if (!ref || !open) return;
     if (!lookupsOn && !asked && reads === 0) return;
     let cancelled = false;
+    const number = ref.number;
     setLoading(true);
-    fetchGithubPrChecks(cwd, ref.repo, ref.number)
+    fetchGithubPrChecks(cwd, ref.repo, number)
       .then((next) => {
         if (cancelled) return;
-        setChecks(next);
+        setChecks(next, number);
         setChecksError(null);
       })
       .catch((error: unknown) => {
@@ -183,16 +207,27 @@ export function PrBar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [checks, settings, sessionId, pr.url]);
 
+  // GitHub reports the PR merged or closed and the lookup does not say so
+  // yet: run the lookup again, so the rest of the panel catches up. Once for
+  // each state a read reports, so two reads that disagree cannot loop.
+  useEffect(() => {
+    if (!reloadPr || !reported || reported === "open") return;
+    if (pr.state.toLowerCase() === reported) return;
+    if (reloadedFor.current === reported) return;
+    reloadedFor.current = reported;
+    reloadPr();
+  }, [reported, pr.state, reloadPr]);
+
   // Auto-archive: once the PR is merged or closed.
   useEffect(() => {
     if (!ref || !sessionId) return;
-    if (!shouldAutoArchive({ settings, state: pr.state, hasChat: true })) return;
+    if (!shouldAutoArchive({ settings, state, hasChat: true })) return;
     const host = prBarHost();
     if (!host) return;
     savePrBarSettings(ref, { archived: true });
     void host.archiveSession(sessionId).catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pr.state, settings.autoArchive, sessionId, pr.url]);
+  }, [state, settings.autoArchive, sessionId, pr.url]);
 
   if (!ref) return null;
 
@@ -222,7 +257,7 @@ export function PrBar({
             }
           : { enable: false, prId: checks.prId },
       );
-      if (result.pr) setChecks(result.pr);
+      if (result.pr) setChecks(result.pr, ref.number);
       else setReads((value) => value + 1);
       const notes = [
         result.refusal ? autoMergeRefusalText(result.refusal) : undefined,
@@ -250,7 +285,7 @@ export function PrBar({
       <div className="flex items-center gap-1.5 text-content/70">
         <GitPullRequest className="size-3.5 shrink-0" />
         <span className="min-w-0 flex-1 truncate">
-          #{ref.number} · {open ? summary.description : pr.state.toLowerCase()}
+          #{ref.number} · {open ? summary.description : state}
           {stale ? (
             <span className="text-amber-400"> · {lastCheckedText(checkedAt)}</span>
           ) : null}
@@ -262,6 +297,10 @@ export function PrBar({
             onClick={() => {
               setAsked(true);
               setReads((value) => value + 1);
+              // J1: one PR lookup as well, which you asked for, so a cached PR
+              // can be confirmed and the switches unlock. Nothing runs on its
+              // own after it.
+              reloadPr?.();
             }}
             className="shrink-0 rounded px-1 text-[11px] text-content/60 hover:bg-content/10"
           >

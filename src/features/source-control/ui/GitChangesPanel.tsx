@@ -870,6 +870,7 @@ function ChangedFiles({
             stale={prStatus.stale}
             confirmed={prStatus.answered && !prStatus.cachedOnly}
             checkedAt={prStatus.checkedAt}
+            reloadPr={reloadPr}
           />
         ) : null}
         {!isRemoteProjectPath(cwd) ? (
@@ -1031,8 +1032,9 @@ export function usePrStatus(
       return;
     }
     // 5.9: with "GitHub lookups" off, only a reload the user's own action
-    // asked for (a commit, a push, a new pull request) runs gh. The last
-    // known PR shows, and Create PR stays as it was before.
+    // asked for (a commit, a push, a new pull request, the PR bar's Check
+    // now) runs gh. The last known PR shows, and Create PR stays as it was
+    // before.
     if (!githubLookupAllowed(nonce > 0)) {
       setState({
         ...cachedPrLookupState(cwd, branch),
@@ -1041,16 +1043,18 @@ export function usePrStatus(
       });
       return;
     }
-    const userAsked = nonce > 0;
     const lookup = createPrLookup({
       cwd,
       branch,
       fetch: gitPrStatus,
       onChange: setState,
-      allowed: () => githubLookupAllowed(userAsked),
+      // Focus asks only with lookups on. A reload you asked for runs once
+      // even with them off, and does not turn focus lookups on (J1).
+      allowed: () => githubLookupAllowed(false),
     });
     setState(lookup.state());
-    lookup.run();
+    if (nonce > 0) lookup.ask();
+    else lookup.run();
     const onResume = () => lookup.run();
     window.addEventListener("focus", onResume);
     return () => {

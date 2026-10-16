@@ -141,8 +141,17 @@ export function resetPrLookupMemory(): void {
 
 export type PrLookup = {
   state(): PrLookupState;
-  /** Look the PR up now. A pending retry is replaced. */
+  /**
+   * Look the PR up now, if `allowed` says so. A pending retry is replaced.
+   * Focus and the normal triggers call this.
+   */
   run(): void;
+  /**
+   * Look the PR up now because the user asked (a commit, a push, a new PR,
+   * Check now). Runs with "GitHub lookups" off, once, and its retries after
+   * a failure run too. A later `run` that is not allowed leaves them be (J1).
+   */
+  ask(): void;
   dispose(): void;
 };
 
@@ -172,10 +181,10 @@ export function createPrLookup(input: {
     timer = undefined;
   };
 
-  const run = () => {
+  const attempt = (asked: boolean) => {
     if (disposed) return;
+    if (!asked && input.allowed && !input.allowed()) return;
     clearTimer();
-    if (input.allowed && !input.allowed()) return;
     const mine = ++generation;
     input
       .fetch(input.cwd)
@@ -192,14 +201,15 @@ export function createPrLookup(input: {
         if (retries < PR_RETRY_DELAYS_MS.length) {
           const delay = PR_RETRY_DELAYS_MS[retries];
           retries += 1;
-          timer = setTimeout(run, delay);
+          timer = setTimeout(() => attempt(asked), delay);
         }
       });
   };
 
   return {
     state: () => state,
-    run,
+    run: () => attempt(false),
+    ask: () => attempt(true),
     dispose: () => {
       disposed = true;
       clearTimer();
