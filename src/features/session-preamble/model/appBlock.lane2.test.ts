@@ -25,7 +25,7 @@ describe("F7: the monocode_app block", () => {
   it("names memory only when the thread has project memory", () => {
     const text = appBlock({ cli, alwaysEnabled: true, memory: true });
     expect(text).toContain("always enabled");
-    expect(text).toContain("sessions, worktrees, folders, notes, memory");
+    expect(text).toContain("sessions, worktrees, folders, notes, preview, memory");
     expect(text).toContain("waits for the user's approval");
   });
 });

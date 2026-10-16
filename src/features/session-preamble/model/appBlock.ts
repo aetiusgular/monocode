@@ -21,6 +21,7 @@ export const OPERATOR_GROUPS = [
   "worktrees",
   "folders",
   "notes",
+  "preview",
 ] as const;
 
 export function appBlock({
