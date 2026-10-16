@@ -1,3 +1,4 @@
+import { withoutFence } from "../../../integrations/harness/core/noteFence";
 import { isHarnessAvailable } from "../../../integrations/harness/core/availability";
 import { looksLikeProject } from "../../projects/model/recents";
 import {
@@ -268,7 +269,8 @@ function agentPrompt(value: unknown): string {
   const prompt = requiredString(value, "prompt", 240_000);
   if (consumeOperatorCommand(prompt).matched)
     throw new Error("App calls cannot enable /operator in another session");
-  return prompt;
+  // An agent's prompt cannot pass as MonoCode's own note (security review K1).
+  return withoutFence(prompt);
 }
 
 function completionRecipient(

@@ -36,6 +36,8 @@ import {
   type PreamblePart,
   type PreamblePartId,
 } from "./preamble";
+import { newNoteMark } from "../../../integrations/harness/core/noteFence";
+import { forgetNoteMark, noteMarkFor, recordNoteMark } from "./noteMarks";
 import {
   appReceiptKey,
   conversationGiven,
@@ -160,14 +162,15 @@ function messageNote(
   parts: readonly PreamblePart[],
   budget: number,
   kind: MessageBlockKind,
+  mark?: string,
 ) {
   const plain = buildPreamble(
     parts,
-    Math.max(0, budget - preambleBlockOverhead(kind)),
+    Math.max(0, budget - preambleBlockOverhead(kind, mark)),
     "plain",
   );
   return {
-    block: plain.text ? preambleBlock(plain.text, kind) : "",
+    block: plain.text ? preambleBlock(plain.text, kind, mark) : "",
     included: plain.included,
     omitted: plain.omitted,
   };
@@ -256,11 +259,15 @@ export async function prepareSessionPreamble(
   // later notes from MonoCode are the user's (finding 2.2). The adapter uses
   // it only when a conversation starts.
   if (channel === "system" && (built.text || firstTurn)) {
+    // A new conversation gets a new mark; one already running keeps the mark
+    // its launch notice named (security review K1).
+    const mark = (!firstTurn && noteMarkFor(session.id)) || newNoteMark();
+    recordNoteMark(session.id, mark);
     preambleFile = await safe(
       () =>
         invoke<string>("session_preamble_write", {
           sessionId: session.id,
-          text: nativeLaunchText(built.text),
+          text: nativeLaunchText(built.text, mark),
         }),
       undefined,
     );
@@ -287,9 +294,11 @@ export async function prepareSessionPreamble(
   let messageBlock = "";
   let sent: typeof report = report;
   if (fullByMessage || appByMessage) {
+    // On a system channel the note names the mark its launch notice gave.
+    const mark = channel === "system" ? noteMarkFor(session.id) : undefined;
     const note = fullByMessage
-      ? messageNote(parts, budget, "current")
-      : messageNote(appParts, budget, "app");
+      ? messageNote(parts, budget, "current", mark)
+      : messageNote(appParts, budget, "app", mark);
     messageBlock = note.block;
     sent = {
       ...report,
@@ -352,6 +361,7 @@ export async function instructionsStaleNow(
 /** A deleted chat leaves no receipt, switch or launch file behind. */
 export function forgetSessionContext(sessionId: string): void {
   forgetPreamble(sessionId);
+  forgetNoteMark(sessionId);
   forgetChatContext(sessionId);
   seenCompactions.delete(sessionId);
   void invoke("session_preamble_forget", { sessionId }).catch(() => undefined);

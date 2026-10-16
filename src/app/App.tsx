@@ -864,6 +864,7 @@ import {
   type PreparedPreamble,
 } from "../features/session-preamble/model/sessionPreamble";
 import { withPreambleBlock } from "../features/session-preamble/model/preamble";
+import { withoutFence } from "../integrations/harness/core/noteFence";
 import { chatContextPrefs } from "../features/session-preamble/model/chatContext";
 import {
   agentsMdBesideClaudeMd,
@@ -8351,6 +8352,10 @@ function Workspace({
               ...(agentsMdPlugin ? { agentsMdPlugin } : {}),
             };
           }
+          // Security review K1: what goes out so far is text MonoCode did not
+          // write (typed, pasted, sent by another agent, a CI log), so it may
+          // not carry the lines that fence MonoCode's own note.
+          sendText = withoutFence(sendText);
           // A Mono reads who it is ahead of the message, so it never takes it
           // for something the user pasted. A command must stay first.
           if (mono && !rawCommand) sendText = monoTurn(sendText, appContext);

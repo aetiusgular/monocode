@@ -1,3 +1,4 @@
+import { withoutFence } from "./noteFence";
 import type {
   Block,
   HarnessId,
@@ -423,7 +424,9 @@ export function steerHarnessTurn(
       throw new Error(`${input.harness} is not connected yet`);
     }
     cancelIdlePark(input.sessionId);
-    await adapter.steerTurn(input);
+    // MonoCode never adds its note to guidance mid-turn, so no guidance may
+    // carry the note's fence lines (security review K1).
+    await adapter.steerTurn({ ...input, text: withoutFence(input.text) });
   });
 }
 
