@@ -102,6 +102,30 @@ describe("usePrStatus", () => {
   });
 });
 
+describe("with GitHub lookups off (review H1)", () => {
+  it("a cached PR shows, marked as not confirmed this run, and gh is not asked", async () => {
+    gitPrStatus.mockResolvedValue(PR);
+    await mountProbe();
+    act(() => root.unmount());
+    vi.resetModules();
+    gitPrStatus.mockClear();
+    const outbound = await import("../../settings/model/outboundCalls");
+    outbound.setOutboundCallAllowed("github-lookups", false);
+    const panel = await import("./GitChangesPanel");
+    let seen: { pr: unknown; answered: boolean; cachedOnly?: boolean } | undefined;
+    function Probe() {
+      const status = panel.usePrStatus("/Users/t/s7r2-prtest", "s7r2-pr1");
+      seen = status;
+      return null;
+    }
+    root = createRoot(container);
+    await act(async () => root.render(createElement(Probe)));
+    expect(gitPrStatus).not.toHaveBeenCalled();
+    expect(seen).toMatchObject({ pr: PR, answered: true, cachedOnly: true });
+    outbound.setOutboundCallAllowed("github-lookups", true);
+  });
+});
+
 describe("Create PR", () => {
   it("shows only after a lookup answered and found none", async () => {
     const { GitSyncActions } = await import("./GitChangesPanel");

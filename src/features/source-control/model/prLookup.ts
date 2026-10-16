@@ -26,6 +26,11 @@ export type PrLookupState = {
   stale: boolean;
   /** When a lookup last answered for this folder and branch, if ever. */
   checkedAt: number | null;
+  /**
+   * Shown from the cache with "GitHub lookups" off: no lookup in this run
+   * confirmed it, so the PR bar keeps its switches off (review H1).
+   */
+  cachedOnly?: boolean;
 };
 
 export const PR_RETRY_DELAYS_MS = [5_000, 15_000, 45_000] as const;

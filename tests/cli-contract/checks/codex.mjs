@@ -872,7 +872,8 @@ async function checkReasoningOnlyEnd({ codexPath }) {
         let text = JSON.stringify(value);
         for (const [from, to] of swaps) if (from && from !== "/") text = text.split(from).join(to);
         const user = userInfo().username;
-        if (user && user.length > 2 && new RegExp(`\\b${user}\\b`).test(text)) {
+        const escaped = user.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        if (user && user.length > 2 && new RegExp(`\\b${escaped}\\b`).test(text)) {
           throw new Error(`fixture still names the user ${user}; not written`);
         }
         return JSON.parse(text);

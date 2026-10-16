@@ -26,7 +26,7 @@ import {
   type PrRef,
 } from "../model/prBar";
 import { lastCheckedText } from "../../source-control/model/prLookup";
-import { outboundCallAllowed } from "../../settings/model/outboundCalls";
+import { useOutboundCallAllowed } from "../../settings/model/outboundCalls";
 
 /**
  * How often the bar re-reads the PR while auto-fix or auto-merge is on. GitHub
@@ -105,7 +105,7 @@ export function PrBar({
   const [reads, setReads] = useState(0);
   // "GitHub lookups" off: the bar reads nothing on its own, only after you
   // press Check now or change auto-merge (5.9; review of the 15 Oct pass, G2).
-  const lookupsOn = outboundCallAllowed("github-lookups");
+  const lookupsOn = useOutboundCallAllowed("github-lookups");
   const [asked, setAsked] = useState(false);
   const [polls, setPolls] = useState(0);
   const locked = stale || !confirmed;

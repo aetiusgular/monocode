@@ -8,7 +8,7 @@ const invoke = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", () => ({ invoke, isTauri: () => false }));
 
 import { PrBar } from "../ui/PrBar";
-import { resetPrBarCache } from "./prBar";
+import { autoMergeView, decideAutoFix, resetPrBarCache } from "./prBar";
 import {
   resetOutboundCallsCache,
   setOutboundCallAllowed,
@@ -129,5 +129,21 @@ describe("G3: the PR cache keeps only github.com pull request addresses", () => 
     expect(cachedPrLookupState("/r", "b").pr).toBeNull();
     expect(cachedPrLookupState("/r", "c").pr).toBeNull();
     expect(cachedPrLookupState("/r", "d").pr).toEqual(PR);
+  });
+});
+
+describe("H1: a PR GitHub reports closed gets no repair and no auto-merge", () => {
+  it("decideAutoFix and autoMergeView read GitHub's state", () => {
+    const failed = { name: "check", workflow: "ci", state: "fail" as const, url: null, startedAt: null, completedAt: null };
+    const settings = { autoFix: true, autoArchive: false, fixAttempts: 0 };
+    const open = { ...CHECKS, autoMergeRequest: null, checks: [failed] };
+    expect(decideAutoFix({ settings, checks: open, hasChat: true }).send).toBe(true);
+    for (const state of ["CLOSED", "MERGED"]) {
+      expect(decideAutoFix({ settings, checks: { ...open, state }, hasChat: true })).toEqual({
+        send: false,
+        reason: "not-open",
+      });
+      expect(autoMergeView({ ...open, state })).toEqual({ kind: "unknown" });
+    }
   });
 });

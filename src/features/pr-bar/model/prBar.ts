@@ -212,6 +212,7 @@ export function autoMergeOnText(method: MergeMethod | undefined): string {
  */
 export function autoMergeView(checks: GithubPrChecks | null): AutoMergeView {
   if (!checks || !checks.prId) return { kind: "unknown" };
+  if (checks.state && checks.state.toUpperCase() !== "OPEN") return { kind: "unknown" };
   if (checks.autoMergeRequest) {
     const method = mergeMethodFromGithub(checks.autoMergeRequest.mergeMethod);
     return { kind: "on", method, text: autoMergeOnText(method) };
@@ -249,7 +250,8 @@ export type AutoFixDecision =
         | "no-failure"
         | "still-running"
         | "same-commit"
-        | "limit";
+        | "limit"
+        | "not-open";
     };
 
 /**
@@ -264,6 +266,10 @@ export function decideAutoFix(input: {
 }): AutoFixDecision {
   const { settings, checks } = input;
   if (!settings.autoFix) return { send: false, reason: "off" };
+  // Only an open PR gets a repair, as GitHub reports it (review H1).
+  if (checks?.state && checks.state.toUpperCase() !== "OPEN") {
+    return { send: false, reason: "not-open" };
+  }
   if (!input.hasChat) return { send: false, reason: "no-chat" };
   if (settings.fixAttempts >= MAX_FIX_ATTEMPTS) return { send: false, reason: "limit" };
   const failed = checks?.checks.filter((check) => check.state === "fail") ?? [];

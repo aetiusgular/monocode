@@ -868,7 +868,7 @@ function ChangedFiles({
             pr={pr}
             owner={textHarness}
             stale={prStatus.stale}
-            confirmed={prStatus.answered}
+            confirmed={prStatus.answered && !prStatus.cachedOnly}
             checkedAt={prStatus.checkedAt}
           />
         ) : null}
@@ -1034,7 +1034,11 @@ export function usePrStatus(
     // asked for (a commit, a push, a new pull request) runs gh. The last
     // known PR shows, and Create PR stays as it was before.
     if (!githubLookupAllowed(nonce > 0)) {
-      setState({ ...cachedPrLookupState(cwd, branch), answered: true });
+      setState({
+        ...cachedPrLookupState(cwd, branch),
+        answered: true,
+        cachedOnly: true,
+      });
       return;
     }
     const userAsked = nonce > 0;
