@@ -661,6 +661,7 @@ import {
   ARTIFACT_DELETED_EVENT,
 } from "../features/artifacts/artifacts";
 import type { MonoChangesRequest } from "../features/monos/ui/MonoChangesView";
+import { monoChangesTextTarget } from "../features/monos/model/monoChangesTarget";
 import { confirmDeleteChats } from "../features/sessions/model/deleteConfirm";
 import {
   automationRunSettlement,
@@ -13442,7 +13443,7 @@ function Workspace({
           cwd: monoViewCwd,
           totals: monoChangeTotals,
           request: monoChangesRequest,
-          textHarness: helperRouteForSession(monoViewSession),
+          textHarness: monoChangesTextTarget(monoViewSession),
           projects: monoViewMono.projects,
         }}
         tab={monoOverviewTab}
