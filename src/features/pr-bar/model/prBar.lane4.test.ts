@@ -135,10 +135,13 @@ describe("auto-archive", () => {
 describe("storage", () => {
   const ref = { repo: "Acme/Web", number: 7 };
 
+  // Changed in the 15 Oct fix pass (Mac 4.10, retest 3): auto-merge's switch
+  // is GitHub's own request and is not stored; only the preferred merge
+  // method is. See prBar.session6p4.test.ts.
   it("keeps switches per PR across a reload (case 14)", () => {
-    savePrBarSettings(ref, { autoFix: true, autoMerge: "squash" });
+    savePrBarSettings(ref, { autoFix: true, mergeMethod: "squash" });
     resetPrBarCache();
-    expect(prBarSettings({ repo: "acme/web", number: 7 })).toMatchObject({ autoFix: true, autoMerge: "squash", fixAttempts: 0 });
+    expect(prBarSettings({ repo: "acme/web", number: 7 })).toMatchObject({ autoFix: true, mergeMethod: "squash", fixAttempts: 0 });
     expect(prKey(ref)).toBe("acme/web#7");
   });
 

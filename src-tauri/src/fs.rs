@@ -1183,10 +1183,15 @@ pub struct GitPr {
     pub state: String,
 }
 
-/// Latest pull request for the current branch, if `gh` can see one.
+/// The pull request for the current branch. `Ok(None)` only when `gh`
+/// answered and there is no pull request, or when `gh` cannot be asked at all
+/// (not installed, signed out, no GitHub remote), as before. Any other `gh`
+/// failure is an error, so the app keeps the last answer rather than reading
+/// a failed lookup as "no PR" (Mac test 4.10, retest 3: a DNS failure turned
+/// into Create PR on a branch with an open PR).
 #[tauri::command]
 pub async fn git_pr_status(cwd: String) -> Result<Option<GitPr>, String> {
-    tauri::async_runtime::spawn_blocking(move || Ok(git_pr_status_for(&expand_home(&cwd))))
+    tauri::async_runtime::spawn_blocking(move || git_pr_status_for(&expand_home(&cwd)))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -1573,6 +1578,77 @@ pub struct GitHubPrCheck {
 pub struct GitHubPrChecks {
     pub head_oid: String,
     pub checks: Vec<GitHubPrCheck>,
+    /// The pull request's GraphQL node id, for the auto-merge mutations.
+    pub pr_id: Option<String>,
+    /// `OPEN`, `CLOSED` or `MERGED`, as GitHub reports it.
+    pub state: Option<String>,
+    pub is_draft: Option<bool>,
+    /// `MERGEABLE`, `CONFLICTING` or `UNKNOWN`.
+    pub mergeable: Option<String>,
+    /// GitHub's `mergeStateStatus`: `CLEAN`, `HAS_HOOKS`, `UNSTABLE`,
+    /// `BLOCKED`, `BEHIND`, `DIRTY`, `DRAFT` or `UNKNOWN`.
+    pub merge_state_status: Option<String>,
+    /// GitHub's own auto-merge request; `None` when auto-merge is off. GitHub
+    /// clears it by itself after some pushes and base changes, so the bar
+    /// shows this, never a stored switch.
+    pub auto_merge_request: Option<GitHubAutoMergeRequest>,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubAutoMergeRequest {
+    /// `MERGE`, `SQUASH` or `REBASE`.
+    pub merge_method: String,
+    pub enabled_at: Option<String>,
+}
+
+/// What GitHub said after an auto-merge change, read back from GitHub.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubPrAutoMergeResult {
+    /// GitHub's refusal, or `gh`'s error, when the mutation exited non-zero.
+    /// Inconclusive: the pull request read afterwards says what holds.
+    pub refusal: Option<String>,
+    /// The pull request as GitHub reports it after the change.
+    pub pr: Option<GitHubPrChecks>,
+    /// Why the pull request could not be read afterwards.
+    pub read_error: Option<String>,
+}
+
+/// Turn GitHub's auto-merge on or off for one pull request (#33, Mac test
+/// 4.10, retest 3), through GitHub's own mutations and never `gh pr merge
+/// --auto`: gh 2.94.0 merges at once when `mergeStateStatus` is `CLEAN`,
+/// `HAS_HOOKS` or `UNSTABLE` (cli/cli `pkg/cmd/pr/merge/merge.go`,
+/// `isImmediatelyMergeable`), which merged a PR whose checks had passed and
+/// would merge one whose only failing check is not required.
+/// `enablePullRequestAutoMerge` refuses such a pull request instead.
+///
+/// Off runs only when GitHub reports an auto-merge request. After either, the
+/// pull request is read again, and that read is the result.
+#[tauri::command]
+pub async fn git_github_pr_auto_merge(
+    cwd: String,
+    repo: String,
+    number: i64,
+    enable: bool,
+    pr_id: String,
+    method: Option<String>,
+    expected_head_oid: Option<String>,
+) -> Result<GitHubPrAutoMergeResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = expand_home(&cwd);
+        git_github_pr_auto_merge_with(
+            &repo,
+            number,
+            enable,
+            &pr_id,
+            method.as_deref(),
+            expected_head_oid.as_deref(),
+            &|args: &[&str]| gh_run(&root, args, true),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// CI checks for one pull request, targeted explicitly by `repo` and `number` via `gh`.
@@ -2880,8 +2956,23 @@ fn git_range_context_for(root: &Path) -> Result<GitRangeContext, String> {
     })
 }
 
-fn git_pr_status_for(root: &Path) -> Option<GitPr> {
-    git_pr_status_with(root, &|args: &[&str]| gh_stdout(root, args))
+fn git_pr_status_for(root: &Path) -> Result<Option<GitPr>, String> {
+    git_pr_status_with(root, &|args: &[&str]| gh_run(root, args, false))
+}
+
+/// A `gh` failure that means it cannot be asked here, which the PR lookup
+/// has always shown as "no PR": `gh` is not installed, it is signed out or
+/// its token is refused, or the folder has no GitHub remote. Every other
+/// failure (a network error, a rate limit, GitHub's own error) says nothing
+/// about whether a pull request exists.
+fn gh_cannot_be_asked(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("`gh`) is not installed")
+        || error.contains("gh auth login")
+        || error.contains("not logged into any")
+        || error.contains("no git remotes found")
+        || error.contains("http 401")
+        || error.contains("bad credentials")
 }
 
 /// The pull request for the checked-out branch, found the way `gh pr view`
@@ -2893,14 +2984,44 @@ fn git_pr_status_for(root: &Path) -> Option<GitPr> {
 /// so the qualified filter used before found nothing (Mac test 4.10).
 ///
 /// `gh` is passed in so tests can stand in for it.
-fn git_pr_status_with(root: &Path, gh: &dyn Fn(&[&str]) -> Option<String>) -> Option<GitPr> {
-    let local = git_head_branch(root)?;
-    let base = gh(&["repo", "view", "--json", "nameWithOwner,defaultBranchRef"])
-        .and_then(|json| parse_github_base_repo(&json))?;
-    let head = git_pr_head_for(root, &local, &base.slug)?;
+/// `Ok(None)`: `gh` answered and found no pull request for this branch, or
+/// cannot be asked (`gh_cannot_be_asked`), or git has no branch to look for.
+/// `Err`: `gh` failed, or answered with something that is not what it
+/// answers, so whether a pull request exists is not known.
+fn git_pr_status_with(
+    root: &Path,
+    gh: &dyn Fn(&[&str]) -> Result<String, String>,
+) -> Result<Option<GitPr>, String> {
+    let Some(local) = git_head_branch(root) else {
+        return Ok(None);
+    };
+    let ask = |args: &[&str]| -> Result<Option<String>, String> {
+        match gh(args) {
+            Ok(out) => Ok(Some(out)),
+            Err(error) if gh_cannot_be_asked(&error) => Ok(None),
+            Err(error) => Err(error),
+        }
+    };
+    let Some(json) = ask(&["repo", "view", "--json", "nameWithOwner,defaultBranchRef"])? else {
+        return Ok(None);
+    };
+    let base = parse_github_base_repo(&json)
+        .ok_or_else(|| "gh repo view gave an answer MonoCode could not read".to_string())?;
+    let Some(head) = git_pr_head_for(root, &local, &base.slug) else {
+        return Ok(None);
+    };
     let args = pr_list_for_branch_args(&head.branch);
-    let json = gh(&args.iter().map(String::as_str).collect::<Vec<_>>())?;
-    select_branch_pr(&json, &head, base.default_branch.as_deref())
+    let Some(json) = ask(&args.iter().map(String::as_str).collect::<Vec<_>>())? else {
+        return Ok(None);
+    };
+    if serde_json::from_str::<Vec<serde_json::Value>>(&json).is_err() {
+        return Err("gh pr list gave an answer MonoCode could not read".into());
+    }
+    Ok(select_branch_pr(
+        &json,
+        &head,
+        base.default_branch.as_deref(),
+    ))
 }
 
 /// The base repository `gh` resolves in a folder, and its default branch.
@@ -3341,15 +3462,8 @@ fn github_pr_action_args(repo: &str, number: i64, action: &str) -> Result<Vec<St
         "merge" => vec!["pr", "merge", &number, "--repo", &repo, "--merge"],
         "squash" => vec!["pr", "merge", &number, "--repo", &repo, "--squash"],
         "rebase" => vec!["pr", "merge", &number, "--repo", &repo, "--rebase"],
-        // #33: GitHub merges once the required checks pass.
-        "auto-merge" => vec!["pr", "merge", &number, "--repo", &repo, "--auto", "--merge"],
-        "auto-squash" => vec![
-            "pr", "merge", &number, "--repo", &repo, "--auto", "--squash",
-        ],
-        "auto-rebase" => vec![
-            "pr", "merge", &number, "--repo", &repo, "--auto", "--rebase",
-        ],
-        "disable-auto" => vec!["pr", "merge", &number, "--repo", &repo, "--disable-auto"],
+        // Auto-merge is not here: `gh pr merge --auto` merges at once when
+        // GitHub could merge now (Mac test 4.10). See git_github_pr_auto_merge.
         "draft" => vec!["pr", "ready", &number, "--repo", &repo, "--undo"],
         "ready" => vec!["pr", "ready", &number, "--repo", &repo],
         "close" => vec!["pr", "close", &number, "--repo", &repo],
@@ -4202,8 +4316,140 @@ fn github_pr_checks_args(repo: &str, number: i64) -> Result<Vec<String>, String>
         "--repo".into(),
         repo,
         "--json".into(),
-        "headRefOid,statusCheckRollup".into(),
+        PR_CHECKS_FIELDS.into(),
     ])
+}
+
+/// What the PR bar's poll reads: the checks, and what decides auto-merge.
+const PR_CHECKS_FIELDS: &str =
+    "id,state,isDraft,mergeable,mergeStateStatus,autoMergeRequest,headRefOid,statusCheckRollup";
+
+/// The two auto-merge mutations. Fixed text: every value goes in as a
+/// GraphQL variable through its own `-f name=value` argument, never into the
+/// query (rules, section 5, item 3).
+const ENABLE_AUTO_MERGE_QUERY: &str = "mutation($pullRequestId: ID!, $mergeMethod: PullRequestMergeMethod!, $expectedHeadOid: GitObjectID!) { enablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId, mergeMethod: $mergeMethod, expectedHeadOid: $expectedHeadOid}) { pullRequest { id autoMergeRequest { mergeMethod } } } }";
+const DISABLE_AUTO_MERGE_QUERY: &str = "mutation($pullRequestId: ID!) { disablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId}) { pullRequest { id autoMergeRequest { mergeMethod } } } }";
+
+/// `gh api graphql` arguments for one auto-merge change. Refuses anything
+/// that is not a node id, a merge method or a commit id before `gh` runs.
+fn pr_auto_merge_args(
+    enable: bool,
+    pr_id: &str,
+    method: Option<&str>,
+    expected_head_oid: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let pr_id = pr_id.trim();
+    if pr_id.is_empty()
+        || pr_id.len() > 128
+        || !pr_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '=' | '+' | '/'))
+    {
+        return Err("Not a GitHub pull request id".into());
+    }
+    let mut args = vec!["api".to_string(), "graphql".to_string()];
+    if enable {
+        let method = match method.map(str::trim) {
+            Some("merge") => "MERGE",
+            Some("squash") => "SQUASH",
+            Some("rebase") => "REBASE",
+            _ => return Err("Unknown merge method".into()),
+        };
+        let oid = expected_head_oid.map(str::trim).unwrap_or_default();
+        if !matches!(oid.len(), 40 | 64) || !oid.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err("Not a commit id".into());
+        }
+        args.extend([
+            "-f".to_string(),
+            format!("query={ENABLE_AUTO_MERGE_QUERY}"),
+            "-f".to_string(),
+            format!("pullRequestId={pr_id}"),
+            "-f".to_string(),
+            format!("mergeMethod={method}"),
+            "-f".to_string(),
+            format!("expectedHeadOid={}", oid.to_ascii_lowercase()),
+        ]);
+    } else {
+        args.extend([
+            "-f".to_string(),
+            format!("query={DISABLE_AUTO_MERGE_QUERY}"),
+            "-f".to_string(),
+            format!("pullRequestId={pr_id}"),
+        ]);
+    }
+    Ok(args)
+}
+
+/// GitHub's words from a failed `gh api graphql`: gh prints
+/// `GraphQL: <message> (<mutation>)`. The wrapper goes; the message stays.
+fn github_refusal_text(error: &str) -> String {
+    let mut text = error.trim();
+    if let Some(rest) = text.strip_prefix("GraphQL:") {
+        text = rest.trim();
+    }
+    for suffix in [
+        "(enablePullRequestAutoMerge)",
+        "(disablePullRequestAutoMerge)",
+    ] {
+        if let Some(rest) = text.strip_suffix(suffix) {
+            text = rest.trim();
+        }
+    }
+    let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    text.chars().take(400).collect()
+}
+
+fn git_github_pr_auto_merge_with(
+    repo: &str,
+    number: i64,
+    enable: bool,
+    pr_id: &str,
+    method: Option<&str>,
+    expected_head_oid: Option<&str>,
+    gh: &dyn Fn(&[&str]) -> Result<String, String>,
+) -> Result<GitHubPrAutoMergeResult, String> {
+    let read_args = github_pr_checks_args(repo, number)?;
+    let read = || -> Result<GitHubPrChecks, String> {
+        let json = gh(&read_args.iter().map(String::as_str).collect::<Vec<_>>())?;
+        parse_github_pr_checks(&json)
+    };
+    let mutation = if enable {
+        pr_auto_merge_args(true, pr_id, method, expected_head_oid)?
+    } else {
+        pr_auto_merge_args(false, pr_id, None, None)?;
+        // Off only when GitHub reports an auto-merge request, and for the
+        // pull request GitHub names, not a stored one.
+        let before = match read() {
+            Ok(before) => before,
+            Err(error) => {
+                return Ok(GitHubPrAutoMergeResult {
+                    refusal: None,
+                    pr: None,
+                    read_error: Some(error),
+                })
+            }
+        };
+        let Some(id) = before.auto_merge_request.as_ref().and(before.pr_id.clone()) else {
+            return Ok(GitHubPrAutoMergeResult {
+                refusal: None,
+                pr: Some(before),
+                read_error: None,
+            });
+        };
+        pr_auto_merge_args(false, &id, None, None)?
+    };
+    let refusal = gh(&mutation.iter().map(String::as_str).collect::<Vec<_>>())
+        .err()
+        .map(|error| github_refusal_text(&error));
+    let (pr, read_error) = match read() {
+        Ok(pr) => (Some(pr), None),
+        Err(error) => (None, Some(error)),
+    };
+    Ok(GitHubPrAutoMergeResult {
+        refusal,
+        pr,
+        read_error,
+    })
 }
 
 #[derive(Deserialize)]
@@ -4238,19 +4484,54 @@ struct GitHubStatusCheckRow {
 fn parse_github_pr_checks(json: &str) -> Result<GitHubPrChecks, String> {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
+    struct AutoMergeRow {
+        #[serde(default)]
+        merge_method: String,
+        #[serde(default)]
+        enabled_at: Option<String>,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
     struct Row {
         #[serde(default)]
         head_ref_oid: String,
         #[serde(default)]
         status_check_rollup: Option<Vec<GitHubStatusCheckRow>>,
+        #[serde(default)]
+        id: String,
+        #[serde(default)]
+        state: String,
+        #[serde(default)]
+        is_draft: Option<bool>,
+        #[serde(default)]
+        mergeable: String,
+        #[serde(default)]
+        merge_state_status: String,
+        #[serde(default)]
+        auto_merge_request: Option<AutoMergeRow>,
     }
     let row: Row = serde_json::from_str(json).map_err(|error| error.to_string())?;
     let head_oid = row.head_ref_oid.trim().to_string();
     if head_oid.is_empty() {
         return Err("Pull request is missing head commit".into());
     }
+    let word = |value: String| {
+        let value = value.trim().to_ascii_uppercase();
+        (!value.is_empty()).then_some(value)
+    };
     Ok(GitHubPrChecks {
         head_oid,
+        pr_id: Some(row.id.trim().to_string()).filter(|id| !id.is_empty()),
+        state: word(row.state),
+        is_draft: row.is_draft,
+        mergeable: word(row.mergeable),
+        merge_state_status: word(row.merge_state_status),
+        auto_merge_request: row
+            .auto_merge_request
+            .map(|request| GitHubAutoMergeRequest {
+                merge_method: request.merge_method.trim().to_ascii_uppercase(),
+                enabled_at: request.enabled_at.filter(|at| !at.trim().is_empty()),
+            }),
         checks: row
             .status_check_rollup
             .unwrap_or_default()
@@ -9393,24 +9674,109 @@ mod tests {
         base: &'a str,
         prs: &'a str,
         calls: &'a std::cell::RefCell<Vec<Vec<String>>>,
-    ) -> impl Fn(&[&str]) -> Option<String> + 'a {
+    ) -> impl Fn(&[&str]) -> Result<String, String> + 'a {
         move |args: &[&str]| {
             calls
                 .borrow_mut()
                 .push(args.iter().map(|arg| arg.to_string()).collect());
             match args {
-                ["repo", "view", ..] => Some(base.to_string()),
+                ["repo", "view", ..] => Ok(base.to_string()),
                 ["pr", "list", head, ..] if head.starts_with("--head=") => {
                     let head = &head["--head=".len()..];
-                    let rows: Vec<serde_json::Value> = serde_json::from_str(prs).ok()?;
+                    let rows: Vec<serde_json::Value> =
+                        serde_json::from_str(prs).map_err(|error| error.to_string())?;
                     let kept: Vec<serde_json::Value> = rows
                         .into_iter()
                         .filter(|row| row["headRefName"].as_str() == Some(head))
                         .collect();
-                    Some(serde_json::Value::Array(kept).to_string())
+                    Ok(serde_json::Value::Array(kept).to_string())
                 }
-                _ => None,
+                _ => Err(format!("unexpected gh call: {args:?}")),
             }
+        }
+    }
+
+    /// A git repository on `s7r2-pr1`, published to origin, as Mac test 4.10
+    /// has it. `None` when git is missing here.
+    fn published_pr_branch(name: &str) -> Option<Tmp> {
+        let dir = tmp(name);
+        let ok = init_git(
+            &dir.0,
+            "main",
+            Some("https://github.com/aetiusgular/monocode-pr-test.git"),
+        ) && git(&dir.0, &["commit", "--allow-empty", "-m", "init"])
+            && git(&dir.0, &["checkout", "-b", "s7r2-pr1"])
+            && git(
+                &dir.0,
+                &["update-ref", "refs/remotes/origin/s7r2-pr1", "HEAD"],
+            )
+            && git(&dir.0, &["config", "branch.s7r2-pr1.remote", "origin"])
+            && git(
+                &dir.0,
+                &["config", "branch.s7r2-pr1.merge", "refs/heads/s7r2-pr1"],
+            );
+        ok.then_some(dir)
+    }
+
+    const PR_TEST_BASE: &str =
+        r#"{"nameWithOwner":"aetiusgular/monocode-pr-test","defaultBranchRef":{"name":"main"}}"#;
+
+    #[test]
+    fn pr_status_is_an_error_when_gh_fails() {
+        // Mac 4.10, retest 3: the Mac's DNS failed now and then, and the
+        // failed lookup read as "no PR", so Create PR showed on a branch
+        // with an open PR.
+        let Some(dir) = published_pr_branch("pr-status-gh-fails") else {
+            return;
+        };
+        let offline = |_: &[&str]| -> Result<String, String> {
+            Err("error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com".into())
+        };
+        assert!(git_pr_status_with(&dir.0, &offline).is_err());
+        // The repository answered, the list did not.
+        let list_fails = |args: &[&str]| -> Result<String, String> {
+            match args {
+                ["repo", "view", ..] => Ok(PR_TEST_BASE.to_string()),
+                _ => Err("Post \"https://api.github.com/graphql\": dial tcp: lookup api.github.com: no such host".into()),
+            }
+        };
+        assert!(git_pr_status_with(&dir.0, &list_fails).is_err());
+        // An answer that is not a list says nothing either.
+        let garbled = |args: &[&str]| -> Result<String, String> {
+            match args {
+                ["repo", "view", ..] => Ok(PR_TEST_BASE.to_string()),
+                _ => Ok("<html>502 Bad Gateway</html>".into()),
+            }
+        };
+        assert!(git_pr_status_with(&dir.0, &garbled).is_err());
+    }
+
+    #[test]
+    fn pr_status_is_none_only_when_gh_answered_with_no_pr() {
+        let Some(dir) = published_pr_branch("pr-status-empty") else {
+            return;
+        };
+        let calls = std::cell::RefCell::new(Vec::new());
+        assert_eq!(
+            git_pr_status_with(&dir.0, &fake_gh(PR_TEST_BASE, "[]", &calls)),
+            Ok(None)
+        );
+        assert_eq!(calls.borrow().len(), 2, "repo view, then pr list");
+    }
+
+    #[test]
+    fn pr_status_keeps_no_pr_when_gh_is_missing_or_signed_out() {
+        let Some(dir) = published_pr_branch("pr-status-no-gh") else {
+            return;
+        };
+        for error in [
+            "GitHub CLI (`gh`) is not installed.",
+            "To get started with GitHub CLI, please run:  gh auth login\nAlternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.",
+            "none of the git remotes configured for this repository point to a known GitHub host. To tell gh about a new GitHub host, please use `gh auth login`",
+            "HTTP 401: Bad credentials (https://api.github.com/graphql)",
+        ] {
+            let gh = |_: &[&str]| -> Result<String, String> { Err(error.to_string()) };
+            assert_eq!(git_pr_status_with(&dir.0, &gh), Ok(None), "{error}");
         }
     }
 
@@ -9448,7 +9814,9 @@ mod tests {
         )]);
         let calls = std::cell::RefCell::new(Vec::new());
         let gh = fake_gh(base, &prs, &calls);
-        let pr = git_pr_status_with(&dir.0, &gh).expect("the PR for s7r2-pr1");
+        let pr = git_pr_status_with(&dir.0, &gh)
+            .unwrap()
+            .expect("the PR for s7r2-pr1");
         assert_eq!((pr.number, pr.state.as_str()), (1, "open"));
         let calls = calls.borrow();
         let list = calls
@@ -9487,7 +9855,9 @@ mod tests {
             (41, "OPEN", "fix", true, "me", "widget"),
         ]);
         let calls = std::cell::RefCell::new(Vec::new());
-        let pr = git_pr_status_with(&dir.0, &fake_gh(base, &prs, &calls)).unwrap();
+        let pr = git_pr_status_with(&dir.0, &fake_gh(base, &prs, &calls))
+            .unwrap()
+            .unwrap();
         assert_eq!(pr.number, 41);
     }
 
@@ -9583,7 +9953,10 @@ mod tests {
         }
         let calls = std::cell::RefCell::new(Vec::new());
         let base = r#"{"nameWithOwner":"acme/widget"}"#;
-        assert!(git_pr_status_with(&dir.0, &fake_gh(base, "[]", &calls)).is_none());
+        assert_eq!(
+            git_pr_status_with(&dir.0, &fake_gh(base, "[]", &calls)),
+            Ok(None)
+        );
         assert!(calls.borrow().is_empty(), "no gh call on a detached head");
     }
 
@@ -9773,14 +10146,15 @@ mod tests {
             ["pr", "reopen", "42", "--repo", "acme/web"]
         );
         assert!(github_pr_action_args("acme/web", 42, "delete").is_err());
-        assert_eq!(
-            github_pr_action_args("acme/web", 42, "auto-squash").unwrap(),
-            ["pr", "merge", "42", "--repo", "acme/web", "--auto", "--squash"]
-        );
-        assert_eq!(
-            github_pr_action_args("acme/web", 42, "disable-auto").unwrap(),
-            ["pr", "merge", "42", "--repo", "acme/web", "--disable-auto"]
-        );
+        // Changed in the 15 Oct fix pass (Mac 4.10, retest 3): gh pr merge
+        // --auto merges at once when GitHub could merge now, so no action
+        // reaches it any more. Auto-merge is git_github_pr_auto_merge.
+        for action in ["auto-merge", "auto-squash", "auto-rebase", "disable-auto"] {
+            assert!(
+                github_pr_action_args("acme/web", 42, action).is_err(),
+                "{action}"
+            );
+        }
         assert!(github_pr_action_args("acme/web", 42, "auto-merge --admin").is_err());
         assert!(github_pr_action_args("acme/web", 0, "auto-merge").is_err());
         assert!(github_pr_action_args("acme/web", 0, "merge").is_err());
@@ -10075,6 +10449,292 @@ mod tests {
         );
     }
 
+    const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    /// A PR as `gh pr view --json <PR_CHECKS_FIELDS>` prints it.
+    fn pr_view_json(state: &str, merge_state: &str, auto_merge: Option<&str>) -> String {
+        let request = auto_merge.map_or("null".to_string(), |method| {
+            format!(r#"{{"mergeMethod":"{method}","enabledAt":"2026-10-15T23:00:00Z","enabledBy":{{"login":"aetiusgular"}}}}"#)
+        });
+        format!(
+            r#"{{"id":"PR_kwDOQ7aZ3s6abcde","state":"{state}","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"{merge_state}","autoMergeRequest":{request},"headRefOid":"{HEAD}","statusCheckRollup":[]}}"#
+        )
+    }
+
+    /// A stand-in gh for the auto-merge command: answers the PR view from
+    /// `views` in turn, runs the mutation as `mutate` says, records calls.
+    fn auto_merge_gh<'a>(
+        views: &'a std::cell::RefCell<Vec<String>>,
+        mutate: Result<String, String>,
+        calls: &'a std::cell::RefCell<Vec<Vec<String>>>,
+    ) -> impl Fn(&[&str]) -> Result<String, String> + 'a {
+        move |args: &[&str]| {
+            calls
+                .borrow_mut()
+                .push(args.iter().map(|arg| arg.to_string()).collect());
+            match args {
+                ["pr", "view", ..] => {
+                    let mut views = views.borrow_mut();
+                    if views.len() > 1 {
+                        Ok(views.remove(0))
+                    } else {
+                        views.first().cloned().ok_or_else(|| "no view".to_string())
+                    }
+                }
+                ["api", "graphql", ..] => mutate.clone(),
+                _ => Err(format!("unexpected gh call: {args:?}")),
+            }
+        }
+    }
+
+    #[test]
+    fn auto_merge_on_is_a_fixed_mutation_with_every_value_a_variable() {
+        let args =
+            pr_auto_merge_args(true, "PR_kwDOQ7aZ3s6abcde", Some("squash"), Some(HEAD)).unwrap();
+        assert_eq!(&args[..2], ["api", "graphql"]);
+        assert_eq!(
+            args[2..],
+            [
+                "-f".to_string(),
+                format!("query={ENABLE_AUTO_MERGE_QUERY}"),
+                "-f".into(),
+                "pullRequestId=PR_kwDOQ7aZ3s6abcde".into(),
+                "-f".into(),
+                "mergeMethod=SQUASH".into(),
+                "-f".into(),
+                format!("expectedHeadOid={HEAD}"),
+            ]
+        );
+        // The query names variables only; no value is written into it.
+        for value in ["PR_kwDOQ7aZ3s6abcde", "SQUASH", HEAD] {
+            assert!(!ENABLE_AUTO_MERGE_QUERY.contains(value));
+        }
+        assert!(ENABLE_AUTO_MERGE_QUERY.contains("expectedHeadOid: $expectedHeadOid"));
+        assert!(!args.iter().any(|arg| arg == "-F" || arg.contains("--auto")));
+        assert_eq!(
+            pr_auto_merge_args(true, "PR_x", Some("merge"), Some(HEAD)).unwrap()[7],
+            "mergeMethod=MERGE"
+        );
+        assert_eq!(
+            pr_auto_merge_args(true, "PR_x", Some("rebase"), Some(HEAD)).unwrap()[7],
+            "mergeMethod=REBASE"
+        );
+        let off = pr_auto_merge_args(false, "PR_kwDOQ7aZ3s6abcde", None, None).unwrap();
+        assert_eq!(
+            off,
+            [
+                "api".to_string(),
+                "graphql".into(),
+                "-f".into(),
+                format!("query={DISABLE_AUTO_MERGE_QUERY}"),
+                "-f".into(),
+                "pullRequestId=PR_kwDOQ7aZ3s6abcde".into(),
+            ]
+        );
+    }
+
+    #[test]
+    fn auto_merge_refuses_values_that_are_not_ids_before_gh_runs() {
+        for id in [
+            "",
+            "PR_x\") { deleteRepository",
+            "PR x",
+            "PR_x\nquery=evil",
+            "PR_x&mergeMethod=MERGE",
+        ] {
+            assert!(
+                pr_auto_merge_args(true, id, Some("squash"), Some(HEAD)).is_err(),
+                "{id:?}"
+            );
+        }
+        assert!(pr_auto_merge_args(true, "PR_x", Some("SQUASH ALL"), Some(HEAD)).is_err());
+        assert!(pr_auto_merge_args(true, "PR_x", None, Some(HEAD)).is_err());
+        assert!(pr_auto_merge_args(true, "PR_x", Some("squash"), Some("main")).is_err());
+        assert!(pr_auto_merge_args(true, "PR_x", Some("squash"), None).is_err());
+        let calls = std::cell::RefCell::new(Vec::new());
+        let views = std::cell::RefCell::new(vec![pr_view_json("OPEN", "BLOCKED", None)]);
+        let gh = auto_merge_gh(&views, Ok("{}".into()), &calls);
+        assert!(git_github_pr_auto_merge_with(
+            "acme/web",
+            7,
+            true,
+            "bad id",
+            Some("squash"),
+            Some(HEAD),
+            &gh
+        )
+        .is_err());
+        assert!(
+            calls.borrow().is_empty(),
+            "nothing runs for a refused value"
+        );
+    }
+
+    #[test]
+    fn auto_merge_on_runs_the_mutation_then_reads_the_pr_again() {
+        let calls = std::cell::RefCell::new(Vec::new());
+        let views = std::cell::RefCell::new(vec![pr_view_json("OPEN", "BLOCKED", Some("SQUASH"))]);
+        let gh = auto_merge_gh(&views, Ok(r#"{"data":{}}"#.into()), &calls);
+        let result = git_github_pr_auto_merge_with(
+            "aetiusgular/monocode-pr-test",
+            1,
+            true,
+            "PR_kwDOQ7aZ3s6abcde",
+            Some("squash"),
+            Some(HEAD),
+            &gh,
+        )
+        .unwrap();
+        assert_eq!(result.refusal, None);
+        let pr = result.pr.unwrap();
+        assert_eq!(
+            pr.auto_merge_request.map(|request| request.merge_method),
+            Some("SQUASH".into())
+        );
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(&calls[0][..2], ["api", "graphql"]);
+        assert_eq!(&calls[1][..2], ["pr", "view"]);
+    }
+
+    #[test]
+    fn a_refused_mutation_is_inconclusive_and_the_read_decides() {
+        // GitHub refuses a PR it could merge now, in its own words.
+        let calls = std::cell::RefCell::new(Vec::new());
+        let views = std::cell::RefCell::new(vec![pr_view_json("OPEN", "CLEAN", None)]);
+        let gh = auto_merge_gh(
+            &views,
+            Err("GraphQL: Pull request Pull request is in clean status (enablePullRequestAutoMerge)".into()),
+            &calls,
+        );
+        let result = git_github_pr_auto_merge_with(
+            "acme/web",
+            7,
+            true,
+            "PR_kwDOQ7aZ3s6abcde",
+            Some("squash"),
+            Some(HEAD),
+            &gh,
+        )
+        .unwrap();
+        assert_eq!(
+            result.refusal.as_deref(),
+            Some("Pull request Pull request is in clean status")
+        );
+        assert_eq!(result.pr.unwrap().auto_merge_request, None);
+        // A failing gh that still enabled it: the read says it is on.
+        let views = std::cell::RefCell::new(vec![pr_view_json("OPEN", "BLOCKED", Some("MERGE"))]);
+        let calls = std::cell::RefCell::new(Vec::new());
+        let gh = auto_merge_gh(&views, Err("unexpected EOF".into()), &calls);
+        let result = git_github_pr_auto_merge_with(
+            "acme/web",
+            7,
+            true,
+            "PR_kwDOQ7aZ3s6abcde",
+            Some("merge"),
+            Some(HEAD),
+            &gh,
+        )
+        .unwrap();
+        assert_eq!(result.refusal.as_deref(), Some("unexpected EOF"));
+        assert!(result.pr.unwrap().auto_merge_request.is_some());
+    }
+
+    #[test]
+    fn auto_merge_off_runs_only_when_github_has_a_request() {
+        let calls = std::cell::RefCell::new(Vec::new());
+        let views = std::cell::RefCell::new(vec![pr_view_json("OPEN", "BLOCKED", None)]);
+        let gh = auto_merge_gh(&views, Ok("{}".into()), &calls);
+        let result = git_github_pr_auto_merge_with(
+            "acme/web",
+            7,
+            false,
+            "PR_kwDOQ7aZ3s6abcde",
+            None,
+            None,
+            &gh,
+        )
+        .unwrap();
+        assert!(result.pr.unwrap().auto_merge_request.is_none());
+        assert!(
+            calls.borrow().iter().all(|call| call[0] != "api"),
+            "no mutation when GitHub reports no request"
+        );
+
+        let calls = std::cell::RefCell::new(Vec::new());
+        let views = std::cell::RefCell::new(vec![
+            pr_view_json("OPEN", "BLOCKED", Some("SQUASH")),
+            pr_view_json("OPEN", "BLOCKED", None),
+        ]);
+        let gh = auto_merge_gh(&views, Ok("{}".into()), &calls);
+        let result =
+            git_github_pr_auto_merge_with("acme/web", 7, false, "PR_stale", None, None, &gh)
+                .unwrap();
+        assert!(result.pr.unwrap().auto_merge_request.is_none());
+        let calls = calls.borrow();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call[0].as_str())
+                .collect::<Vec<_>>(),
+            ["pr", "api", "pr"]
+        );
+        // The id GitHub reported, not the one the bar sent.
+        assert_eq!(calls[1][5], "pullRequestId=PR_kwDOQ7aZ3s6abcde");
+        assert_eq!(calls[1][3], format!("query={DISABLE_AUTO_MERGE_QUERY}"));
+    }
+
+    #[test]
+    fn auto_merge_off_does_nothing_when_the_pr_cannot_be_read() {
+        let calls = std::cell::RefCell::new(Vec::new());
+        let views = std::cell::RefCell::new(Vec::new());
+        let gh = auto_merge_gh(&views, Ok("{}".into()), &calls);
+        let result =
+            git_github_pr_auto_merge_with("acme/web", 7, false, "PR_x", None, None, &gh).unwrap();
+        assert!(result.pr.is_none());
+        assert!(result.read_error.is_some());
+        assert!(calls.borrow().iter().all(|call| call[0] != "api"));
+    }
+
+    #[test]
+    fn pr_checks_read_what_decides_auto_merge() {
+        let checks =
+            parse_github_pr_checks(&pr_view_json("OPEN", "unstable", Some("squash"))).unwrap();
+        assert_eq!(checks.pr_id.as_deref(), Some("PR_kwDOQ7aZ3s6abcde"));
+        assert_eq!(checks.state.as_deref(), Some("OPEN"));
+        assert_eq!(checks.is_draft, Some(false));
+        assert_eq!(checks.mergeable.as_deref(), Some("MERGEABLE"));
+        assert_eq!(checks.merge_state_status.as_deref(), Some("UNSTABLE"));
+        assert_eq!(
+            checks.auto_merge_request,
+            Some(GitHubAutoMergeRequest {
+                merge_method: "SQUASH".into(),
+                enabled_at: Some("2026-10-15T23:00:00Z".into()),
+            })
+        );
+        let off = parse_github_pr_checks(&pr_view_json("OPEN", "BLOCKED", None)).unwrap();
+        assert_eq!(off.auto_merge_request, None);
+        // The inbox's older shape still reads.
+        let bare = parse_github_pr_checks(&format!(
+            r#"{{"headRefOid":"{HEAD}","statusCheckRollup":[]}}"#
+        ))
+        .unwrap();
+        assert_eq!((bare.pr_id, bare.merge_state_status), (None, None));
+    }
+
+    #[test]
+    fn refusal_text_keeps_githubs_words() {
+        assert_eq!(
+            github_refusal_text("GraphQL: Pull request Auto merge is not allowed for this repository (enablePullRequestAutoMerge)"),
+            "Pull request Auto merge is not allowed for this repository"
+        );
+        assert_eq!(
+            github_refusal_text("  could not resolve\n host  "),
+            "could not resolve host"
+        );
+        assert_eq!(github_refusal_text(&"x".repeat(900)).len(), 400);
+    }
+
     #[test]
     fn github_pr_checks_args_target_repo_and_number() {
         assert_eq!(
@@ -10086,7 +10746,7 @@ mod tests {
                 "--repo",
                 "acme/web",
                 "--json",
-                "headRefOid,statusCheckRollup"
+                "id,state,isDraft,mergeable,mergeStateStatus,autoMergeRequest,headRefOid,statusCheckRollup"
             ]
         );
         assert!(github_pr_checks_args("acme/web", 0).is_err());

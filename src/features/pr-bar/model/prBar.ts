@@ -5,14 +5,18 @@ import { modelCallsToolsReliably } from "../../model-traits/model/modelTraits";
 
 /**
  * #33: the PR bar's switches for one pull request. Auto-merge is GitHub's own
- * (`gh pr merge --auto`). Auto-archive archives the PR's chat once the PR is
- * merged or closed. Auto-fix sends the CI repair prompt to the PR's chat when
- * checks fail: off by default, at most 2 tries, never twice for one commit.
+ * auto-merge request, set through GitHub's `enablePullRequestAutoMerge`; the
+ * switch shows what GitHub reports, never a stored value, because GitHub
+ * clears it by itself after some pushes and base changes (Mac 4.10, retest 3).
+ * Auto-archive archives the PR's chat once the PR is merged or closed.
+ * Auto-fix sends the CI repair prompt to the PR's chat when checks fail: off
+ * by default, at most 2 tries, never twice for one commit.
  */
 export type MergeMethod = "merge" | "squash" | "rebase";
 
 export type PrBarSettings = {
-  autoMerge?: MergeMethod;
+  /** The merge method to use when auto-merge is turned on. Only a preference. */
+  mergeMethod?: MergeMethod;
   autoArchive: boolean;
   autoFix: boolean;
   /** Repairs sent so far. */
@@ -66,11 +70,13 @@ function sanitizeSettings(value: unknown): PrBarSettings {
     return { ...DEFAULT_PR_BAR };
   }
   const record = value as Record<string, unknown>;
-  const method = record.autoMerge;
+  // `autoMerge` held the method when the switch was stored here; it is read
+  // once as the preferred method and never as "on".
+  const method = record.mergeMethod ?? record.autoMerge;
   const attempts = Number(record.fixAttempts);
   return {
     ...(method === "merge" || method === "squash" || method === "rebase"
-      ? { autoMerge: method }
+      ? { mergeMethod: method }
       : {}),
     autoArchive: record.autoArchive === true,
     autoFix: record.autoFix === true,
@@ -159,6 +165,78 @@ export function usePrBarSettings(ref: PrRef | null): PrBarSettings {
     () => version,
   );
   return ref ? prBarSettings(ref) : { ...DEFAULT_PR_BAR };
+}
+
+/** What the auto-merge row shows, from what GitHub reports for the PR. */
+export type AutoMergeView =
+  /** No read of the PR yet: the switch waits. */
+  | { kind: "unknown" }
+  /** GitHub has an auto-merge request. */
+  | { kind: "on"; method?: MergeMethod; text: string }
+  /** GitHub would accept one: the switch is offered. */
+  | { kind: "available" }
+  /** Nothing to wait for: GitHub would merge now, so there is no switch. */
+  | { kind: "merge-now"; text: string }
+  | { kind: "draft"; text: string };
+
+export const MERGE_NOW_TEXT =
+  "Nothing to wait for: GitHub would merge this PR now. Merge it on GitHub.";
+export const UNSTABLE_TEXT = "A check that is not required is failing.";
+export const DRAFT_TEXT = "Drafts can't auto-merge.";
+export const AUTO_MERGE_NOT_ALLOWED_TEXT =
+  "Auto-merge is off for this repository on GitHub (Settings, General, Allow auto-merge).";
+
+export function mergeMethodFromGithub(value: string | null | undefined): MergeMethod | undefined {
+  switch (value?.toUpperCase()) {
+    case "MERGE":
+      return "merge";
+    case "SQUASH":
+      return "squash";
+    case "REBASE":
+      return "rebase";
+    default:
+      return undefined;
+  }
+}
+
+export function autoMergeOnText(method: MergeMethod | undefined): string {
+  return `Auto-merge is on (${method ?? "GitHub's default method"}). GitHub merges this PR when its required checks and reviews pass.`;
+}
+
+/**
+ * The auto-merge row for a PR, from GitHub's own fields. `gh pr merge --auto`
+ * merged at once for `CLEAN`, `HAS_HOOKS` and `UNSTABLE`, and GitHub's own
+ * auto-merge is offered only on a PR that cannot merge now, so those get no
+ * switch: there is nothing to wait for. An existing request always shows,
+ * so it can be turned off.
+ */
+export function autoMergeView(checks: GithubPrChecks | null): AutoMergeView {
+  if (!checks || !checks.prId) return { kind: "unknown" };
+  if (checks.autoMergeRequest) {
+    const method = mergeMethodFromGithub(checks.autoMergeRequest.mergeMethod);
+    return { kind: "on", method, text: autoMergeOnText(method) };
+  }
+  const status = checks.mergeStateStatus?.toUpperCase();
+  if (checks.isDraft || status === "DRAFT") return { kind: "draft", text: DRAFT_TEXT };
+  if (status === "CLEAN" || status === "HAS_HOOKS") {
+    return { kind: "merge-now", text: MERGE_NOW_TEXT };
+  }
+  if (status === "UNSTABLE") {
+    return { kind: "merge-now", text: `${MERGE_NOW_TEXT} ${UNSTABLE_TEXT}` };
+  }
+  return { kind: "available" };
+}
+
+/**
+ * A refusal from GitHub, for the bar. The repository setting gets a pointer
+ * to where it is switched on; any other refusal is shown in GitHub's words.
+ */
+export function autoMergeRefusalText(raw: string): string {
+  const text = raw.trim();
+  if (/auto[ -]?merge is not allowed|not allowed for this repository/i.test(text)) {
+    return AUTO_MERGE_NOT_ALLOWED_TEXT;
+  }
+  return text;
 }
 
 export type AutoFixDecision =

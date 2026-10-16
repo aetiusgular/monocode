@@ -12,9 +12,28 @@ export type GithubPrCheck = {
   completedAt: string | null;
 };
 
+export type GithubAutoMergeRequest = {
+  /** `MERGE`, `SQUASH` or `REBASE`. */
+  mergeMethod: string;
+  enabledAt?: string | null;
+};
+
 export type GithubPrChecks = {
   headOid: string;
   checks: GithubPrCheck[];
+  /**
+   * What the PR bar's auto-merge reads (Mac 4.10, retest 3). Optional: the
+   * inbox reads only the checks.
+   */
+  prId?: string | null;
+  /** `OPEN`, `CLOSED` or `MERGED`. */
+  state?: string | null;
+  isDraft?: boolean | null;
+  mergeable?: string | null;
+  /** `CLEAN`, `HAS_HOOKS`, `UNSTABLE`, `BLOCKED`, `BEHIND`, `DIRTY`, `DRAFT`, `UNKNOWN`. */
+  mergeStateStatus?: string | null;
+  /** GitHub's own auto-merge request; null when auto-merge is off. */
+  autoMergeRequest?: GithubAutoMergeRequest | null;
 };
 
 export type GithubCheckDetails = {

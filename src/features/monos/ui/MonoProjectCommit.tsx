@@ -122,7 +122,10 @@ export function MonoProjectCommit({
   textHarness?: HelperTarget;
   onOpenFile: (path: string) => void;
 }) {
-  const { pr, reload: reloadPr } = usePrStatus(root, index?.branch);
+  const prStatus = usePrStatus(root, index?.branch);
+  const { pr, reload: reloadPr } = prStatus;
+  // Create PR only after a lookup answered and found no open PR (4.10).
+  const prKnown = prStatus.answered && !prStatus.stale;
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
@@ -180,13 +183,15 @@ export function MonoProjectCommit({
     index.branch === index.defaultBranch;
   const canCommit = selected.length > 0 && message.trim().length > 0 && !busy;
   const canCommitPush = canCommit && hasRemote && !diverged;
-  const canCommitPushPr = canCommitPush && !hasOpenPr && !onDefault;
+  const canCommitPushPr =
+    canCommitPush && prKnown && !hasOpenPr && !onDefault;
   const canPublish = hasRemote && !!index && !index.upstream;
   const canSync =
     hasRemote &&
     Boolean(index?.upstream) &&
     ((index?.ahead ?? 0) > 0 || (index?.behind ?? 0) > 0);
   const canCreatePr =
+    prKnown &&
     hasRemote &&
     !!index?.branch &&
     !!index.defaultBranch &&
@@ -535,6 +540,7 @@ export function MonoProjectCommit({
           <GitSyncActions
             index={index}
             pr={pr}
+            prKnown={prKnown}
             busy={busy}
             hasRemote={hasRemote}
             hasOpenPr={hasOpenPr}

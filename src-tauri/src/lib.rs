@@ -414,6 +414,7 @@ pub fn run() {
             fs::git_github_pr_action,
             fs::git_github_pr_diff,
             fs::git_github_pr_checks,
+            fs::git_github_pr_auto_merge,
             fs::git_github_check_details,
             inbox_media::fetch_inbox_media,
             gitlab::gitlab_status,

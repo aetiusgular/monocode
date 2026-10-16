@@ -10,9 +10,11 @@ import {
   isHelperRoute,
   type HelperTarget,
 } from "../../../integrations/harness/core/helperPrompt";
-import { setPrAutoMerge, type PrAutoAction } from "../data/prAuto";
+import { setPrAutoMerge } from "../data/prAuto";
 import {
   autoFixWarning,
+  autoMergeRefusalText,
+  autoMergeView,
   decideAutoFix,
   MAX_FIX_ATTEMPTS,
   prBarHost,
@@ -23,15 +25,14 @@ import {
   type MergeMethod,
   type PrRef,
 } from "../model/prBar";
+import { lastCheckedText } from "../../source-control/model/prLookup";
 
-/** How often the bar re-reads the checks while auto-fix is on. */
+/**
+ * How often the bar re-reads the PR while auto-fix or auto-merge is on. GitHub
+ * clears auto-merge by itself after some pushes and base changes, and the
+ * switch shows what GitHub reports.
+ */
 export const CHECK_POLL_MS = 60_000;
-
-const AUTO_ACTION: Record<MergeMethod, PrAutoAction> = {
-  merge: "auto-merge",
-  squash: "auto-squash",
-  rebase: "auto-rebase",
-};
 
 type Pr = { number: number; url: string; state: string };
 
@@ -72,24 +73,35 @@ export function PrBar({
   cwd,
   pr,
   owner,
+  stale = false,
+  checkedAt = null,
+  initialChecks = null,
 }: {
   cwd: string;
   pr: Pr;
   owner?: HelperTarget;
+  /** The PR lookup failed; this is the last known PR (4.10). Switches are off. */
+  stale?: boolean;
+  checkedAt?: number | null;
+  /** Test seam: checks to show before the first read. */
+  initialChecks?: GithubPrChecks | null;
 }) {
   const ref: PrRef | null = prRefFromUrl(pr.url);
   const settings = usePrBarSettings(ref);
   const route = isHelperRoute(owner) ? owner : undefined;
   const sessionId = route?.sessionId;
-  const [checks, setChecks] = useState<GithubPrChecks | null>(null);
+  const [checks, setChecks] = useState<GithubPrChecks | null>(initialChecks);
   const [checksError, setChecksError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string>();
+  const [reads, setReads] = useState(0);
   const sending = useRef(false);
   const open = pr.state.toLowerCase() === "open";
+  const merge = autoMergeView(checks);
+  const autoMergeOn = merge.kind === "on";
 
-  // Checks: read once, then every minute while auto-fix is on.
+  // Checks: read once, then every minute while auto-fix or auto-merge is on.
   useEffect(() => {
     if (!ref || !open) return;
     let cancelled = false;
@@ -109,14 +121,15 @@ export function PrBar({
         });
     };
     load();
-    const timer = settings.autoFix ? setInterval(load, CHECK_POLL_MS) : undefined;
+    const timer =
+      settings.autoFix || autoMergeOn ? setInterval(load, CHECK_POLL_MS) : undefined;
     return () => {
       cancelled = true;
       if (timer) clearInterval(timer);
     };
     // `ref` is rebuilt each render from the URL; its key is what matters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cwd, pr.url, open, settings.autoFix]);
+  }, [cwd, pr.url, open, settings.autoFix, autoMergeOn, reads]);
 
   // Auto-fix: send the repair prompt when checks fail, within the limits.
   useEffect(() => {
@@ -165,20 +178,44 @@ export function PrBar({
 
   if (!ref) return null;
 
-  const setAutoMerge = async (method: MergeMethod | undefined) => {
+  const preferred: MergeMethod = settings.mergeMethod ?? "squash";
+
+  // On: GitHub's enablePullRequestAutoMerge, for the head the bar showed.
+  // Off: disablePullRequestAutoMerge, only while GitHub reports a request.
+  // Either way the PR is read again and the switch shows what GitHub says;
+  // a failed call is not taken as a result (Mac 4.10, retest 3).
+  const setAutoMerge = async (on: boolean) => {
+    if (!checks?.prId) return;
+    if (on && merge.kind !== "available") return;
+    if (!on && merge.kind !== "on") return;
     setBusy(true);
     setNote(undefined);
     try {
-      await setPrAutoMerge(
+      const result = await setPrAutoMerge(
         cwd,
         ref.repo,
         ref.number,
-        method ? AUTO_ACTION[method] : "disable-auto",
+        on
+          ? {
+              enable: true,
+              prId: checks.prId,
+              method: preferred,
+              expectedHeadOid: checks.headOid,
+            }
+          : { enable: false, prId: checks.prId },
       );
-      savePrBarSettings(ref, { autoMerge: method });
-      setNote(method ? "GitHub will merge once the required checks pass." : "Auto-merge is off.");
+      if (result.pr) setChecks(result.pr);
+      else setReads((value) => value + 1);
+      const notes = [
+        result.refusal ? autoMergeRefusalText(result.refusal) : undefined,
+        result.readError
+          ? `Could not read the PR again: ${result.readError}`
+          : undefined,
+      ].filter(Boolean);
+      setNote(notes.length ? notes.join(" ") : undefined);
     } catch (error) {
-      setNote(`GitHub refused: ${String(error)}`);
+      setNote(`Could not change auto-merge: ${String(error)}`);
+      setReads((value) => value + 1);
     } finally {
       setBusy(false);
     }
@@ -196,36 +233,54 @@ export function PrBar({
         <GitPullRequest className="size-3.5 shrink-0" />
         <span className="min-w-0 flex-1 truncate">
           #{ref.number} · {open ? summary.description : pr.state.toLowerCase()}
+          {stale ? (
+            <span className="text-amber-400"> · {lastCheckedText(checkedAt)}</span>
+          ) : null}
         </span>
         {loading ? <Loader className="size-3 animate-spin" /> : null}
       </div>
       {open ? (
         <div className="mt-1.5 flex flex-col gap-1">
-          <label className="flex items-center gap-2">
-            <Switch
-              label="Auto-merge"
-              on={Boolean(settings.autoMerge)}
-              disabled={busy}
-              onChange={(on) => void setAutoMerge(on ? (settings.autoMerge ?? "squash") : undefined)}
-            />
-            <span className="flex-1">Auto-merge</span>
-            <select
-              aria-label="Merge method"
-              value={settings.autoMerge ?? "squash"}
-              disabled={busy || !settings.autoMerge}
-              onChange={(event) => void setAutoMerge(event.target.value as MergeMethod)}
-              className="h-5 rounded bg-content/10 px-1 text-[11px] text-content disabled:opacity-40"
-            >
-              <option value="squash">Squash</option>
-              <option value="merge">Merge</option>
-              <option value="rebase">Rebase</option>
-            </select>
-          </label>
+          {merge.kind === "merge-now" || merge.kind === "draft" ? (
+            <p data-auto-merge-note className="text-[11px] text-content/55">
+              {merge.text}
+            </p>
+          ) : (
+            <label className="flex items-center gap-2">
+              <Switch
+                label="Auto-merge"
+                on={autoMergeOn}
+                disabled={busy || stale || merge.kind === "unknown"}
+                onChange={(on) => void setAutoMerge(on)}
+              />
+              <span className="flex-1">Auto-merge</span>
+              <select
+                aria-label="Merge method"
+                value={merge.kind === "on" ? (merge.method ?? preferred) : preferred}
+                // The method of a request GitHub holds is shown, not changed
+                // here; off, then on, changes it.
+                disabled={busy || stale || merge.kind !== "available"}
+                onChange={(event) =>
+                  savePrBarSettings(ref, { mergeMethod: event.target.value as MergeMethod })
+                }
+                className="h-5 rounded bg-content/10 px-1 text-[11px] text-content disabled:opacity-40"
+              >
+                <option value="squash">Squash</option>
+                <option value="merge">Merge</option>
+                <option value="rebase">Rebase</option>
+              </select>
+            </label>
+          )}
+          {merge.kind === "on" ? (
+            <p data-auto-merge-note className="text-[11px] text-content/55">
+              {merge.text}
+            </p>
+          ) : null}
           <label className="flex items-center gap-2">
             <Switch
               label="Auto-fix failed checks"
               on={settings.autoFix}
-              disabled={!sessionId}
+              disabled={!sessionId || stale}
               onChange={(on) => savePrBarSettings(ref, on ? { autoFix: true, fixAttempts: 0 } : { autoFix: false })}
             />
             <span className="flex-1">
@@ -239,7 +294,7 @@ export function PrBar({
             <Switch
               label="Archive the chat when merged or closed"
               on={settings.autoArchive}
-              disabled={!sessionId}
+              disabled={!sessionId || stale}
               onChange={(on) => savePrBarSettings(ref, { autoArchive: on, archived: false })}
             />
             <span className="flex-1">Archive the chat when merged or closed</span>

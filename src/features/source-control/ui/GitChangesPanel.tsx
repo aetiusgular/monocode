@@ -64,6 +64,11 @@ import {
   type GitHistoryCommit,
   type GitPr,
 } from "../../../platform/tauri/fs";
+import {
+  cachedPrLookupState,
+  createPrLookup,
+  type PrLookupState,
+} from "../model/prLookup";
 import type { HelperTarget } from "../../../integrations/harness/core/helperPrompt";
 import { prContentFromRange } from "../model/prFallback";
 import { ReviewSection } from "../../code-review/ui/ReviewSection";
@@ -101,7 +106,6 @@ let changesView: ChangesView = loadChangesView();
 /** Folders the user collapsed in tree view, keyed `<kind>:<dir>`. */
 const collapsedDirs = new Set<string>();
 const indexByCwd = new Map<string, GitDiffIndex>();
-const prByCwd = new Map<string, GitPr | null>();
 
 type AmendTarget = { branch: string | null; head: string | null };
 
@@ -371,7 +375,10 @@ function ChangedFiles({
   const [stagedExpanded, setStagedExpanded] = useState(stagedOpen);
   const [changesExpanded, setChangesExpanded] = useState(changesOpen);
   const [view, setView] = useState<ChangesView>(changesView);
-  const { pr, reload: reloadPr } = usePrStatus(cwd, index?.branch);
+  const prStatus = usePrStatus(cwd, index?.branch);
+  const { pr, reload: reloadPr } = prStatus;
+  // Create PR only after a lookup answered and found no open PR (4.10).
+  const prKnown = prStatus.answered && !prStatus.stale;
   const staged = useMemo(() => files.filter((file) => file.staged), [files]);
   const unstaged = useMemo(
     () => files.filter((file) => file.unstaged),
@@ -388,6 +395,7 @@ function ChangedFiles({
   const canCommit =
     (staged.length > 0 || amend) && message.trim().length > 0 && !busy;
   const canCreatePr =
+    prKnown &&
     hasRemote &&
     !!index?.branch &&
     !!index.defaultBranch &&
@@ -405,7 +413,8 @@ function ChangedFiles({
     ((index?.ahead ?? 0) > 0 || (index?.behind ?? 0) > 0);
   const canCommitPush =
     canCommit && hasRemote && !diverged && (!amend || !index?.headPushed);
-  const canCommitPushPr = canCommitPush && !hasOpenPr && !onDefault;
+  const canCommitPushPr =
+    canCommitPush && prKnown && !hasOpenPr && !onDefault;
   const canEditMessage = !busy;
 
   useEffect(() => {
@@ -834,6 +843,7 @@ function ChangedFiles({
           <GitSyncActions
             index={index}
             pr={pr}
+            prKnown={prKnown}
             busy={busy}
             hasRemote={hasRemote}
             hasOpenPr={hasOpenPr}
@@ -850,7 +860,13 @@ function ChangedFiles({
           />
         ) : null}
         {pr && pr.url && !isRemoteProjectPath(cwd) ? (
-          <PrBar cwd={cwd} pr={pr} owner={textHarness} />
+          <PrBar
+            cwd={cwd}
+            pr={pr}
+            owner={textHarness}
+            stale={prStatus.stale}
+            checkedAt={prStatus.checkedAt}
+          />
         ) : null}
         {!isRemoteProjectPath(cwd) ? (
           <ReviewSection
@@ -972,58 +988,70 @@ export function githubLookupAllowed(userAsked: boolean): boolean {
   return userAsked || outboundCallAllowed("github-lookups");
 }
 
+export type PrStatus = PrLookupState & { reload: () => void };
+
+/** Nothing to look up: no folder or no branch. As before, no PR. */
+const NO_LOOKUP: PrLookupState = {
+  pr: null,
+  answered: true,
+  stale: false,
+  checkedAt: null,
+};
+
+function initialPrStatus(
+  cwd: string,
+  branch: string | null | undefined,
+): PrLookupState {
+  if (!cwd || cwd === "~" || !branch) return NO_LOOKUP;
+  return cachedPrLookupState(cwd, branch);
+}
+
+/**
+ * The checked-out branch's pull request (Mac 4.10, retest 3). A failed
+ * lookup keeps the last known PR for this folder and branch, marked stale,
+ * and retries; see `prLookup.ts`.
+ */
 export function usePrStatus(
   cwd: string,
   branch: string | null | undefined,
-): { pr: GitPr | null; reload: () => void } {
-  const [pr, setPr] = useState<GitPr | null>(() => cachedPr(cwd, branch));
+): PrStatus {
+  const [state, setState] = useState<PrLookupState>(() =>
+    initialPrStatus(cwd, branch),
+  );
   const [nonce, setNonce] = useState(0);
   const reload = useCallback(() => setNonce((value) => value + 1), []);
 
   useEffect(() => {
     if (!cwd || cwd === "~" || !branch) {
-      setPr(null);
+      setState(NO_LOOKUP);
       return;
     }
     // 5.9: with "GitHub lookups" off, only a reload the user's own action
-    // asked for (a commit, a push, a new pull request) runs gh.
+    // asked for (a commit, a push, a new pull request) runs gh. The last
+    // known PR shows, and Create PR stays as it was before.
     if (!githubLookupAllowed(nonce > 0)) {
-      setPr(prByCwd.get(cwd) ?? null);
+      setState({ ...cachedPrLookupState(cwd, branch), answered: true });
       return;
     }
-    let cancelled = false;
-    const load = () => {
-      if (!githubLookupAllowed(nonce > 0)) return;
-      void gitPrStatus(cwd)
-        .then((next) => {
-          if (cancelled) return;
-          prByCwd.set(cwd, next);
-          setPr(next);
-        })
-        .catch(() => {
-          if (cancelled) return;
-          prByCwd.set(cwd, null);
-          setPr(null);
-        });
-    };
-    load();
-    const onResume = () => load();
+    const userAsked = nonce > 0;
+    const lookup = createPrLookup({
+      cwd,
+      branch,
+      fetch: gitPrStatus,
+      onChange: setState,
+      allowed: () => githubLookupAllowed(userAsked),
+    });
+    setState(lookup.state());
+    lookup.run();
+    const onResume = () => lookup.run();
     window.addEventListener("focus", onResume);
     return () => {
-      cancelled = true;
+      lookup.dispose();
       window.removeEventListener("focus", onResume);
     };
   }, [branch, cwd, nonce]);
 
-  return { pr, reload };
-}
-
-function cachedPr(
-  cwd: string,
-  branch: string | null | undefined,
-): GitPr | null {
-  if (!cwd || cwd === "~" || !branch) return null;
-  return prByCwd.get(cwd) ?? null;
+  return { ...state, reload };
 }
 
 function syncStatusLabel(index: GitDiffIndex): string {
@@ -1044,6 +1072,7 @@ function syncStatusLabel(index: GitDiffIndex): string {
 export function GitSyncActions({
   index,
   pr,
+  prKnown,
   busy,
   hasRemote,
   hasOpenPr,
@@ -1058,6 +1087,12 @@ export function GitSyncActions({
 }: {
   index: GitDiffIndex;
   pr: GitPr | null;
+  /**
+   * A lookup answered for this branch (4.10). Until then Create PR is not
+   * offered: a failed or pending lookup says nothing about whether a PR
+   * exists.
+   */
+  prKnown: boolean;
   busy: string | null;
   hasRemote: boolean;
   hasOpenPr: boolean;
@@ -1096,7 +1131,7 @@ export function GitSyncActions({
   const btn =
     "flex h-7 w-full min-w-0 items-center justify-center gap-1.5 rounded-md px-2 text-[12px] font-medium disabled:opacity-40";
   const secondary = `${btn} bg-content/10 text-content hover:bg-content/15`;
-  const showCreatePr = !hasOpenPr && !onDefault;
+  const showCreatePr = prKnown && !hasOpenPr && !onDefault;
   const showViewPr = hasOpenPr;
   if (!canPublish && !canSync && !showCreatePr && !showViewPr) return null;
 
