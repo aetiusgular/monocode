@@ -41,7 +41,7 @@ import {
   hydrateWorkspaceSnapshot,
   parseWorkspaceSnapshot,
 } from "../../features/workspace/model/workspaceSnapshot";
-import { loadWindowTransfer } from "./windowTransferBootstrap";
+import { holdWindowTabs, loadWindowTransfer } from "./windowTransferBootstrap";
 import type { WindowTransferPayload } from "./windowTransfer";
 import { lastProjectPath, normalizeProjectPath, sameProjectPath } from "../../features/projects/model/recents";
 import type { ProjectReturnMemory } from "../../features/projects/model/projectReturn";
@@ -62,6 +62,12 @@ let bootPromise: Promise<BootWorkspace> | null = null;
 let quitting = false;
 let quitDialogOpen = false;
 let bootingResumed: ResumedWorkspace | null = null;
+/**
+ * Set at boot for a window opened by Move to New Window. Its tabs never go
+ * into the main workspace snapshot, which a launch and the main window's
+ * reload open (#43).
+ */
+let movedWindow = false;
 let liveWorkspace: {
   sessions: () => Session[];
   tabs: () => WorkspaceTab[];
@@ -221,6 +227,7 @@ export function loadBootWorkspace(): Promise<BootWorkspace> {
       const historyHint = listProjectHistory(hintedCwd);
       const windowTransfer = await loadWindowTransfer();
       if (windowTransfer) {
+        movedWindow = true;
         const listed = await historyForCwd(
           windowTransfer.projectCwd,
           hintedCwd,
@@ -394,6 +401,23 @@ export async function persistQuitState(
   // reload, where best effort is enough and failing loudly helps nobody.
   const write = <T,>(pending: Promise<T>): Promise<T | null> =>
     mode === "quit" ? pending : pending.catch(() => null);
+  const snapshot = () =>
+    collectWorkspaceSnapshot(
+      tabs,
+      sessions,
+      activeTabId,
+      projectCwd,
+      memory,
+      projectTerminals,
+      lastDockSide,
+      // A moved window keeps every tab it holds.
+      movedWindow ? undefined : keepTab,
+    );
+  // A moved window's tabs stay out of the main workspace snapshot. A reload
+  // or close keeps them in its own slot, sent first so the reload finds them;
+  // a quit drops them, so they are not reopened.
+  const held =
+    movedWindow && mode === "unload" ? write(holdWindowTabs(snapshot())) : null;
 
   await Promise.all(
     sessions.map(async (session) => {
@@ -404,23 +428,12 @@ export async function persistQuitState(
       await write(upsertSession(payload));
     }),
   );
-  await write(
-    saveWorkspaceSnapshot(
-      collectWorkspaceSnapshot(
-        tabs,
-        sessions,
-        activeTabId,
-        projectCwd,
-        memory,
-        projectTerminals,
-        lastDockSide,
-        keepTab,
-      ),
-    ),
-  );
+  if (!movedWindow) await write(saveWorkspaceSnapshot(snapshot()));
+  await held;
   // Vite/webview reload must not wipe a restored snapshot: those chats are idle
-  // in this process until Continue runs.
-  if (mode === "quit" || refs.length > 0) {
+  // in this process until Continue runs. A moved window leaves the list to the
+  // main window, whose boot reopens every chat on it as a tab.
+  if (!movedWindow && (mode === "quit" || refs.length > 0)) {
     await write(replaceInFlightSessions(refs));
   }
 }

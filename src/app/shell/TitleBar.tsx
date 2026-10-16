@@ -220,6 +220,19 @@ export function tabCopy(tab: Tab): {
   return { headline, meta, tooltip: tooltipParts.join(" · ") };
 }
 
+/**
+ * What the window title names: the active tab as its strip headline reads it.
+ * Naming only the project gave every window on one project the same title, so
+ * the Window menu listed several windows that could not be told apart.
+ */
+export function windowTitleName(tab: Tab | undefined): string {
+  if (!tab) return "";
+  const file = tab.files[0] ? basename(tab.files[0]) : "";
+  const conversation = tab.title.trim();
+  if (tab.multiPane && tab.fileFocused && file) return file;
+  return conversation || file || tab.project;
+}
+
 /** Which tab-strip edges still have overflow to scroll toward. */
 export function tabStripOverflow(
   scrollLeft: number,
@@ -880,11 +893,7 @@ function TitleBarComponent({
     [activeId, tabs],
   );
   const systemTitle = useMemo(() => {
-    const activeName = activeTab
-      ? activeTab.files[0]
-        ? basename(activeTab.files[0])
-        : activeTab.project
-      : "";
+    const activeName = windowTitleName(activeTab);
     const project = cwd ? basename(cwd) : "";
     if (activeName && project && activeName !== project) {
       return `${activeName} — ${project} — MonoCode`;

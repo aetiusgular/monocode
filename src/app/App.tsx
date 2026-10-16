@@ -269,6 +269,8 @@ import {
   setPopOutHost,
   type WindowTransferPayload,
 } from "./model/windowTransfer";
+import { holdWindowTabs } from "./model/windowTransferBootstrap";
+import { listenMenu } from "./model/menuEvents";
 import {
   confirmCloseTerminal,
   confirmCloseTerminals,
@@ -2531,6 +2533,9 @@ function Workspace({
   }, [persistSession, sessions]);
 
   useEffect(() => {
+    // The main window's next boot reopens every chat on this list as a tab,
+    // so a moved window's running chat must not go on it (#43).
+    if (windowTransfer) return;
     const refs = inFlightRefs(sessions, tabs);
     if (refs.length > 0) sawInFlight.current = true;
     const key = inFlightSnapshotKey(refs);
@@ -2546,10 +2551,11 @@ function Workspace({
     }
     inFlightSyncKey.current = key;
     void replaceInFlightSessions(refs).catch(() => undefined);
-  }, [sessions, tabs]);
+  }, [sessions, tabs, windowTransfer]);
 
   useEffect(() => {
-    if (windowTransfer) return;
+    // A moved window keeps every tab it holds, in memory for its own reload,
+    // and never writes the main workspace snapshot (#43).
     const snapshot = collectWorkspaceSnapshot(
       tabs,
       sessions,
@@ -2563,7 +2569,7 @@ function Workspace({
       }),
       projectTerminals,
       lastDockSide ?? undefined,
-      keepWorkspaceTab,
+      windowTransfer ? undefined : keepWorkspaceTab,
     );
     const key = workspaceSnapshotKey(snapshot);
     // The key counts as saved only once the write is sent: this effect re-runs
@@ -2579,7 +2585,11 @@ function Workspace({
     const save = () => {
       workspaceSyncKey.current = key;
       workspacePendingSave.current = null;
-      void saveWorkspaceSnapshot(snapshot).catch(() => undefined);
+      void (
+        windowTransfer
+          ? holdWindowTabs(snapshot)
+          : saveWorkspaceSnapshot(snapshot)
+      ).catch(() => undefined);
     };
     if (plan.action === "save") {
       save();
@@ -12621,14 +12631,16 @@ function Workspace({
 
   useEffect(() => {
     const unlisten: Array<Promise<() => void>> = [
-      listen("new_tab", () => run("new", actions.current.onNewFocused)),
+      listenMenu("new_tab", () => run("new", actions.current.onNewFocused)),
       listen("close_other_tabs", () =>
         run("close-others", actions.current.onCloseOtherTabs),
       ),
-      listen("close_all_tabs", () =>
+      listenMenu("close_all_tabs", () =>
         run("close-all", actions.current.onCloseAllTabs),
       ),
-      listen("close_tab", () => run("close", actions.current.onCloseFocused)),
+      listenMenu("close_tab", () =>
+        run("close", actions.current.onCloseFocused),
+      ),
       listen<boolean>("toggle_autosave", ({ payload }) => {
         const saved = saveAutosave(payload);
         if (saved !== payload && IS_MAC) {
@@ -12668,20 +12680,20 @@ function Workspace({
       listen("focus_down", () =>
         run("focus-down", () => actions.current.onFocusDir("down")),
       ),
-      listen("toggle_sidebar", () =>
+      listenMenu("toggle_sidebar", () =>
         run("toggle_sidebar", actions.current.onToggleSidebar),
       ),
-      listen("toggle_session_sidebar", () =>
+      listenMenu("toggle_session_sidebar", () =>
         run("toggle_session_sidebar", actions.current.onToggleSessionSidebar),
       ),
       listen("open_project", () => {
         void actions.current.pickProject();
       }),
       listen("go_to_file", () => run("go_to_file", actions.current.onGoToFile)),
-      listen("open_command_palette", () =>
+      listenMenu("open_command_palette", () =>
         run("open_command_palette", actions.current.onOpenCommandPalette),
       ),
-      listen("reload", () => run("reload", actions.current.onReload)),
+      listenMenu("reload", () => run("reload", actions.current.onReload)),
       listen("open_search", () => actions.current.onOpenSearch()),
       listen("open_inbox", () => actions.current.onOpenInbox()),
       listen("open_notes", () => actions.current.onOpenNotes()),
@@ -12710,17 +12722,17 @@ function Workspace({
           .catch(() => {});
         actions.current.onOpenApprovalSession(sessionId);
       }),
-      listen("zoom_in", () => {
+      listenMenu("zoom_in", () => {
         const next = zoomInUiScale(loadUiScale());
         saveUiScale(next);
         void applyUiScale(next);
       }),
-      listen("zoom_out", () => {
+      listenMenu("zoom_out", () => {
         const next = zoomOutUiScale(loadUiScale());
         saveUiScale(next);
         void applyUiScale(next);
       }),
-      listen("zoom_reset", () => {
+      listenMenu("zoom_reset", () => {
         saveUiScale(UI_SCALE_DEFAULT);
         void applyUiScale(UI_SCALE_DEFAULT);
       }),
@@ -13178,7 +13190,7 @@ function Workspace({
             );
           },
           stage: (json) => invoke("stage_window_transfer", { payload: json }),
-          openWindow: () => invoke("open_new_window"),
+          openWindow: () => invoke("open_moved_window"),
           unstage: () => invoke("clear_window_transfer"),
           closeTabs: (ids) => onCloseTabs(ids, stay, { confirmed: true }),
         });

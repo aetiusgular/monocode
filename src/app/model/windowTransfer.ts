@@ -77,9 +77,9 @@ export function bootSessionsToBind(
 export type PopOutCheck = { ok: true } | { ok: false; reason: string };
 
 /**
- * Shown with the menu item. A window opened from a transfer does not save its
- * own workspace, so its tabs are not reopened after a quit; the chats are
- * saved as usual and stay in History.
+ * Shown with the menu item. A window opened from a transfer keeps its tabs in
+ * memory for its own reloads and never in the saved workspace, so they are
+ * not reopened after a quit; the chats are saved as usual and stay in History.
  */
 export const POP_OUT_NOTE =
   "After a quit, tabs in the new window are not reopened. Their chats stay in History.";

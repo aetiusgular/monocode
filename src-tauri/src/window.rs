@@ -11,6 +11,8 @@ use tauri::window::Color;
 use tauri::window::{Effect, EffectsBuilder};
 use tauri::{AppHandle, Emitter, EventTarget, Manager, WebviewWindow, WebviewWindowBuilder};
 
+use crate::window_transfer::{WindowTransferState, MOVED_WINDOW_PREFIX};
+
 static WINDOW_COUNTER: AtomicU32 = AtomicU32::new(1);
 
 /// The floating quick composer. It is a webview window but not a workspace:
@@ -96,7 +98,37 @@ fn configure_session_window(config: &mut tauri::utils::config::WindowConfig, rev
     config.focus = reveal;
 }
 
+/// Move to New Window. The window gets a label of its own kind and the staged
+/// tabs before it opens, so it boots them, and a reload boots them again.
+pub fn open_moved_window(app: &AppHandle) -> Result<(), String> {
+    let id = WINDOW_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let label = moved_label(id);
+    let transfer = app.state::<WindowTransferState>();
+    transfer.bind(&label)?;
+    build_workspace_window(app, label.clone(), true)
+        .map(|_| ())
+        .inspect_err(|_| transfer.forget(&label))
+}
+
+fn moved_label(id: u32) -> String {
+    format!("{MOVED_WINDOW_PREFIX}{id}")
+}
+
 pub fn open_session_window(app: &AppHandle, reveal: bool) -> Result<WebviewWindow, String> {
+    let id = WINDOW_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let label = if reveal {
+        format!("window-{id}")
+    } else {
+        format!("quick-session-{}", uuid::Uuid::new_v4())
+    };
+    build_workspace_window(app, label, reveal)
+}
+
+fn build_workspace_window(
+    app: &AppHandle,
+    label: String,
+    reveal: bool,
+) -> Result<WebviewWindow, String> {
     let mut config = app
         .config()
         .app
@@ -107,12 +139,7 @@ pub fn open_session_window(app: &AppHandle, reveal: bool) -> Result<WebviewWindo
         .clone();
 
     configure_session_window(&mut config, reveal);
-    let id = WINDOW_COUNTER.fetch_add(1, Ordering::Relaxed);
-    config.label = if reveal {
-        format!("window-{id}")
-    } else {
-        format!("quick-session-{}", uuid::Uuid::new_v4())
-    };
+    config.label = label;
 
     let build = || {
         WebviewWindowBuilder::from_config(app, &config)
@@ -706,6 +733,16 @@ mod tests {
         assert!(!is_workspace_window("mono-chat-second"));
         assert!(!is_workspace_window(QUICK_COMPOSER_LABEL));
         assert!(!is_workspace_window(QUICK_COMPOSER_GIT_LABEL));
+    }
+
+    #[test]
+    fn a_moved_window_is_a_workspace_window_of_its_own_kind() {
+        let label = moved_label(4);
+        assert_eq!(label, "moved-4");
+        assert!(crate::window_transfer::is_moved_window(&label));
+        assert!(is_workspace_window(&label));
+        assert!(!crate::window_transfer::is_moved_window("window-4"));
+        assert!(!crate::window_transfer::is_moved_window("main"));
     }
 
     #[test]

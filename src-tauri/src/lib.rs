@@ -245,6 +245,17 @@ async fn open_new_window(app: tauri::AppHandle) -> Result<(), String> {
     .await
 }
 
+/// Move to New Window: built the same way, on the main thread.
+#[tauri::command]
+async fn open_moved_window(app: tauri::AppHandle) -> Result<(), String> {
+    let handle = app.clone();
+    window::on_main_thread(
+        |job| app.run_on_main_thread(job).map_err(|err| err.to_string()),
+        move || window::open_moved_window(&handle),
+    )
+    .await
+}
+
 fn should_request_quit(code: Option<i32>) -> bool {
     code.is_some() || cfg!(any(target_os = "linux", target_os = "windows"))
 }
@@ -590,6 +601,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             menu::autosave_set_enabled,
             open_new_window,
+            open_moved_window,
             window::hide_window,
             window::destroy_window,
             window::quit_poll_reply,
@@ -645,7 +657,8 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             mono_chat::mono_menu_bar_set_visible,
             window_transfer::stage_window_transfer,
-            window_transfer::take_window_transfer,
+            window_transfer::load_window_tabs,
+            window_transfer::hold_window_tabs,
             chat_background::save_chat_background,
             chat_background::remove_chat_background,
             chat_background::save_project_chat_background,
@@ -712,6 +725,9 @@ pub fn run() {
             ..
         } => {
             window::forget_quit_window(handle, &label);
+            if let Some(transfer) = handle.try_state::<window_transfer::WindowTransferState>() {
+                transfer.forget(&label);
+            }
             let other_window = window::workspace_windows(handle)
                 .iter()
                 .any(|window| window.label() != label);
