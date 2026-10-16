@@ -1146,10 +1146,19 @@ fn epoch_ms(time: std::time::SystemTime) -> Option<u64> {
 ///   trail the clock by a few milliseconds, which only keeps a folder made
 ///   right at the start.
 ///
-/// `remove_dir` removes only an empty folder, so a file that lands meanwhile
-/// keeps it. Files git ignores are not in the checkpoint, so their folders
-/// (`.pytest_cache`) are never emptied by an undo and stay. Nothing here
-/// fails the undo: a folder that cannot be removed is left as it is.
+/// The checks read paths, so a process the agent left running could swap a
+/// folder on the way for a link between them and the removal (security
+/// review K5). The removal itself goes through `remove_empty_folder`, which
+/// on unix reaches only a real, empty folder inside `root`. It refuses a
+/// folder that is not empty, so a file that lands meanwhile keeps it. Files
+/// git ignores are not in the checkpoint, so their folders (`.pytest_cache`)
+/// are never emptied by an undo and stay. Nothing here fails the undo: a
+/// folder that cannot be removed is left as it is.
+///
+/// Known limit, not fixed (review K5): git does not track empty folders, so
+/// a folder that existed empty before the turn, and that the agent deleted
+/// and made again during it, is not in the snapshot and has a new birth
+/// time. Undo removes it. Only an empty folder is lost.
 fn remove_emptied_folders(root: &Path, turn: &RecordedTurn, removed: &[String]) {
     let (Some(started), Some(before)) = (turn.started_ms, turn.before.as_deref()) else {
         return;
@@ -1198,9 +1207,62 @@ fn remove_emptied_folders(root: &Path, turn: &RecordedTurn, removed: &[String]) 
         }
         let empty = std::fs::read_dir(&path).is_ok_and(|mut entries| entries.next().is_none());
         if empty {
-            let _ = std::fs::remove_dir(&path);
+            let _ = remove_empty_folder(root, &folder);
         }
     }
+}
+
+/// Removes the empty folder `relative` under `root` through file
+/// descriptors (security review K5). `root` is opened with `O_NOFOLLOW`, and
+/// each folder on the way with `openat` and `O_NOFOLLOW` relative to the one
+/// above it, so a link anywhere, even one swapped in after the checks, fails
+/// the walk. `unlinkat` with `AT_REMOVEDIR` then refuses a folder that is
+/// not empty and a link in the last place. Every descriptor is closed.
+#[cfg(unix)]
+fn remove_empty_folder(root: &Path, relative: &str) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+
+    let invalid =
+        || std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid checkpoint path");
+    resolve_turn_path(relative).map_err(|_| invalid())?;
+    let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    let owned = |fd: libc::c_int| {
+        if fd < 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            // SAFETY: `fd` was just opened and nothing else holds it.
+            Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+        }
+    };
+    let path = CString::new(root.as_os_str().as_bytes()).map_err(|_| invalid())?;
+    // SAFETY: `path` is a valid C string for the length of the call.
+    let mut parent = owned(unsafe { libc::open(path.as_ptr(), flags) })?;
+    let mut parts: Vec<&str> = relative.split('/').collect();
+    let last = parts.pop().ok_or_else(invalid)?;
+    for part in parts {
+        let name = CString::new(part).map_err(|_| invalid())?;
+        // SAFETY: `parent` is an open folder and `name` a valid C string.
+        // Replacing `parent` closes the folder above.
+        parent = owned(unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags) })?;
+    }
+    let name = CString::new(last).map_err(|_| invalid())?;
+    // SAFETY: as above.
+    let removed = unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) };
+    if removed != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Elsewhere the removal goes by path. `remove_dir` still refuses a folder
+/// that is not empty.
+#[cfg(not(unix))]
+fn remove_empty_folder(root: &Path, relative: &str) -> std::io::Result<()> {
+    resolve_turn_path(relative)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+    std::fs::remove_dir(root.join(relative))
 }
 
 fn restorable(root: &Path, change: &Change) -> bool {

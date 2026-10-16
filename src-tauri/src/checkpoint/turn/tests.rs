@@ -1445,4 +1445,83 @@ mod emptied_folders {
             .is_symlink());
         assert!(f.repo.join("made").is_dir());
     }
+
+    fn is_link(path: &Path) -> bool {
+        std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
+    }
+
+    fn refused(root: &Path, relative: &str) {
+        assert!(remove_empty_folder(root, relative).is_err(), "{relative}");
+    }
+
+    /// Security review K5: a process the agent left running swaps a folder on
+    /// the way for a link after the checks passed. The swap is already in
+    /// place here, so the removal itself must refuse to walk through it.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_on_the_way_swapped_for_a_link_stops_the_removal() {
+        let f = Fixture::new();
+        // Outside the root, empty, with the same relative names.
+        let outside = f.dir.join("outside");
+        std::fs::create_dir_all(outside.join("cache")).unwrap();
+        std::fs::create_dir_all(outside.join("b/cache")).unwrap();
+        std::os::unix::fs::symlink(&outside, f.repo.join("made")).unwrap();
+        std::fs::create_dir(f.repo.join("a")).unwrap();
+        std::os::unix::fs::symlink(&outside, f.repo.join("a/link")).unwrap();
+        for relative in [
+            "made/cache",
+            "made/b/cache",
+            "a/link/cache",
+            "a/link/b/cache",
+        ] {
+            refused(&f.repo, relative);
+        }
+        assert!(outside.join("cache").is_dir());
+        assert!(outside.join("b/cache").is_dir());
+        assert!(is_link(&f.repo.join("made")));
+        assert!(is_link(&f.repo.join("a/link")));
+        assert!(f.repo.join("a").is_dir());
+        // Removing by path follows the link: the hazard the walk closes.
+        std::fs::remove_dir(f.repo.join("made/cache")).unwrap();
+        assert!(!outside.join("cache").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_in_the_last_place_is_never_removed_or_followed() {
+        let f = Fixture::new();
+        let outside = f.dir.join("outside");
+        std::fs::create_dir_all(outside.join("empty")).unwrap();
+        std::fs::create_dir(f.repo.join("made")).unwrap();
+        std::os::unix::fs::symlink(outside.join("empty"), f.repo.join("made/cache")).unwrap();
+        std::os::unix::fs::symlink(outside.join("empty"), f.repo.join("cache")).unwrap();
+        for relative in ["made/cache", "cache"] {
+            refused(&f.repo, relative);
+            assert!(is_link(&f.repo.join(relative)), "{relative}");
+        }
+        assert!(outside.join("empty").is_dir());
+        assert!(f.repo.join("made").is_dir());
+    }
+
+    #[test]
+    fn the_removal_keeps_a_folder_that_is_not_empty() {
+        let f = Fixture::new();
+        f.write("gen/sub/late.txt", "late\n");
+        std::fs::create_dir_all(f.repo.join("gen/empty/inner")).unwrap();
+        assert!(remove_empty_folder(&f.repo, "gen/sub").is_err());
+        assert!(f.repo.join("gen/sub/late.txt").is_file());
+        assert!(remove_empty_folder(&f.repo, "gen/empty").is_err());
+        assert!(f.repo.join("gen/empty/inner").is_dir());
+        // An empty folder through real folders goes, and only it.
+        remove_empty_folder(&f.repo, "gen/empty/inner").unwrap();
+        assert!(!f.repo.join("gen/empty/inner").exists());
+        assert!(f.repo.join("gen/empty").is_dir());
+        // A path that leaves the root or names `.git` is refused.
+        std::fs::create_dir(f.dir.join("sibling")).unwrap();
+        for relative in ["", ".", "../sibling", "gen/../../sibling", ".git", "/abs"] {
+            refused(&f.repo, relative);
+        }
+        assert!(f.dir.join("sibling").is_dir());
+        assert!(f.repo.join(".git").is_dir());
+    }
 }
