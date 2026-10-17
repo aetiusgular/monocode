@@ -84,11 +84,20 @@ fn delete_file(path: &Path) -> io::Result<()> {
     fs::remove_file(path)
 }
 
-/// Runs a retention pass. Returns the bytes left in the folder.
-pub fn apply(dir: &Path, today: i64, keep_days: i64, cap_bytes: u64) -> io::Result<u64> {
+/// Runs a retention pass. `protect` is a further day never deleted (the
+/// day the writer has open, if it differs from today). Returns the bytes
+/// left in the folder.
+pub fn apply(
+    dir: &Path,
+    today: i64,
+    protect: Option<i64>,
+    keep_days: i64,
+    cap_bytes: u64,
+) -> io::Result<u64> {
     let files: Vec<LogFile> = log::list_logs(dir)?;
     let infos: Vec<FileInfo> = files
         .iter()
+        .filter(|f| Some(f.day) != protect)
         .map(|f| FileInfo {
             day: f.day,
             bytes: f.bytes,
@@ -98,9 +107,10 @@ pub fn apply(dir: &Path, today: i64, keep_days: i64, cap_bytes: u64) -> io::Resu
     let deletes = plan(&infos, today, keep_days, cap_bytes);
     let mut left: u64 = 0;
     for f in &files {
-        let doomed = deletes
-            .iter()
-            .any(|d| d.day == f.day && d.compressed == f.compressed);
+        let doomed = Some(f.day) != protect
+            && deletes
+                .iter()
+                .any(|d| d.day == f.day && d.compressed == f.compressed);
         if doomed {
             // A failure to delete one file must not stop the pass.
             let _ = delete_file(&f.path);
@@ -232,7 +242,9 @@ mod tests {
         std::os::unix::fs::symlink(outside.join("victim"), dir.join("es-2000-01-01.jsonl"))
             .unwrap();
 
-        let left = apply(&dir, base + 9, 7, 1 << 30).unwrap();
+        assert!(apply(&dir, base + 9, Some(base), 7, 1 << 30).unwrap() > 0);
+        assert!(path_for(&dir, base, true).exists());
+        let left = apply(&dir, base + 9, None, 7, 1 << 30).unwrap();
         let remaining = log::list_logs(&dir).unwrap();
         assert_eq!(remaining.len(), 7);
         assert_eq!(remaining[0].day, base + 3);

@@ -2,6 +2,7 @@
 //! builds and is tested on any host. Detection only: nothing here blocks.
 
 pub mod caller;
+pub mod daemon;
 pub mod event;
 pub mod filter;
 pub mod lines;
