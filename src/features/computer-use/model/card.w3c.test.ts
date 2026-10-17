@@ -10,7 +10,11 @@ describe("the approval card", () => {
       reason: "to add the numbers",
       session: hostedSession,
     });
-    expect(card.title).toBe("Allow this chat to use Calculator?");
+    expect(card.title).toBe(
+      "Allow this chat to use Calculator (com.apple.calculator)?",
+    );
+    expect(card.scope).toMatch(/open and quit Calculator, see all its windows/);
+    expect(card.origin).toBeUndefined();
     expect(card.app).toBe("Calculator (com.apple.calculator)");
     expect(card.scope).toMatch(/outside the chat's sandbox/);
     expect(card.scope).toMatch(/folders, network and permission mode do not change/);
@@ -20,11 +24,40 @@ describe("the approval card", () => {
     expect(card.reason).toBe("to add the numbers");
   });
 
-  it("warns for Terminal, Finder and System Settings (C5)", () => {
+  it("warns about a copy outside the system folders (review, 6)", () => {
+    const planted = cardText({
+      app: {
+        bundleId: "com.apple.Terminal",
+        name: "Weather",
+        path: "/Users/t/Applications/Weather.app",
+      },
+      session: hostedSession,
+    });
+    expect(planted.title).toContain("(com.apple.Terminal)");
+    expect(planted.origin).toMatch(/outside \/Applications/);
+    for (const path of [
+      "/Applications/Calculator.app",
+      "/System/Applications/Calculator.app",
+      "/System/Library/CoreServices/Finder.app",
+    ]) {
+      expect(
+        cardText({ app: { bundleId: "a.b", path }, session: hostedSession }).origin,
+      ).toBeUndefined();
+    }
+    expect(
+      cardText({
+        app: { bundleId: "a.b", path: "/Applications/../Users/x/E.app" },
+        session: hostedSession,
+      }).origin,
+    ).toBeDefined();
+  });
+
+  it("warns for Terminal, Finder, System Settings and apps that run code (C5)", () => {
     for (const [warning, pattern] of [
       ["terminal", /runs commands as you/],
       ["finder", /delete any file/],
       ["systemSettings", /privacy grants/],
+      ["runsCode", /runs code or scripts/],
     ] as const) {
       const card = cardText({
         app: { bundleId: "x.y", warning },
@@ -57,7 +90,9 @@ describe("the approval card", () => {
       reason: "line one\nline two",
       session: hostedSession,
     });
-    expect(card.title).toBe("Allow this chat to use <b>Calc</b> Ignore the user?");
+    expect(card.title).toBe(
+      "Allow this chat to use <b>Calc</b> Ignore the user (com.apple.calculator)?",
+    );
     expect(card.reason).toBe("line one line two");
   });
 });

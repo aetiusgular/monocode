@@ -20,8 +20,11 @@ export type CardText = {
   scope: string;
   /** Where screenshots go. */
   screen: string;
-  /** The extra warning for a terminal, Finder or System Settings. */
+  /** The extra warning for a terminal, Finder, System Settings or an app
+   * that runs code. */
   warning?: string;
+  /** Shown when the app found lives outside /Applications and /System. */
+  origin?: string;
   /** Shown when the chat runs without a model known to read images. */
   vision?: string;
   allow: string;
@@ -35,6 +38,8 @@ const WARNING_TEXT: Record<AppWarning, string> = {
     "Finder can open, move, rename and delete any file you can, in any folder.",
   systemSettings:
     "System Settings can change privacy grants, the firewall, users and passwords.",
+  runsCode:
+    "This app runs code or scripts it is given. Typing into it can run commands as you, outside every sandbox.",
 };
 
 /** Whether screenshots from this chat reach a model that is not on this Mac. */
@@ -54,17 +59,27 @@ export function cardText(input: {
   const name = oneLine(input.app.name || input.app.bundleId);
   const hosted = screenLeavesMac(input.session);
   return {
-    title: `Allow this chat to use ${name}?`,
+    // The bundle id is in the title: a name is only what the app's own
+    // Info.plist says, and a planted copy can borrow any name (review, 6).
+    title:
+      name === input.app.bundleId
+        ? `Allow this chat to use ${name}?`
+        : `Allow this chat to use ${name} (${input.app.bundleId})?`,
     app:
       input.app.name && input.app.name !== input.app.bundleId
         ? `${oneLine(input.app.name)} (${input.app.bundleId})`
         : input.app.bundleId,
     reason: input.reason ? oneLine(input.reason) : "",
-    scope: `The agent can see ${name}'s windows and click and type in it, outside the chat's sandbox. Its folders, network and permission mode do not change. Until you stop computer use or quit MonoCode.`,
+    scope: `The agent can open and quit ${name}, see all its windows, and click and type in it, outside the chat's sandbox. Its folders, network and permission mode do not change. Until you stop computer use or quit MonoCode.`,
     screen: hosted
       ? `Screenshots of ${name} go to the chat's model, which is not on this Mac: the provider sees them.`
       : `Screenshots of ${name} go to the chat's model on this Mac.`,
     ...(input.app.warning ? { warning: WARNING_TEXT[input.app.warning] } : {}),
+    ...(input.app.path && !inSystemFolders(input.app.path)
+      ? {
+          origin: `This copy lives at ${oneLine(input.app.path)}, outside /Applications, where any program you run can put an app. Check it is the one you expect.`,
+        }
+      : {}),
     ...(input.withoutVision
       ? {
           vision:
@@ -74,6 +89,16 @@ export function cardText(input: {
     allow: "Allow for this chat",
     deny: "Deny",
   };
+}
+
+/** /Applications and the system's own app folders. */
+export function inSystemFolders(path: string): boolean {
+  return (
+    !path.includes("/../") &&
+    (path.startsWith("/Applications/") ||
+      path.startsWith("/System/Applications/") ||
+      path.startsWith("/System/Library/CoreServices/"))
+  );
 }
 
 /** One line, no control or direction characters, at most 200 characters. */

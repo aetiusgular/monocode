@@ -1,8 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AlertCircle, AppWindow } from "../../../shared/ui/icons";
 import type { LocalitySession } from "../../server-locality/model/locality";
 import { cardText } from "../model/card";
 import type { AppInfo } from "../model/client";
+
+export const ALLOW_DELAY_MS = 1000;
 
 /**
  * The approval card for one app in one chat (C2, C5). Every string is
@@ -26,6 +28,13 @@ export function ApprovalCard({
   onDeny: () => Promise<string | undefined>;
 }) {
   const [busy, setBusy] = useState(false);
+  // Allow takes clicks only after a second, so input already on its way
+  // (an agent's click or keystroke) cannot land on it (review, finding 3).
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setArmed(true), ALLOW_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, []);
   const [error, setError] = useState<string | undefined>();
   const text = app
     ? cardText({ app, reason, session, withoutVision })
@@ -62,6 +71,12 @@ export function ApprovalCard({
               <span>{text.warning}</span>
             </p>
           ) : null}
+          {text?.origin ? (
+            <p className="flex gap-1.5 rounded-md bg-amber-400/10 px-2 py-1.5 text-amber-400">
+              <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
+              <span>{text.origin}</span>
+            </p>
+          ) : null}
           {text ? <p className="text-content/70">{text.scope}</p> : null}
           {text ? <p className="text-content/70">{text.screen}</p> : null}
           {text?.vision ? (
@@ -83,8 +98,10 @@ export function ApprovalCard({
         {app && !refusal ? (
           <button
             type="button"
-            disabled={busy}
-            onClick={() => void act(onAllow)}
+            disabled={busy || !armed}
+            onClick={() => {
+              if (armed) void act(onAllow);
+            }}
             className="rounded-md bg-accent px-2.5 py-1 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
             {text?.allow ?? "Allow for this chat"}

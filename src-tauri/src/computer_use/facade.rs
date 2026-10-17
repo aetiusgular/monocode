@@ -242,6 +242,11 @@ const LOOK_ONLY: &[&str] = &[
     "get_session",
 ];
 
+/// Whether a tool only looks at an app.
+pub fn look_only(name: &str) -> bool {
+    LOOK_ONLY.contains(&name)
+}
+
 /// MonoCode's own MCP annotations on a runtime tool, replacing any the
 /// runtime sent, so a harness that keeps a plan turn read only (Claude Code's
 /// plan mode) can hold back every tool that acts.

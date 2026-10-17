@@ -9,19 +9,19 @@ pub fn built_requirement() -> Option<&'static str> {
     option_env!("MONOCODE_HELPER_CALLER_REQUIREMENT").filter(|text| !text.trim().is_empty())
 }
 
-/// The requirement for MonoCode signed with `identity`: its bundle id, and a
-/// leaf certificate with that common name. Quotes in the identity are refused.
-pub fn requirement_for(identity: &str) -> Option<String> {
-    let identity = identity.trim();
-    if identity.is_empty()
-        || identity.contains('"')
-        || identity.contains('\\')
-        || identity.chars().any(char::is_control)
-    {
+/// The requirement for MonoCode signed with one certificate, pinned by its
+/// SHA-1 (`security find-certificate -c <identity> -Z`). A name is not enough:
+/// any process of the user can make a self-signed certificate with the same
+/// common name (security review, finding 1). Anything but 40 hex digits is
+/// refused.
+pub fn requirement_for(sha1: &str) -> Option<String> {
+    let sha1 = sha1.trim();
+    if sha1.len() != 40 || !sha1.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     Some(format!(
-        "identifier \"com.monocode.desktop\" and certificate leaf[subject.CN] = \"{identity}\""
+        "identifier \"com.monocode.desktop\" and certificate leaf = H\"{}\"",
+        sha1.to_ascii_uppercase()
     ))
 }
 
@@ -107,10 +107,13 @@ mod tests {
     #[test]
     fn requirement_text() {
         assert_eq!(
-            requirement_for("MonoCode Dev").unwrap(),
-            "identifier \"com.monocode.desktop\" and certificate leaf[subject.CN] = \"MonoCode Dev\""
+            requirement_for("0123456789abcdef0123456789abcdef01234567").unwrap(),
+            "identifier \"com.monocode.desktop\" and certificate leaf = H\"0123456789ABCDEF0123456789ABCDEF01234567\""
         );
+        // A name, a quote trick, a short hash: all refused.
+        assert!(requirement_for("MonoCode Dev").is_none());
         assert!(requirement_for("x\" or true or \"").is_none());
+        assert!(requirement_for("0123456789abcdef0123456789abcdef0123456").is_none());
         assert!(requirement_for(" ").is_none());
     }
 }

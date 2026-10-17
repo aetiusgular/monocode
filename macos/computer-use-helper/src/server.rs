@@ -196,6 +196,12 @@ pub fn stop_now(shared: &Shared, runtime: &str) -> crate::stop::StopReport {
         .and_then(|mut map| map.remove(runtime))
         .unwrap_or_default();
     runtime::signal_all(&pids, 15);
+    // A process that ignores SIGTERM is killed after the grace, before the
+    // lock, so a call it holds cannot keep the stop waiting (review, 9).
+    if !pids.is_empty() {
+        std::thread::sleep(crate::stop::GRACE);
+        runtime::signal_all(&pids, 9);
+    }
     let mut runtimes = match shared.runtimes.lock() {
         Ok(runtimes) => runtimes,
         Err(poisoned) => poisoned.into_inner(),
@@ -335,7 +341,7 @@ mod tests {
         assert!(none["app"].is_null());
         let start = handle(
             &shared,
-            &json!({"id": 3, "op": "start", "runtime": "rt", "manifest": "version: 3\n"}),
+            &json!({"id": 3, "op": "start", "runtime": "rt", "manifest": "# Written by MonoCode for one chat. Do not edit.\nversion: 3\n  desktop:\n    display: false\n"}),
         );
         assert_eq!(start["ok"], false, "no driver");
         assert!(start["error"].as_str().unwrap().contains("missing"));

@@ -22,7 +22,9 @@ use super::facade::Facade;
 const MAX_HELLO: usize = 4096;
 /// The longest MCP line from the harness. Tool calls are small.
 const MAX_REQUEST: usize = 1024 * 1024;
-const HELLO_DEADLINE: Duration = Duration::from_secs(5);
+const HELLO_DEADLINE: Duration = Duration::from_secs(2);
+/// A reader that stops reading cannot hold a connection slot forever.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CONNECTIONS: usize = 32;
 /// How often an idle connection checks whether the tool list changed.
 const POLL: Duration = Duration::from_millis(750);
@@ -120,6 +122,7 @@ fn serve(core: &Arc<Core>, stream: TcpStream) {
     let Ok(mut writer) = stream.try_clone() else {
         return;
     };
+    let _ = writer.set_write_timeout(Some(WRITE_TIMEOUT));
     let _ = stream.set_read_timeout(Some(HELLO_DEADLINE));
     let mut reader = BufReader::new(stream);
     let mut pending = Vec::new();
@@ -134,7 +137,9 @@ fn serve(core: &Arc<Core>, stream: TcpStream) {
     let token = serde_json::from_slice::<Value>(&hello)
         .ok()
         .and_then(|v| v.get("token").and_then(Value::as_str).map(str::to_string));
-    let Some(chat) = token.and_then(|token| core.chat_for_token(&token)) else {
+    let Some((chat, token)) =
+        token.and_then(|token| core.chat_for_token(&token).map(|chat| (chat, token)))
+    else {
         let _ = write_line(
             &mut writer,
             &json!({"monocode": "refused", "message": "Computer use is not on for this chat."}),
@@ -150,7 +155,7 @@ fn serve(core: &Arc<Core>, stream: TcpStream) {
         match next_line(&mut reader, &mut pending, MAX_REQUEST) {
             Line::Text(line) => {
                 // The chat's switch may have gone off since it connected.
-                if core.token(&chat).is_none() {
+                if !core.token_is(&chat, &token) {
                     return;
                 }
                 let reply = match serde_json::from_slice::<Value>(&line) {
@@ -172,7 +177,7 @@ fn serve(core: &Arc<Core>, stream: TcpStream) {
                 }
             }
             Line::Idle => {
-                if core.token(&chat).is_none() {
+                if !core.token_is(&chat, &token) {
                     return;
                 }
                 if let Some(note) = facade.list_changed(core.as_ref()) {
@@ -267,7 +272,10 @@ mod tests {
         let address = start(core.clone()).unwrap();
         let (_stream, mut reader) = connect(address, &core.token("c1").unwrap());
         assert_eq!(read(&mut reader)["monocode"], "ok");
+        // Off and straight back on: the old connection still ends, since it
+        // holds the old token.
         core.set_chat("c1", false);
+        core.set_chat("c1", true);
         let mut rest = String::new();
         assert_eq!(reader.read_line(&mut rest).unwrap(), 0);
     }

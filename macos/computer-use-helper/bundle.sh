@@ -9,7 +9,8 @@
 #   you fetched and checked yourself (the release's SHA256SUMS and its
 #   Sigstore bundle with cosign; note W, section 3.2).
 # - Signs with the identity you name, never one it creates (plan, section 3,
-#   call 4). The same identity must sign MonoCode: the helper only answers a
+#   call 4), and builds in that certificate's SHA-1 as the only caller the
+#   helper answers. The same identity must sign MonoCode: the helper only answers a
 #   caller signed with it, and macOS keeps the helper's grants across rebuilds
 #   only while the identity stays the same.
 # - DRY_RUN=1 prints the steps and touches nothing, on any system.
@@ -35,7 +36,18 @@ esac
 
 here="$(cd "$(dirname "$0")" && pwd)"
 app="$out/MonoCode Computer Use.app"
-requirement="identifier \"com.monocode.desktop\" and certificate leaf[subject.CN] = \"$identity\""
+# Pin the certificate itself, by its SHA-1, not its name: anyone can make a
+# certificate with your identity's name (security review, finding 1).
+if [ "${DRY_RUN:-}" = 1 ]; then
+  sha1=0000000000000000000000000000000000000000
+else
+  sha1="$(security find-certificate -c "$identity" -Z | awk '/SHA-1 hash:/ {print $3; exit}')"
+fi
+case "$sha1" in
+  [0-9A-Fa-f]*) [ ${#sha1} -eq 40 ] || { echo "No single certificate named $identity." >&2; exit 2; } ;;
+  *) echo "No certificate named $identity in your keychain." >&2; exit 2 ;;
+esac
+requirement="identifier \"com.monocode.desktop\" and certificate leaf = H\"$sha1\""
 
 run() {
   if [ "${DRY_RUN:-}" = 1 ]; then

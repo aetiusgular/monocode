@@ -153,17 +153,30 @@ fn is_turn(name: &str) -> bool {
     })
 }
 
+#[cfg(target_os = "macos")]
+const O_NOFOLLOW: i32 = 0x0100;
+#[cfg(all(unix, not(target_os = "macos")))]
+const O_NOFOLLOW: i32 = 0o400000;
+
 fn read_small_json(path: &Path) -> Option<Value> {
     let meta = fs::symlink_metadata(path).ok()?;
     if !meta.is_file() || meta.len() > MAX_ACTION_BYTES {
         return None;
     }
+    // Open without following a link swapped in after the check (review, 15).
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(O_NOFOLLOW);
+    }
+    let file = options.open(path).ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
     let mut text = String::new();
-    fs::File::open(path)
-        .ok()?
-        .take(MAX_ACTION_BYTES)
-        .read_to_string(&mut text)
-        .ok()?;
+    file.take(MAX_ACTION_BYTES).read_to_string(&mut text).ok()?;
     serde_json::from_str(&text).ok()
 }
 

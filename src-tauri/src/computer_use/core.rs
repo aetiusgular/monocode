@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value};
 
 use super::apps::{parse_bundle_id, warning_for, AppRefusal, AppWarning};
-use super::facade::{printable, AccessAnswer, AccessRequest, Backend};
+use super::facade::{look_only, printable, AccessAnswer, AccessRequest, Backend};
 use super::grants::{Grant, GrantTable};
 use super::helper_client::{EventSink, HelperClient};
 use super::manifest::manifest_yaml;
@@ -107,6 +107,26 @@ struct Inner {
     runtimes: HashMap<String, RuntimeEntry>,
     /// The harness each chat's last grant named, for the activity log.
     harness: HashMap<String, String>,
+    /// Bumped by every stop, revoke and switch-off. A runtime started under
+    /// an older number is stopped as soon as its start returns, so a stop
+    /// that raced a start still wins (security review, finding 4).
+    generation: HashMap<String, u64>,
+}
+
+impl Inner {
+    fn bump(&mut self, chat: &str) {
+        *self.generation.entry(chat.to_string()).or_insert(0) += 1;
+    }
+
+    fn generation(&self, chat: &str) -> u64 {
+        self.generation.get(chat).copied().unwrap_or(0)
+    }
+
+    /// True while a card is open in any chat. Input tools wait for it, so an
+    /// agent cannot click or type its way to its own Allow (review, finding 3).
+    fn card_open(&self) -> bool {
+        self.pending.values().any(|p| p.answer.is_none())
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -189,6 +209,15 @@ impl Core {
         self.lock().tokens.get(chat).cloned()
     }
 
+    /// Whether `token` is still the chat's token. A connection keeps the token
+    /// it opened with, so switching off and on again ends it (review, 10).
+    pub fn token_is(&self, chat: &str, token: &str) -> bool {
+        self.lock()
+            .tokens
+            .get(chat)
+            .is_some_and(|known| constant_eq(known.as_bytes(), token.as_bytes()))
+    }
+
     /// The chat a token belongs to. Compared in constant time per token.
     pub fn chat_for_token(&self, token: &str) -> Option<String> {
         let inner = self.lock();
@@ -244,7 +273,11 @@ impl Core {
 
     /// The user removed one app. Its runtime ends at once.
     pub fn revoke(&self, chat: &str, bundle_id: &str) -> bool {
-        let ended = self.lock().grants.end(chat, bundle_id, now_ms());
+        let ended = {
+            let mut inner = self.lock();
+            inner.bump(chat);
+            inner.grants.end(chat, bundle_id, now_ms())
+        };
         let Some(ended) = ended else { return false };
         self.log_approval(&ended, true, ended.ended_at);
         self.end_runtime(chat);
@@ -259,6 +292,7 @@ impl Core {
         let now = now_ms();
         let (ended, runtime) = {
             let mut inner = self.lock();
+            inner.bump(chat);
             let ended = inner.grants.end_chat(chat, now);
             for pending in inner
                 .pending
@@ -450,8 +484,12 @@ impl Core {
 
     // --- Runtimes ---
 
+    /// The helper when it is connected. Never waits: a launch in progress
+    /// holds the lock for up to 25 seconds, and a stop or the menu bar must
+    /// not wait on it (review, finding 8). The generation check catches a
+    /// runtime that launch then starts.
     fn connected_helper(&self) -> Option<Arc<HelperClient>> {
-        let guard = self.helper.lock().ok()?;
+        let guard = self.helper.try_lock().ok()?;
         guard.as_ref().filter(|helper| helper.is_open()).cloned()
     }
 
@@ -479,6 +517,7 @@ impl Core {
 
     /// The chat's runtime id, started or restarted to match its grants.
     fn ensure_runtime(&self, chat: &str) -> Result<(Arc<HelperClient>, String), String> {
+        let generation = self.lock().generation(chat);
         let grants = self.grants(chat);
         let manifest = manifest_yaml(&grants).ok_or("No app is approved for this chat.")?;
         let helper = self.helper_or_launch()?;
@@ -506,13 +545,21 @@ impl Core {
         {
             crate::activity::register_process(pid as u32, chat, ProcessKind::CuaRuntime);
         }
-        self.lock().runtimes.insert(
-            chat.to_string(),
-            RuntimeEntry {
-                id: id.clone(),
-                manifest,
-            },
-        );
+        {
+            let mut inner = self.lock();
+            if inner.generation(chat) != generation {
+                drop(inner);
+                let _ = helper.request("stop", json!({"runtime": id}), STOP_TIMEOUT);
+                return Err("Computer use was stopped for this chat.".into());
+            }
+            inner.runtimes.insert(
+                chat.to_string(),
+                RuntimeEntry {
+                    id: id.clone(),
+                    manifest,
+                },
+            );
+        }
         (self.notify)(Notice::Changed {
             chat: chat.to_string(),
         });
@@ -803,6 +850,12 @@ impl Backend for Core {
     }
 
     fn runtime_call(&self, chat: &str, name: &str, arguments: Value) -> Result<Value, String> {
+        if !look_only(name) && self.lock().card_open() {
+            return Err(
+                "An approval card is open in MonoCode. Input waits until the user answers it."
+                    .into(),
+            );
+        }
         let (helper, id) = self.ensure_runtime(chat)?;
         let reply = helper.request(
             "call",
@@ -835,6 +888,8 @@ pub mod tests {
         pub log: Arc<Mutex<Vec<Value>>>,
         pub launches: Arc<AtomicUsize>,
         pub working: bool,
+        /// How long the fake helper takes to answer `start`.
+        pub start_delay: Duration,
     }
 
     impl FakeLauncher {
@@ -843,6 +898,7 @@ pub mod tests {
                 log: Arc::default(),
                 launches: Arc::default(),
                 working: true,
+                start_delay: Duration::ZERO,
             }
         }
     }
@@ -855,6 +911,7 @@ pub mod tests {
             self.launches.fetch_add(1, Ordering::SeqCst);
             let (ours, theirs) = UnixStream::pair().unwrap();
             let log = self.log.clone();
+            let start_delay = self.start_delay;
             thread::spawn(move || {
                 let mut writer = theirs.try_clone().unwrap();
                 let mut pid = 100;
@@ -866,6 +923,7 @@ pub mod tests {
                     let reply = match request["op"].as_str().unwrap() {
                         "hello" => json!({"id": id, "ok": true}),
                         "start" => {
+                            thread::sleep(start_delay);
                             pid += 1;
                             json!({"id": id, "ok": true, "pid": pid})
                         }
@@ -988,6 +1046,71 @@ pub mod tests {
         core.runtime_call("c1", "click", json!({})).unwrap();
         assert_eq!(&ops(&log)[4..], ["start", "call"]);
         assert!(core.status().running_chats.contains(&"c1".to_string()));
+    }
+
+    #[test]
+    fn input_waits_while_any_card_is_open() {
+        let (core, log, _) = core_with(FakeLauncher::new());
+        core.set_chat("c1", true);
+        core.set_chat("c2", true);
+        core.grant("c1", "claude", "com.apple.calculator", None)
+            .unwrap();
+        assert_eq!(
+            core.request_access(
+                "c2",
+                AccessRequest {
+                    app: "com.apple.TextEdit".into(),
+                    reason: String::new(),
+                },
+                Duration::from_millis(20),
+            ),
+            AccessAnswer::Pending
+        );
+        let error = core.runtime_call("c1", "click", json!({})).unwrap_err();
+        assert!(error.contains("approval card is open"));
+        assert!(!ops(&log).contains(&"call".to_string()));
+        // Looking still works.
+        assert!(core
+            .runtime_call("c1", "get_window_state", json!({}))
+            .is_ok());
+        let id = core.status().pending[0].request_id.clone();
+        core.answer(&id, false, "claude").unwrap();
+        assert!(core.runtime_call("c1", "click", json!({})).is_ok());
+    }
+
+    #[test]
+    fn a_stop_during_a_start_wins() {
+        let mut launcher = FakeLauncher::new();
+        launcher.start_delay = Duration::from_millis(400);
+        let (core, log, _) = core_with(launcher);
+        core.set_chat("c1", true);
+        core.grant("c1", "claude", "com.apple.calculator", None)
+            .unwrap();
+        let caller = {
+            let core = core.clone();
+            thread::spawn(move || core.runtime_call("c1", "click", json!({})))
+        };
+        // Wait until the start is in flight, then stop.
+        for _ in 0..200 {
+            if ops(&log).contains(&"start".to_string()) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        core.stop("c1");
+        let result = caller.join().unwrap();
+        assert!(
+            result.is_err(),
+            "the call after a stop must not run: {result:?}"
+        );
+        let ops = ops(&log);
+        assert!(!ops.contains(&"call".to_string()));
+        assert_eq!(
+            ops.last().unwrap(),
+            "stop",
+            "the late runtime was stopped: {ops:?}"
+        );
+        assert!(core.status().running_chats.is_empty());
     }
 
     #[test]

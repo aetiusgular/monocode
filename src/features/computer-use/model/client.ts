@@ -11,7 +11,7 @@ import { loadSwitches, setChatSwitch, type ChatSwitch } from "./chatSwitch";
  * approval card.
  */
 
-export type AppWarning = "terminal" | "finder" | "systemSettings";
+export type AppWarning = "terminal" | "finder" | "systemSettings" | "runsCode";
 
 export type GrantView = {
   chatId: string;
@@ -320,7 +320,12 @@ function num(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-const WARNINGS: readonly AppWarning[] = ["terminal", "finder", "systemSettings"];
+const WARNINGS: readonly AppWarning[] = [
+  "terminal",
+  "finder",
+  "systemSettings",
+  "runsCode",
+];
 
 export function sanitizeApp(raw: unknown): AppInfo | null {
   if (!raw || typeof raw !== "object") return null;

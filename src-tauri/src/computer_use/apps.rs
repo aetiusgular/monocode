@@ -20,6 +20,14 @@ const NEVER: &[&str] = &[
     "com.apple.loginwindow",
     "com.apple.ScreenSaver.Engine",
     "com.apple.SecurityAgent",
+    // Password stores: one approval would hand over every password.
+    "com.apple.keychainaccess",
+    "com.apple.Passwords",
+    "com.1password.",
+    "com.agilebits.",
+    "com.bitwarden.",
+    "com.lastpass.",
+    "com.dashlane.",
 ];
 
 /// What the approval card warns about for an app (C5).
@@ -32,6 +40,8 @@ pub enum AppWarning {
     Finder,
     /// System Settings: it can change privacy grants, the firewall and users.
     SystemSettings,
+    /// An editor or automation tool that can run code it is given.
+    RunsCode,
 }
 
 const TERMINALS: &[&str] = &[
@@ -48,6 +58,17 @@ const TERMINALS: &[&str] = &[
     "com.todesktop.230313mzl4w4u92",
 ];
 const FINDERS: &[&str] = &["com.apple.finder"];
+/// Ids, or prefixes ending in `.`, of apps that run code they are given.
+const RUNS_CODE: &[&str] = &[
+    "com.apple.scripteditor2",
+    "com.apple.shortcuts",
+    "com.apple.automator",
+    "com.apple.dt.xcode",
+    "dev.zed.zed",
+    "com.jetbrains.",
+    "com.sublimetext.",
+    "com.panic.nova",
+];
 const SETTINGS: &[&str] = &[
     "com.apple.systempreferences",
     "com.apple.settings",
@@ -118,6 +139,14 @@ pub fn warning_for(id: &str) -> Option<AppWarning> {
         Some(AppWarning::Finder)
     } else if SETTINGS.contains(&lower.as_str()) {
         Some(AppWarning::SystemSettings)
+    } else if RUNS_CODE.iter().any(|id| {
+        if id.ends_with('.') {
+            lower.starts_with(id)
+        } else {
+            lower == *id
+        }
+    }) {
+        Some(AppWarning::RunsCode)
     } else {
         None
     }
@@ -167,6 +196,11 @@ mod tests {
             "com.monocode",
             "com.trycua.driver",
             "com.apple.loginwindow",
+            "com.apple.keychainaccess",
+            "com.apple.Passwords",
+            "com.1password.1password",
+            "com.agilebits.onepassword7",
+            "com.bitwarden.desktop",
         ] {
             assert_eq!(parse_bundle_id(never), Err(AppRefusal::Never), "{never}");
         }
@@ -187,6 +221,18 @@ mod tests {
         assert_eq!(
             warning_for("com.apple.systempreferences"),
             Some(AppWarning::SystemSettings)
+        );
+        assert_eq!(
+            warning_for("com.apple.ScriptEditor2"),
+            Some(AppWarning::RunsCode)
+        );
+        assert_eq!(
+            warning_for("com.jetbrains.pycharm"),
+            Some(AppWarning::RunsCode)
+        );
+        assert_eq!(
+            warning_for("com.apple.dt.Xcode"),
+            Some(AppWarning::RunsCode)
         );
         assert_eq!(warning_for("com.apple.calculator"), None);
     }

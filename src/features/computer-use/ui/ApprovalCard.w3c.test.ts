@@ -23,6 +23,20 @@ describe("ApprovalCard", () => {
     expect(html).toContain("Allow for this chat");
   });
 
+  it("starts with Allow disabled, so input in flight cannot hit it", () => {
+    const html = renderToStaticMarkup(
+      createElement(ApprovalCard, {
+        app: { bundleId: "com.apple.calculator", name: "Calculator" },
+        session,
+        onAllow: noop,
+        onDeny: noop,
+      }),
+    );
+    const allow = html.slice(html.lastIndexOf("<button"));
+    expect(allow).toContain("Allow for this chat");
+    expect(allow).toMatch(/disabled=""/);
+  });
+
   it("shows the terminal warning and the screen note", () => {
     const html = renderToStaticMarkup(
       createElement(ApprovalCard, {

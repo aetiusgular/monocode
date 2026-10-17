@@ -158,6 +158,10 @@ impl Runtimes {
             }
             thread::sleep(Duration::from_millis(50));
         }
+        // The daemon read its manifest at startup (Cua loads it once). Remove
+        // it now, so nothing can rewrite a file a later restart would read
+        // (security review, finding 2).
+        let _ = fs::remove_file(&manifest_path);
         let mut proxy = match spawn(&mcp_launch(&self.driver, &socket, &self.home), true) {
             Ok(proxy) => proxy,
             Err(error) => {
@@ -280,12 +284,22 @@ impl Runtimes {
 /// mode. MonoCode writes it; this only stops a mistake from reaching Cua.
 pub fn manifest_acceptable(manifest: &str) -> bool {
     let lower = manifest.to_ascii_lowercase();
+    // Exactly one `display:` key, and it says false; no other value form
+    // (`yes`, `on`, a quoted true) gets through (security review, finding 13).
+    let display: Vec<&str> = lower
+        .lines()
+        .filter(|line| line.trim_start().starts_with("display:"))
+        .collect();
     manifest.len() <= MAX_MANIFEST
-        && lower.contains("version: 3\n")
+        && manifest.is_ascii()
+        && lower.lines().next() == Some("# written by monocode for one chat. do not edit.")
+        && lower.contains("\nversion: 3\n")
+        && display.len() == 1
+        && display[0].trim() == "display: false"
         && !lower.contains("com.monocode")
-        && !lower.contains("display: true")
         && !lower.contains("unrestricted")
         && !lower.contains("mode:")
+        && !lower.contains("bypass")
 }
 
 /// New action records, and runtimes that ended with their exit code.
@@ -407,7 +421,7 @@ esac
         (root, runtimes)
     }
 
-    const MANIFEST: &str = "version: 3\nexpires_after: \"8h\"\n";
+    const MANIFEST: &str = "# Written by MonoCode for one chat. Do not edit.\nversion: 3\nexpires_after: \"8h\"\nresources:\n  desktop:\n    display: false\n";
 
     #[test]
     fn starts_lists_only_relayable_tools_calls_and_stops() {
@@ -416,12 +430,10 @@ esac
         assert!(pid > 0);
         assert!(runtimes.is_running("rt1"));
         let manifest = root.join("data").join("rt-rt1.yaml");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = fs::metadata(&manifest).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode, 0o600);
-        }
+        assert!(
+            !manifest.exists(),
+            "the manifest is gone once the daemon is up"
+        );
         let tools = runtimes.tools("rt1").unwrap();
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         assert_eq!(names, vec!["click"]);
@@ -432,7 +444,7 @@ esac
         let report = runtimes.stop("rt1", &StillMouse);
         assert!(report.ended);
         assert!(!runtimes.is_running("rt1"));
-        assert!(!manifest.exists(), "the manifest goes with the runtime");
+
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -446,12 +458,18 @@ esac
         assert!(runtimes
             .start("rt", &"x".repeat(MAX_MANIFEST + 1), &StillMouse)
             .is_err());
+        let head = "# Written by MonoCode for one chat. Do not edit.\nversion: 3\n";
         for bad in [
-            "version: 3\n  - bundle_id: \"com.monocode.desktop\"\n",
-            "version: 3\n  desktop:\n    display: true\n",
-            "version: 3\nmode: unrestricted\n",
+            format!(
+                "{head}  - bundle_id: \"com.monocode.desktop\"\n  desktop:\n    display: false\n"
+            ),
+            format!("{head}  desktop:\n    display: true\n"),
+            format!("{head}  desktop:\n    display: yes\n"),
+            format!("{head}  desktop:\n    display: false\n    display: true\n"),
+            format!("{head}mode: unrestricted\n  desktop:\n    display: false\n"),
+            "version: 3\n  desktop:\n    display: false\n".to_string(),
         ] {
-            assert!(runtimes.start("rt", bad, &StillMouse).is_err(), "{bad}");
+            assert!(runtimes.start("rt", &bad, &StillMouse).is_err(), "{bad}");
         }
         let _ = fs::remove_dir_all(&root);
     }
