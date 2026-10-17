@@ -1093,7 +1093,11 @@ pub fn harness_spawn(
 
     // [w3-a] spawned
     // [w3-b] spawned
-    crate::activity::register_process(pid, &activity_chat_w3b, crate::activity::ProcessKind::Harness);
+    crate::activity::register_process(
+        pid,
+        &activity_chat_w3b,
+        crate::activity::ProcessKind::Harness,
+    );
     // [w3-c] spawned
     Ok(pid)
 }
