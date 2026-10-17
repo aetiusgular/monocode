@@ -438,6 +438,7 @@ import { OutboundCallsSettings } from "../../privacy-view/ui/OutboundCallsSettin
 // [w3-a] imports
 import { TelemetrySettings as TelemetrySettings_w3a } from "../../harness-telemetry/ui/TelemetrySettings";
 // [w3-b] imports
+import { ActivityLogPage as ActivityLogPage_w3b } from "../../activity/ui/ActivityLogPage";
 // [w3-c] imports
 
 /**
@@ -688,6 +689,7 @@ export function SettingsView({
                 <TelemetrySettings_w3a Group={Group} Row={Row} Toggle={Toggle} />
               ) : null}
               {/* [w3-b] section-switch */}
+              {section === "activity" ? <ActivityLogPage_w3b /> : null}
               {/* [w3-c] section-switch */}
             </div>
           </div>

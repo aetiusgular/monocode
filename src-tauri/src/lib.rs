@@ -331,6 +331,7 @@ pub fn run() {
             }
             // [w3-a] setup
             // [w3-b] setup
+            activity::init(app.handle());
             // [w3-c] setup
             Ok(())
         })
@@ -716,6 +717,16 @@ pub fn run() {
             otel_receiver::harness_telemetry_configure,
             otel_receiver::harness_telemetry_status,
             // [w3-b] commands
+            activity::commands::activity_record,
+            activity::commands::activity_record_approvals,
+            activity::commands::activity_set_chat,
+            activity::commands::activity_flags,
+            activity::commands::activity_collector_status,
+            activity::commands::activity_collector_install_plan,
+            activity::commands::activity_collector_register,
+            activity::commands::activity_collector_unregister,
+            activity::commands::activity_set_retention,
+            activity::commands::activity_screenshot,
             // [w3-c] commands
         ])
         .build(tauri::generate_context!())

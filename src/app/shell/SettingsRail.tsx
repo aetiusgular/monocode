@@ -22,6 +22,7 @@ import {
   // [w3-a] icon-imports
   ChartBreakoutSquare as ChartBreakoutSquare_w3a,
   // [w3-b] icon-imports
+  Shield as ShieldIcon_w3b,
   // [w3-c] icon-imports
   type IconComponent,
 } from "../../shared/ui/icons";
@@ -54,6 +55,7 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   // [w3-a] icons
   telemetry: ChartBreakoutSquare_w3a,
   // [w3-b] icons
+  activity: ShieldIcon_w3b,
   // [w3-c] icons
 };
 

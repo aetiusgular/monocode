@@ -40,6 +40,7 @@ export type SettingsSectionId =
   // [w3-a] section-ids
   | "telemetry"
   // [w3-b] section-ids
+  | "activity"
   // [w3-c] section-ids
 ;
 
@@ -234,6 +235,15 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
       "telemetry opentelemetry otel otlp activity log tool calls approvals prompts local",
   },
   // [w3-b] sections
+  {
+    id: "activity",
+    group: "workspace",
+    label: "Activity log",
+    description:
+      "What agents did while you were away, checked against what you approved. Detection only.",
+    keywords:
+      "activity log audit telemetry eslogger collector flags approvals screenshots retention",
+  },
   // [w3-c] sections
 ];
 
@@ -718,6 +728,18 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "telemetry receiver events refused status",
   },
   // [w3-b] index
+  {
+    id: "activity-collector",
+    section: "activity",
+    label: "Activity collector",
+    keywords: "eslogger root daemon install full disk access launchd",
+  },
+  {
+    id: "activity-retention",
+    section: "activity",
+    label: "Activity log kept",
+    keywords: "retention days screenshots disk floor cap",
+  },
   // [w3-c] index
 ];
 

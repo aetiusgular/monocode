@@ -457,6 +457,7 @@ describe("the session panel", () => {
       // #37: every chat with a project folder can start a preview.
       "Dev server",
       "Sandbox and privacy",
+      "Activity",
       "Session",
     ]);
 
@@ -469,6 +470,7 @@ describe("the session panel", () => {
       // #37: every chat with a project folder can start a preview.
       "Dev server",
       "Sandbox and privacy",
+      "Activity",
       "Session",
     ]);
   });

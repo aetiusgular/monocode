@@ -625,6 +625,7 @@ describe("settings navigation", () => {
       // [w3-a] rail-workspace
       "telemetry",
       // [w3-b] rail-workspace
+      "activity",
       // [w3-c] rail-workspace
     ]);
   });
