@@ -73,6 +73,7 @@ mod windows;
 mod worktree_lifecycle;
 mod worktrees;
 // [w3-a] mods
+mod otel_receiver;
 // [w3-b] mods
 // [w3-c] mods
 
@@ -712,6 +713,8 @@ pub fn run() {
             edit_adapter_commands::edit_adapter_open,
             edit_adapter_commands::edit_adapter_close,
             // [w3-a] commands
+            otel_receiver::harness_telemetry_configure,
+            otel_receiver::harness_telemetry_status,
             // [w3-b] commands
             // [w3-c] commands
         ])
