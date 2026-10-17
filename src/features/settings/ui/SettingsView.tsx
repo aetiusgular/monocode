@@ -437,6 +437,7 @@ import { EnvironmentPage } from "../../environment/ui/EnvironmentPage";
 import { OutboundCallsSettings } from "../../privacy-view/ui/OutboundCallsSettings";
 // [w3-a] imports
 // [w3-b] imports
+import { ActivityLogPage as ActivityLogPage_w3b } from "../../activity/ui/ActivityLogPage";
 // [w3-c] imports
 
 /**
@@ -684,6 +685,7 @@ export function SettingsView({
               ) : null}
               {/* [w3-a] section-switch */}
               {/* [w3-b] section-switch */}
+              {section === "activity" ? <ActivityLogPage_w3b /> : null}
               {/* [w3-c] section-switch */}
             </div>
           </div>

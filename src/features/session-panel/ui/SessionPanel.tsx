@@ -40,6 +40,7 @@ import {
 } from "../../privacy-view/ui/SessionPrivacy";
 // [w3-a] imports
 // [w3-b] imports
+import { ActivitySection as ActivitySection_w3b } from "../../activity/ui/ActivitySection";
 // [w3-c] imports
 
 type PanelSession = Pick<
@@ -306,6 +307,7 @@ export function SessionPanelView({
           <SessionPrivacySection session={session} />
           {/* [w3-a] sections */}
           {/* [w3-b] sections */}
+          <ActivitySection_w3b sessionId={session.id} />
           {/* [w3-c] sections */}
           <PanelSection title="Session" fold="facts">
             <dl className="flex flex-col gap-0.5 px-2">

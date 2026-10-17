@@ -44,6 +44,11 @@ export class HarnessEventQueue {
   enqueue = (sessionId: string, event: HarnessEvent) => {
     // [w3-a] enqueue
     // [w3-b] enqueue
+    (
+      globalThis as {
+        monocodeActivityTap_w3b?: (id: string, e: HarnessEvent) => void;
+      }
+    ).monocodeActivityTap_w3b?.(sessionId, event);
     // [w3-c] enqueue
     const events = this.queued.get(sessionId);
     if (events) events.push(event);

@@ -35,6 +35,7 @@ export type SessionPanelSection =
   | "privacy"
   // [w3-a] section-ids
   // [w3-b] section-ids
+  | "activity"
   // [w3-c] section-ids
 ;
 
@@ -49,6 +50,7 @@ const SECTION_COLLAPSED_KEY: Record<SessionPanelSection, string> = {
   privacy: "monocode.sessionPanel.privacyCollapsed",
   // [w3-a] section-keys
   // [w3-b] section-keys
+  activity: "monocode.sessionPanel.activityCollapsed",
   // [w3-c] section-keys
 };
 
@@ -64,6 +66,7 @@ export const SECTION_COLLAPSED_DEFAULT: Record<SessionPanelSection, boolean> = {
   privacy: false,
   // [w3-a] section-defaults
   // [w3-b] section-defaults
+  activity: false,
   // [w3-c] section-defaults
 };
 

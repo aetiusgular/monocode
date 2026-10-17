@@ -624,6 +624,7 @@ describe("settings navigation", () => {
       "environment",
       // [w3-a] rail-workspace
       // [w3-b] rail-workspace
+      "activity",
       // [w3-c] rail-workspace
     ]);
   });
