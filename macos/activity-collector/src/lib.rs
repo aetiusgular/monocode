@@ -3,3 +3,4 @@
 
 pub mod event;
 pub mod timefmt;
+pub mod tree;
