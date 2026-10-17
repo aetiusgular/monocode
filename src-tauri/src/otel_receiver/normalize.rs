@@ -18,9 +18,10 @@ pub const MAX_DETAIL_BYTES: usize = 16 * 1024;
 /// Longest summary line, in characters.
 pub const MAX_SUMMARY_CHARS: usize = 200;
 
-/// Events dropped as noise: one per streamed chunk or socket frame.
+/// Events dropped as noise: one per streamed chunk or socket frame, and
+/// start-up and latency timings. None of them is something the agent did.
 fn is_noise(name: &str) -> bool {
-    name == "sse_event" || name.starts_with("websocket")
+    matches!(name, "sse_event" | "startup_phase" | "turn_ttft") || name.starts_with("websocket")
 }
 
 /// Attributes that hold who you are rather than what the agent did. They
@@ -29,10 +30,13 @@ fn is_identity(key: &str) -> bool {
     key.starts_with("user.") || key.starts_with("organization.") || key == "account_id"
 }
 
-/// Attributes that hold prompt text. Kept only when the switch is on, even
-/// when a harness sends them anyway (a user's own environment may ask it to).
+/// Attributes that hold prompt or reply text. Kept only when the switch is
+/// on, even when a harness sends them anyway (a user's own environment may
+/// ask it to). Off, both harnesses send a redaction mark in their place
+/// (Claude Code 2.1.302 `<REDACTED>`, Codex 0.161.0 `[REDACTED]`, seen by the
+/// contract check); it is dropped too.
 fn is_prompt_text(key: &str) -> bool {
-    key == "prompt" || key == "user_prompt" || key.ends_with(".prompt")
+    matches!(key, "prompt" | "prompt_text" | "user_prompt" | "response") || key.ends_with(".prompt")
 }
 
 /// The event name without the harness prefix.
@@ -149,6 +153,12 @@ fn describe(name: &str, attrs: &Map<String, Value>) -> (String, String) {
             "session.start".into(),
             format!("Conversation started on {model}"),
         ),
+        "assistant_response" => {
+            let length = num_attr(attrs, &["response_length"])
+                .map(|l| format!(" ({} characters)", l as i64))
+                .unwrap_or_default();
+            ("message".into(), format!("Reply{length}"))
+        }
         other => (format!("otel.{other}"), other.to_string()),
     }
 }
@@ -342,6 +352,68 @@ mod tests {
         .unwrap();
         assert!(!e.summary.contains('\n'));
         assert!(!e.summary.contains('\u{1b}'));
+    }
+
+    fn fixture_events(body: &[u8], harness: &str) -> Vec<ActivityEvent> {
+        let decoded = crate::otel_receiver::decode::decode_json(body).unwrap();
+        decoded
+            .logs
+            .iter()
+            .filter_map(|l| to_activity(l, "chat", harness, false, 1))
+            .collect()
+    }
+
+    #[test]
+    fn claude_code_2_1_302_payload() {
+        // Saved by tests/cli-contract/checks/otel.mjs from the real CLI.
+        let events = fixture_events(
+            include_bytes!("fixtures/claude-2.1.302-logs.json"),
+            "claude",
+        );
+        let kinds: Vec<&str> = events.iter().map(|e| e.kind.as_str()).collect();
+        assert!(kinds.contains(&"tool.call"));
+        assert!(kinds.contains(&"approval"));
+        assert!(kinds.contains(&"model.request"));
+        assert!(kinds.contains(&"prompt"));
+        assert!(kinds.contains(&"message"));
+        let tool = events.iter().find(|e| e.kind == "tool.call").unwrap();
+        assert_eq!(tool.summary, "Bash ok, 90 ms");
+        assert_eq!(
+            tool.detail["attributes"]["tool_use_id"],
+            "toolu_1b45099a6ab049728f96"
+        );
+        assert!(tool.at > 1_700_000_000_000);
+        for e in &events {
+            let attrs = e.detail["attributes"].as_object().unwrap();
+            assert!(!attrs.contains_key("user.id"), "{}", e.kind);
+            assert!(
+                !attrs.contains_key("prompt")
+                    && !attrs.contains_key("prompt_text")
+                    && !attrs.contains_key("response")
+            );
+        }
+    }
+
+    #[test]
+    fn codex_0_161_0_payload() {
+        let events = fixture_events(include_bytes!("fixtures/codex-0.161.0-logs.json"), "codex");
+        assert!(events
+            .iter()
+            .all(|e| !e.detail["event"].as_str().unwrap().contains("sse_event")));
+        assert!(events
+            .iter()
+            .all(|e| e.kind != "otel.startup_phase" && e.kind != "otel.turn_ttft"));
+        let tool = events.iter().find(|e| e.kind == "tool.call").unwrap();
+        assert_eq!(tool.summary, "exec_command ok, 63 ms");
+        assert_eq!(tool.detail["attributes"]["call_id"], "otel1");
+        // Codex writes timeUnixNano 0; the observed time stands in.
+        assert!(tool.at > 1_700_000_000_000);
+        let decision = events.iter().find(|e| e.kind == "approval").unwrap();
+        assert_eq!(decision.summary, "exec_command: approved (Config)");
+        assert!(events.iter().any(|e| e.kind == "session.start"));
+        assert!(events
+            .iter()
+            .all(|e| e.detail["attributes"].get("prompt").is_none()));
     }
 
     #[test]
