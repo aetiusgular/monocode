@@ -2,6 +2,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect, useSyncExternalStore } from "react";
 import type { HarnessId } from "../../sessions/model/session";
+import { loadSwitches, setChatSwitch, type ChatSwitch } from "./chatSwitch";
 
 /**
  * The app side of computer use. Grants live in the app's Rust process for
@@ -166,9 +167,34 @@ export async function refreshComputerUse(chatIds: string[] = []): Promise<void> 
   bump();
 }
 
+/**
+ * Switches a chat on or off, in browser storage and in the app. On gives the
+ * chat a bridge token before its harness restarts; off ends its grants, its
+ * cards and its runtime.
+ */
+export async function setComputerUse(chatId: string, next: ChatSwitch): Promise<void> {
+  setChatSwitch(chatId, next);
+  if (!inApp()) return;
+  try {
+    await invoke("computer_use_set_chat", { chatId, on: next.on });
+  } catch {
+    // The app is older or the command failed: the chat simply has no token.
+  }
+  await refreshComputerUse([chatId]);
+}
+
 /** Once per window: the executable path and the first status. */
 export async function loadComputerUse(): Promise<void> {
   if (!inApp()) return;
+  // Chats switched on in an earlier run get their tokens back. Their grants
+  // ended with that run, so each app asks again.
+  for (const chatId of Object.keys(loadSwitches())) {
+    try {
+      await invoke("computer_use_set_chat", { chatId, on: true });
+    } catch {
+      break;
+    }
+  }
   if (!cliPath) {
     try {
       const path = await invoke<string>("app_cli_path");

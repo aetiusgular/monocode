@@ -281,6 +281,7 @@ import { harnessCan } from "../../../integrations/harness/core/capabilities";
 // [w3-a] imports
 // [w3-b] imports
 // [w3-c] imports
+import { ComputerUseControl as ComputerUseControl_w3c } from "../../computer-use/ui/ComputerUseControl";
 
 type Props = {
   enabled?: boolean;
@@ -3019,6 +3020,14 @@ export function Composer({
               {/* [w3-a] actions */}
               {/* [w3-b] actions */}
               {/* [w3-c] actions */}
+              <ComputerUseControl_w3c
+                session={{
+                  ...privacySession,
+                  harness,
+                  model,
+                  id: sessionId,
+                }}
+              />
               <VoiceInputButton textareaRef={ref} disabled={disabled} />
               <ComposerAction
                 busy={busy}

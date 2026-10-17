@@ -887,6 +887,7 @@ import { forgetSiteRules } from "../features/browser-tools/model/siteRules";
 // [w3-a] imports
 // [w3-b] imports
 // [w3-c] imports
+import { ComputerUseHost as ComputerUseHost_w3c } from "../features/computer-use/ui/ComputerUseHost";
 
 const SearchView = lazySurface(
   async () => {
@@ -14253,6 +14254,7 @@ function Workspace({
           {/* [w3-a] mounts */}
           {/* [w3-b] mounts */}
           {/* [w3-c] mounts */}
+          <ComputerUseHost_w3c />
           {providerSignInRequest ? (
             <ProviderSignInDialog
               key={providerSignInRequest.key}

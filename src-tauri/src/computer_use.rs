@@ -280,8 +280,13 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> 
 #[tauri::command]
 pub fn computer_use_set_chat(state: State<'_, ComputerUse>, chat_id: String, on: bool) {
     let core = state.core.clone();
-    // Off may stop a runtime, which waits on the helper.
-    std::thread::spawn(move || core.set_chat(&chat_id, on));
+    if on {
+        // At once, so the token is there before the harness restarts.
+        core.set_chat(&chat_id, true);
+    } else {
+        // Off may stop a runtime, which waits on the helper.
+        std::thread::spawn(move || core.set_chat(&chat_id, false));
+    }
 }
 
 #[tauri::command]

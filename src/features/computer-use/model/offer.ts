@@ -54,9 +54,13 @@ export function computerUseBlock(
   if (!context.isMac) return "platform";
   if (!harnessCan(session.harness, "mcpInject")) return "harness";
   const reads = context.readsImages ?? modelReadsImages;
-  if (!sw.withoutVision && !(session.model && reads(session.model))) {
-    return "vision";
-  }
+  // Model ids carry their harness (`claude:opus-5-5`); a bare one is read
+  // both ways, so its harness's own traits still count.
+  const model = session.model;
+  const sees =
+    !!model &&
+    (reads(model) || (!model.includes(":") && reads(`${session.harness}:${model}`)));
+  if (!sw.withoutVision && !sees) return "vision";
   if (!context.cliPath) return "app";
   return undefined;
 }
