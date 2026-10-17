@@ -563,6 +563,9 @@ impl Core {
             .filter(|pid| *pid <= u32::MAX as u64)
         {
             crate::activity::register_process(pid as u32, chat, ProcessKind::CuaRuntime);
+            // The check knows the runtime by this record: its own writes to
+            // its recording folder are not flagged (security review T1).
+            crate::activity::record(runtime_event(chat, &id, pid as u32));
         }
         {
             let mut inner = self.lock();
@@ -717,6 +720,22 @@ fn harness_name(harness: &str) -> String {
     }
 }
 
+/// The record of a runtime's start, with its pid.
+pub fn runtime_event(chat: &str, runtime: &str, pid: u32) -> ActivityEvent {
+    ActivityEvent {
+        id: new_id(),
+        at: now_ms(),
+        chat_id: chat.to_string(),
+        harness: String::new(),
+        source: ActivitySource::Cua,
+        kind: "cua.runtime".into(),
+        summary: "Computer use runtime started".into(),
+        detail: json!({ "runtime": printable(runtime, 32) }),
+        pid: Some(pid),
+        approval_id: None,
+    }
+}
+
 /// One Cua action as an activity event (C7).
 pub fn action_event(chat: &str, harness: &str, action: &Value) -> ActivityEvent {
     let tool = action
@@ -815,7 +834,11 @@ fn read_png_nofollow(path: &Path) -> Option<Vec<u8>> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
+        // O_NONBLOCK: a FIFO named like a screenshot opens at once instead of
+        // waiting for a writer, then fails the regular-file check below. A
+        // blocked open would stall every later action record (review T3).
+        // On a regular file it changes nothing.
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     let file = options.open(path).ok()?;
     let meta = file.metadata().ok()?;
@@ -853,20 +876,23 @@ fn constant_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 impl Core {
-    /// Marks the chat's turn as a plan turn, or ends that. Bounded: a chat
-    /// id over 256 characters is ignored, and at most 4,096 chats are held.
-    pub fn set_plan(&self, chat: &str, plan: bool) {
+    /// Marks the chat's turn as a plan turn, or ends that. A mark that cannot
+    /// be kept (a bad id, the 4,096 cap) is refused, so the turn does not run
+    /// unmarked (security review T7).
+    pub fn set_plan(&self, chat: &str, plan: bool) -> Result<(), String> {
         if chat.is_empty() || chat.len() > 256 {
-            return;
+            return Err("Bad chat id.".into());
         }
         let mut inner = self.lock();
         if plan {
-            if inner.planning.len() < 4096 {
-                inner.planning.insert(chat.to_string());
+            if inner.planning.len() >= 4096 && !inner.planning.contains(chat) {
+                return Err("Too many plan turns are marked.".into());
             }
+            inner.planning.insert(chat.to_string());
         } else {
             inner.planning.remove(chat);
         }
+        Ok(())
     }
 }
 
@@ -1568,6 +1594,41 @@ pub mod tests {
         attach_screenshot(&mut event, Some(&root), move |_| Some(d.clone()));
         assert!(event.detail.get("screenshot").is_none());
         assert!(!out.join("s.png").exists());
+    }
+
+    #[test]
+    fn plan_marks_hold_and_a_mark_that_cannot_be_kept_is_refused() {
+        let core = Core::new(Box::new(FakeLauncher::new()), Box::new(|_| {}), true);
+        assert!(core.set_plan("c1", true).is_ok());
+        assert!(core.plan_turn("c1"));
+        assert!(core.set_plan("", true).is_err());
+        assert!(core.set_plan(&"x".repeat(300), true).is_err());
+        for n in 0..4095 {
+            core.set_plan(&format!("chat{n}"), true).unwrap();
+        }
+        assert!(core.set_plan("one-too-many", true).is_err());
+        assert!(core.set_plan("c1", true).is_ok(), "already marked");
+        core.set_plan("c1", false).unwrap();
+        assert!(!core.plan_turn("c1"));
+    }
+
+    #[test]
+    fn a_fifo_named_like_a_screenshot_is_refused_without_waiting() {
+        // Security review T3: an open of a FIFO would block for a writer.
+        let root = scratch("root5");
+        let fifo = root.join("after.png");
+        let c = std::ffi::CString::new(fifo.to_string_lossy().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let out = scratch("out5");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let root2 = root.clone();
+        std::thread::spawn(move || {
+            let mut event = shot_event(&root2.join("after.png"));
+            let d = out.join("f.png");
+            attach_screenshot(&mut event, Some(&root2), move |_| Some(d.clone()));
+            let _ = tx.send(event.detail.get("screenshot").is_none());
+        });
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(true));
     }
 
     #[test]

@@ -59,8 +59,14 @@ describe("plan turns reach computer use", () => {
     expect(seen[0]).toBe(JSON.stringify({ chatId: "c2", plan: false }));
   });
 
-  it("a failed mark never stops the turn", async () => {
-    await expect(turn("broken", "plan")).resolves.toBeUndefined();
+  it("a plan turn whose mark fails does not run (security review T7)", async () => {
+    await expect(turn("broken", "plan")).rejects.toThrow(/plan turn/);
+    expect(seen).toHaveLength(0);
+    expect(calls.some(([c]) => c === "control_turn_finished")).toBe(true);
+  });
+
+  it("an ordinary turn whose mark fails still runs", async () => {
+    await expect(turn("broken")).resolves.toBeUndefined();
     expect(seen).toHaveLength(1);
   });
 });

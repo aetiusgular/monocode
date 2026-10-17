@@ -89,9 +89,9 @@ type ChatState = {
 /**
  * The host a fetch-like tool call names, for the check's "new host" flag
  * (lane B's request 4). Only a tool whose kind says fetch, and only the first
- * http(s) URL in its title or preview. Untrusted text. A host from OTel is
- * stamped with the time it was received, so it cannot be placed before a
- * real call, and it raises its own "new host" flag when it arrives.
+ * http(s) URL in its title or preview. Untrusted text. A host from OTel
+ * (an OTel event's own `host`, or `otel.host` on a joined call) can raise a
+ * "new host" flag; the check never counts it as a known host.
  */
 export function fetchHost(
   toolKind: string | undefined,
@@ -460,9 +460,19 @@ export class TelemetryFeed {
         .filter((h) => h.event.kind === event.kind)
         .map((h, i) => [i, h]),
     );
+    // `at` is the receive time, which an export delay pushes later. The
+    // time-window join uses the harness's own time, held to at most one join
+    // window before receipt, so a batch lands on the call it describes and a
+    // back-dated record still cannot reach far (security review T4).
+    const harnessAt =
+      typeof event.detail.harnessAt === "number" ? event.detail.harnessAt : undefined;
+    const joinAt =
+      harnessAt === undefined
+        ? event.at
+        : Math.min(event.at, Math.max(event.at - this.options.joinWindowMs, harnessAt));
     const held =
-      this.match(map, event.harness, callId, kind, event.at, now) ??
-      this.match(recent, event.harness, callId, kind, event.at, now, true);
+      this.match(map, event.harness, callId, kind, joinAt, now) ??
+      this.match(recent, event.harness, callId, kind, joinAt, now, true);
     if (!held) {
       this.emit(event);
       return;

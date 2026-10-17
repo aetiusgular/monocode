@@ -298,8 +298,12 @@ pub fn computer_use_set_chat(state: State<'_, ComputerUse>, chat_id: String, on:
 /// Marks a chat's turn as a plan turn, or ends it. While it holds, only
 /// look-only tools run (security review S6). Called around every turn.
 #[tauri::command]
-pub fn computer_use_set_plan(state: State<'_, ComputerUse>, chat_id: String, plan: bool) {
-    state.core.set_plan(&chat_id, plan);
+pub fn computer_use_set_plan(
+    state: State<'_, ComputerUse>,
+    chat_id: String,
+    plan: bool,
+) -> Result<(), String> {
+    state.core.set_plan(&chat_id, plan)
 }
 
 #[tauri::command]

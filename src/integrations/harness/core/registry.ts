@@ -331,13 +331,14 @@ export function listHarnesses(): HarnessAdapter[] {
 /**
  * Tells computer use whether this chat's turn is a plan turn, so its MCP
  * server runs only look-only tools then, on every harness (security review
- * S6). Never throws: computer use may be off or not on this platform.
+ * S6). Never throws. Returns false when the mark did not take.
  */
-async function markPlanTurn(chatId: string, plan: boolean): Promise<void> {
+async function markPlanTurn(chatId: string, plan: boolean): Promise<boolean> {
   try {
     await invoke("computer_use_set_plan", { chatId, plan });
+    return true;
   } catch {
-    // Nothing to mark.
+    return false;
   }
 }
 
@@ -355,7 +356,18 @@ export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
         cwd: input.cwd,
         appAccess: input.appAccess === true,
       });
-    if (controlled) await markPlanTurn(input.sessionId, input.intent === "plan");
+    // A plan turn whose mark did not take does not run: computer use would
+    // not hold its actions back (security review T7).
+    if (
+      controlled &&
+      !(await markPlanTurn(input.sessionId, input.intent === "plan")) &&
+      input.intent === "plan"
+    ) {
+      await invoke("control_turn_finished", { sessionId: input.sessionId });
+      throw new Error(
+        "MonoCode could not hold computer use back for this plan turn, so it did not start. Try again.",
+      );
+    }
     activeTurnSessions.add(input.sessionId);
     try {
       await adapter.sendTurn({

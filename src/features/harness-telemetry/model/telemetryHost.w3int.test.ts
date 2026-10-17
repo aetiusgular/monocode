@@ -172,3 +172,53 @@ describe("adapter event ids", () => {
     expect(written[0].id).not.toBe(written[1].id);
   });
 });
+
+describe("the Codex time join uses the harness's time, clamped (T4)", () => {
+  function codexResult(at: number, harnessAt: number): ActivityEvent {
+    return {
+      id: `otel-${at}`,
+      at,
+      chatId: "c1",
+      harness: "codex",
+      source: "otel",
+      kind: "tool.call",
+      summary: "exec_command ok",
+      detail: {
+        event: "codex.tool_result",
+        trust: "harness",
+        harnessAt,
+        attributes: { tool_name: "exec_command", call_id: "nomatch" },
+      },
+    };
+  }
+
+  function twoCalls() {
+    const written: ActivityEvent[] = [];
+    const f = new TelemetryFeed((e) => written.push(structuredClone(e)), opts);
+    f.adapter("c1", "codex", { type: "tool.started", callId: "A", title: "ls", kind: "execute" }, 0);
+    f.adapter("c1", "codex", { type: "tool.updated", callId: "A", status: "completed" }, 100);
+    f.adapter("c1", "codex", { type: "tool.started", callId: "B", title: "pwd", kind: "execute" }, 1100);
+    return { f, written };
+  }
+
+  it("a delayed record joins the call it describes, not a later one", () => {
+    const { f, written } = twoCalls();
+    f.otel([codexResult(1500, 90)], 1500);
+    f.adapter("c1", "codex", { type: "tool.updated", callId: "B", status: "completed" }, 1600);
+    f.tick(10_000);
+    const a = written.find((e) => e.detail.callId === "A");
+    const b = written.find((e) => e.detail.callId === "B");
+    expect(a?.detail.otel).toBeDefined();
+    expect(b?.detail.otel).toBeUndefined();
+  });
+
+  it("a record back-dated far beyond one window is held to the window", () => {
+    const { f, written } = twoCalls();
+    // Claims to be from long before A: the clamp keeps it near receipt.
+    f.otel([codexResult(1500, -1_000_000)], 1500);
+    f.adapter("c1", "codex", { type: "tool.updated", callId: "B", status: "completed" }, 1600);
+    f.tick(10_000);
+    const a = written.find((e) => e.detail.callId === "A");
+    expect(a?.detail.otel).toBeDefined();
+  });
+});

@@ -276,18 +276,22 @@ pub fn terminal_plan(
     // passed (security review S1).
     let plist_text = plist(DAEMON_PATH, Some(dev_peer_path));
     let plist_sha256 = text_sha256(&plist_text);
+    // Both files are installed root-owned, then one root shell checks both
+    // hashes and starts the daemon only if both match, else removes both.
+    // Every tool by absolute path: a planted `shasum` or `cut` earlier on
+    // your PATH cannot vouch for a swapped file (security review T6).
+    let binary_sha256 = binary_sha256.to_ascii_lowercase();
     let commands = vec![
-        format!("sudo install -o root -g wheel -m 755 {} {DAEMON_PATH}", quoted(built_binary)),
         format!(
-            "[ \"$(shasum -a 256 {DAEMON_PATH} | cut -d ' ' -f 1)\" = \"{}\" ] || {{ echo 'hash mismatch, not installed'; sudo rm -f {DAEMON_PATH}; }}",
-            binary_sha256.to_ascii_lowercase()
-        ),
-        format!("sudo install -o root -g wheel -m 644 {} {PLIST_PATH}", quoted(staged_plist)),
-        format!(
-            "[ \"$(shasum -a 256 {PLIST_PATH} | cut -d ' ' -f 1)\" = \"{plist_sha256}\" ] || {{ echo 'plist hash mismatch, not installed'; sudo rm -f {PLIST_PATH}; }}"
+            "/usr/bin/sudo /usr/bin/install -o root -g wheel -m 755 {} {DAEMON_PATH}",
+            quoted(built_binary)
         ),
         format!(
-            "[ -f {DAEMON_PATH} ] && [ -f {PLIST_PATH} ] && sudo launchctl bootstrap system {PLIST_PATH}"
+            "/usr/bin/sudo /usr/bin/install -o root -g wheel -m 644 {} {PLIST_PATH}",
+            quoted(staged_plist)
+        ),
+        format!(
+            "/usr/bin/sudo /bin/sh -c 'B=$(/usr/bin/shasum -a 256 {DAEMON_PATH} | /usr/bin/cut -d \" \" -f 1); P=$(/usr/bin/shasum -a 256 {PLIST_PATH} | /usr/bin/cut -d \" \" -f 1); if [ \"$B\" = \"{binary_sha256}\" ] && [ \"$P\" = \"{plist_sha256}\" ]; then /bin/launchctl bootstrap system {PLIST_PATH}; else echo \"hash mismatch, not installed\"; /bin/rm -f {DAEMON_PATH} {PLIST_PATH}; exit 1; fi'"
         ),
     ];
     Ok(InstallPlan {
@@ -533,32 +537,45 @@ mod tests {
             "/Users/t/mono/MonoCode",
         )
         .unwrap();
-        assert_eq!(plan.commands.len(), 5);
+        assert_eq!(plan.commands.len(), 3);
         assert!(plan.commands[0].contains(DAEMON_PATH));
-        assert!(plan.commands[1].contains(&hash));
-        assert!(plan.commands[4].contains("launchctl bootstrap system"));
+        assert!(plan.commands[2].contains(&hash));
+        assert!(plan.commands[2].contains("launchctl bootstrap system"));
         assert!(plan.explanation.iter().any(|l| l.contains("unsigned")));
     }
 
     #[test]
     fn the_staged_plist_is_checked_by_hash_before_anything_starts() {
-        // Security review S1: the plist is staged in a folder you own.
+        // Security review S1 and T6.
+        let binary = "b".repeat(64);
         let plan = terminal_plan(
             "/Users/t/build/collector",
-            &"b".repeat(64),
+            &binary,
             "/Users/t/stage/c.plist",
             "/Users/t/mono/MonoCode",
         )
         .unwrap();
         let plist_hash = text_sha256(&plan.plist);
-        let check = &plan.commands[3];
-        assert!(check.contains(PLIST_PATH) && check.contains(&plist_hash));
-        assert!(check.contains(&format!("sudo rm -f {PLIST_PATH}")));
-        // Installed before it is checked, checked before it is started.
-        assert!(plan.commands[2].contains("install") && plan.commands[2].contains(PLIST_PATH));
-        let start = &plan.commands[4];
-        assert!(start.starts_with(&format!("[ -f {DAEMON_PATH} ] && [ -f {PLIST_PATH} ]")));
-        // A different plist would fail the check.
+        assert!(plan.commands[1].contains(PLIST_PATH));
+        let step = &plan.commands[2];
+        assert!(step.starts_with("/usr/bin/sudo /bin/sh -c '"));
+        assert!(step.contains(&plist_hash) && step.contains(&binary));
+        // The start sits only in the branch where both hashes match.
+        let (matched, mismatched) = step.split_once("; else ").unwrap();
+        assert!(matched.contains("launchctl bootstrap system"));
+        assert!(!mismatched.contains("launchctl"));
+        assert!(mismatched.contains(&format!("/bin/rm -f {DAEMON_PATH} {PLIST_PATH}")));
+        // Every tool by absolute path; nothing found on PATH.
+        for tool in ["shasum", "cut", "launchctl", "rm"] {
+            for (at, _) in step.match_indices(tool) {
+                assert_eq!(&step[at - 1..at], "/", "{tool} not by absolute path");
+            }
+        }
+        for command in &plan.commands {
+            assert!(command.starts_with("/usr/bin/sudo "));
+        }
+        // No single quote inside the root shell's own script.
+        assert_eq!(step.matches('\'').count(), 2);
         assert_ne!(text_sha256(&plan.plist.replace("run", "rux")), plist_hash);
     }
 

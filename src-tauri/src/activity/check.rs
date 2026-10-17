@@ -152,11 +152,15 @@ pub fn noise_path(path: &str, granted_app: bool) -> bool {
     // in MonoCode's data folder. A chat's process writing there is the
     // tampering the log exists to catch (security review S5). The app's own
     // writes are never attributed to a chat, so they raise nothing.
+    // Compared without case: APFS is case-insensitive, so `Activity/` is the
+    // same folder (security review T2).
     const GUARDED: &[&str] = &["activity", "computer-use"];
+    let lower = path.to_ascii_lowercase();
     if GUARDED.iter().any(|sub| {
         inside(
-            path,
-            &format!("{home}/Library/Application Support/com.monocode.desktop/{sub}"),
+            &lower,
+            &format!("{home}/Library/Application Support/com.monocode.desktop/{sub}")
+                .to_ascii_lowercase(),
         )
     }) {
         return false;
@@ -224,6 +228,21 @@ pub fn event_host(event: &ActivityEvent) -> Option<&str> {
     })
 }
 
+/// Whether a path is inside computer use's recording folder.
+fn in_recordings(path: &str) -> bool {
+    path.to_ascii_lowercase()
+        .contains("/library/application support/com.monocode.desktop/computer-use/recordings/")
+}
+
+/// The computer-use runtimes each chat started, by pid (`cua.runtime`).
+fn runtime_pids(events: &[ActivityEvent]) -> HashSet<(String, u32)> {
+    events
+        .iter()
+        .filter(|e| e.source == ActivitySource::Cua && e.kind == "cua.runtime")
+        .filter_map(|e| e.pid.map(|pid| (e.chat_id.clone(), pid)))
+        .collect()
+}
+
 /// Tool call windows per chat: call id to (start, end).
 fn tool_windows(events: &[ActivityEvent]) -> HashMap<(String, String), (i64, i64)> {
     let mut windows: HashMap<(String, String), (i64, i64)> = HashMap::new();
@@ -265,6 +284,7 @@ pub fn run(input: &CheckInput) -> Vec<Flag> {
         }
     }
     let windows = tool_windows(input.events);
+    let runtimes = runtime_pids(input.events);
 
     for event in input.events {
         if event.chat_id.is_empty() {
@@ -307,8 +327,15 @@ pub fn run(input: &CheckInput) -> Vec<Flag> {
         {
             let granted_app = str_field(event, "grant").is_some();
             let paths = [str_field(event, "path"), str_field(event, "dest")];
+            let own_runtime = event
+                .pid
+                .is_some_and(|pid| runtimes.contains(&(event.chat_id.clone(), pid)));
             for path in paths.into_iter().flatten() {
                 if noise_path(path, granted_app) || folders.iter().any(|f| inside(path, f)) {
+                    continue;
+                }
+                // The chat's own runtime writing its recording (T1).
+                if own_runtime && in_recordings(path) {
                     continue;
                 }
                 let approved = covering(
@@ -598,6 +625,44 @@ mod tests {
         );
         let ids: Vec<&str> = flags.iter().map(|f| f.event_id.as_str()).collect();
         assert_eq!(ids, vec!["1", "2", "3"]);
+    }
+
+    #[test]
+    fn the_chats_runtime_may_write_its_recordings_and_nothing_else_may() {
+        // Security review T1 and T2.
+        let base = "/Users/t/Library/Application Support/com.monocode.desktop";
+        let rec = format!("{base}/computer-use/recordings/rt1/turn-00001/after.png");
+        let mut runtime = ev(
+            "r",
+            0,
+            ActivitySource::Cua,
+            "cua.runtime",
+            json!({}),
+            Some(77),
+        );
+        runtime.chat_id = "c1".into();
+        let mut by_runtime = es("1", 1, "create", &rec);
+        by_runtime.pid = Some(77);
+        let by_other = es("2", 2, "create", &rec); // pid 10, the harness
+        let mut other_chat_runtime = es("3", 3, "create", &rec);
+        other_chat_runtime.pid = Some(77);
+        other_chat_runtime.chat_id = "c2".into();
+        let mut runtime_elsewhere = es("4", 4, "write", &format!("{base}/activity/app-x.jsonl"));
+        runtime_elsewhere.pid = Some(77);
+        let case = es("5", 5, "write", &format!("{base}/Activity/app-x.jsonl"));
+        let flags = check(
+            &[
+                runtime,
+                by_runtime,
+                by_other,
+                other_chat_runtime,
+                runtime_elsewhere,
+                case,
+            ],
+            &[],
+        );
+        let ids: Vec<&str> = flags.iter().map(|f| f.event_id.as_str()).collect();
+        assert_eq!(ids, vec!["2", "3", "4", "5"]);
     }
 
     #[test]

@@ -286,15 +286,22 @@ pub fn read(
 }
 
 /// The hosts seen in the log before `before_ms`, for the "new host" check.
+/// Only from MonoCode's own adapter events and the collector: a host a
+/// harness's telemetry named can raise a flag, never make a host known
+/// (security review T5).
 pub fn hosts_before(dir: &Path, before_ms: i64) -> std::collections::HashSet<String> {
-    let mut hosts = std::collections::HashSet::new();
     let earliest = before_ms.saturating_sub(retention::KEEP_LOG_DAYS * 86_400_000);
-    for event in read(dir, earliest, before_ms.saturating_sub(1), None, 200_000).events {
-        if let Some(host) = super::check::event_host(&event) {
-            hosts.insert(host.to_ascii_lowercase());
-        }
-    }
-    hosts
+    known_hosts(&read(dir, earliest, before_ms.saturating_sub(1), None, 200_000).events)
+}
+
+pub fn known_hosts(events: &[ActivityEvent]) -> std::collections::HashSet<String> {
+    use super::types::ActivitySource;
+    events
+        .iter()
+        .filter(|e| matches!(e.source, ActivitySource::Adapter | ActivitySource::Eslogger))
+        .filter_map(|e| e.detail.get("host").and_then(serde_json::Value::as_str))
+        .map(str::to_ascii_lowercase)
+        .collect()
 }
 
 /// The log's front door: callers hand records over and return at once.
@@ -488,6 +495,23 @@ mod tests {
         assert_eq!(capped.events.len(), 2);
         assert!(!capped.truncated);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn telemetry_hosts_never_become_known() {
+        // Security review T5.
+        let mut adapter = event("a", "c1", 1);
+        adapter.detail = json!({ "host": "Docs.rs" });
+        let mut otel = event("o", "c1", 2);
+        otel.source = ActivitySource::Otel;
+        otel.detail = json!({ "host": "forged.test" });
+        let mut joined = event("j", "c1", 3);
+        joined.detail = json!({ "otel": { "host": "joined.test" } });
+        let hosts = known_hosts(&[adapter, otel, joined]);
+        assert_eq!(
+            hosts,
+            std::collections::HashSet::from(["docs.rs".to_string()])
+        );
     }
 
     #[test]
