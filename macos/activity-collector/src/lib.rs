@@ -3,5 +3,7 @@
 
 pub mod event;
 pub mod filter;
+pub mod lines;
+pub mod log;
 pub mod timefmt;
 pub mod tree;
