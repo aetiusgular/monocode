@@ -10,7 +10,7 @@ use tauri::{AppHandle, Manager};
 use super::check::{self, ChatContext, Flag};
 use super::collector::{self, CollectorStatus, InstallPlan};
 use super::store::{self, Entry};
-use super::types::{ActivityEvent, ApprovalRecord};
+use super::types::{ActivityEvent, ActivitySource, ApprovalRecord};
 
 /// At most this many records in one call from the webview.
 pub const MAX_BATCH: usize = 500;
@@ -25,9 +25,20 @@ fn now() -> i64 {
 #[tauri::command]
 pub fn activity_record(events: Vec<ActivityEvent>) {
     let Some(log) = super::log() else { return };
-    for event in events.into_iter().take(MAX_BATCH) {
+    for event in webview_events(events) {
         log.submit(Entry::Event(event));
     }
+}
+
+/// What the webview may write: its own adapter events and the OTel events
+/// its feed passes on. Computer use's and the collector's records come from
+/// Rust only, so a page with IPC cannot forge a runtime record that exempts
+/// a pid, or a collector event (security review U2).
+pub fn webview_events(events: Vec<ActivityEvent>) -> impl Iterator<Item = ActivityEvent> {
+    events
+        .into_iter()
+        .take(MAX_BATCH)
+        .filter(|e| matches!(e.source, ActivitySource::Adapter | ActivitySource::Otel))
 }
 
 #[tauri::command]
@@ -112,6 +123,9 @@ pub fn flags_report(
     let back = store::read(dir, since, until, chat_id, READ_LIMIT);
     let known_hosts = store::hosts_before(dir, since);
     let mut events = back.events;
+    // A runtime lives across turns, so its start record usually sits before
+    // `since`; the check needs it to know the runtime's pid (review U1).
+    events.extend(store::runtimes_before(dir, since, chat_id));
     let mut report = FlagsReport {
         chain_ok: back.chain_ok,
         truncated: back.truncated,
@@ -435,6 +449,87 @@ mod tests {
         assert_eq!(report.flags[0].event_id, "es-1");
         assert!(report.events.iter().all(|e| e.harness == "claude"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_runtime_started_before_the_window_still_exempts_its_recordings() {
+        // Security review U1: a runtime lives across turns.
+        let dir = temp("runtime-before");
+        let day = 20_377 * 86_400_000_i64;
+        let mut writer = ChainWriter::new(dir.clone());
+        let runtime = ActivityEvent {
+            id: "rt".into(),
+            at: day - 3_600_000,
+            chat_id: "c1".into(),
+            harness: String::new(),
+            source: ActivitySource::Cua,
+            kind: "cua.runtime".into(),
+            summary: String::new(),
+            detail: json!({ "runtime": "rt1" }),
+            pid: Some(77),
+            approval_id: None,
+        };
+        writer
+            .write(&Entry::Event(runtime), day - 3_600_000)
+            .unwrap();
+        let rec = "/Users/t/Library/Application Support/com.monocode.desktop/computer-use/recordings/rt1/turn-00009/after.png";
+        let write = |id: &str, pid: u32| ActivityEvent {
+            id: id.into(),
+            at: day + 10,
+            chat_id: "c1".into(),
+            harness: String::new(),
+            source: ActivitySource::Eslogger,
+            kind: "create".into(),
+            summary: String::new(),
+            detail: json!({ "path": rec }),
+            pid: Some(pid),
+            approval_id: None,
+        };
+        let reply = collector::EventsReply {
+            events: vec![write("own", 77), write("other", 5)],
+            truncated: false,
+            chain_ok: true,
+            complete: true,
+        };
+        let report = flags_report(
+            &dir,
+            Some("c1"),
+            day,
+            day + 1_000,
+            &HashMap::new(),
+            Some(reply),
+            day + 2_000,
+        );
+        let ids: Vec<&str> = report.flags.iter().map(|f| f.event_id.as_str()).collect();
+        assert_eq!(ids, vec!["other"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_webview_cannot_write_computer_use_or_collector_records() {
+        // Security review U2.
+        let make = |source: ActivitySource| ActivityEvent {
+            id: "x".into(),
+            at: 1,
+            chat_id: "c1".into(),
+            harness: String::new(),
+            source,
+            kind: "cua.runtime".into(),
+            summary: String::new(),
+            detail: json!({}),
+            pid: Some(1),
+            approval_id: None,
+        };
+        let kept: Vec<ActivitySource> = webview_events(vec![
+            make(ActivitySource::Adapter),
+            make(ActivitySource::Otel),
+            make(ActivitySource::Cua),
+            make(ActivitySource::Eslogger),
+            make(ActivitySource::Approval),
+        ])
+        .map(|e| e.source)
+        .collect();
+        assert_eq!(kept, vec![ActivitySource::Adapter, ActivitySource::Otel]);
     }
 
     #[test]

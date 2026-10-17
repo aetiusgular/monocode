@@ -280,18 +280,22 @@ pub fn terminal_plan(
     // hashes and starts the daemon only if both match, else removes both.
     // Every tool by absolute path: a planted `shasum` or `cut` earlier on
     // your PATH cannot vouch for a swapped file (security review T6).
+    // Staged next to their final places as `.new`, checked there, and only
+    // then moved over the installed ones: a reinstall never leaves an
+    // unchecked binary where a running or restarting daemon would start it
+    // as root (security review U8).
     let binary_sha256 = binary_sha256.to_ascii_lowercase();
     let commands = vec![
         format!(
-            "/usr/bin/sudo /usr/bin/install -o root -g wheel -m 755 {} {DAEMON_PATH}",
+            "/usr/bin/sudo /usr/bin/install -o root -g wheel -m 755 {} {DAEMON_PATH}.new",
             quoted(built_binary)
         ),
         format!(
-            "/usr/bin/sudo /usr/bin/install -o root -g wheel -m 644 {} {PLIST_PATH}",
+            "/usr/bin/sudo /usr/bin/install -o root -g wheel -m 644 {} {PLIST_PATH}.new",
             quoted(staged_plist)
         ),
         format!(
-            "/usr/bin/sudo /bin/sh -c 'B=$(/usr/bin/shasum -a 256 {DAEMON_PATH} | /usr/bin/cut -d \" \" -f 1); P=$(/usr/bin/shasum -a 256 {PLIST_PATH} | /usr/bin/cut -d \" \" -f 1); if [ \"$B\" = \"{binary_sha256}\" ] && [ \"$P\" = \"{plist_sha256}\" ]; then /bin/launchctl bootstrap system {PLIST_PATH}; else echo \"hash mismatch, not installed\"; /bin/rm -f {DAEMON_PATH} {PLIST_PATH}; exit 1; fi'"
+            "/usr/bin/sudo /bin/sh -c 'B=$(/usr/bin/shasum -a 256 {DAEMON_PATH}.new | /usr/bin/cut -d \" \" -f 1); P=$(/usr/bin/shasum -a 256 {PLIST_PATH}.new | /usr/bin/cut -d \" \" -f 1); if [ \"$B\" = \"{binary_sha256}\" ] && [ \"$P\" = \"{plist_sha256}\" ]; then /bin/launchctl bootout system/{LABEL} 2>/dev/null; /bin/mv -f {DAEMON_PATH}.new {DAEMON_PATH} && /bin/mv -f {PLIST_PATH}.new {PLIST_PATH} && /bin/launchctl bootstrap system {PLIST_PATH}; else echo \"hash mismatch, not installed\"; /bin/rm -f {DAEMON_PATH}.new {PLIST_PATH}.new; exit 1; fi'"
         ),
     ];
     Ok(InstallPlan {
@@ -564,9 +568,14 @@ mod tests {
         let (matched, mismatched) = step.split_once("; else ").unwrap();
         assert!(matched.contains("launchctl bootstrap system"));
         assert!(!mismatched.contains("launchctl"));
-        assert!(mismatched.contains(&format!("/bin/rm -f {DAEMON_PATH} {PLIST_PATH}")));
+        assert!(mismatched.contains(&format!("/bin/rm -f {DAEMON_PATH}.new {PLIST_PATH}.new")));
+        // Nothing lands on the installed paths before the check (U8).
+        assert!(plan.commands[0].ends_with(&format!("{DAEMON_PATH}.new")));
+        assert!(plan.commands[1].ends_with(&format!("{PLIST_PATH}.new")));
+        assert!(matched.contains(&format!("/bin/mv -f {DAEMON_PATH}.new {DAEMON_PATH}")));
+        assert!(!mismatched.contains("mv "));
         // Every tool by absolute path; nothing found on PATH.
-        for tool in ["shasum", "cut", "launchctl", "rm"] {
+        for tool in ["shasum", "cut", "launchctl", "rm", "mv"] {
             for (at, _) in step.match_indices(tool) {
                 assert_eq!(&step[at - 1..at], "/", "{tool} not by absolute path");
             }

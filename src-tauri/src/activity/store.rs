@@ -294,11 +294,24 @@ pub fn hosts_before(dir: &Path, before_ms: i64) -> std::collections::HashSet<Str
     known_hosts(&read(dir, earliest, before_ms.saturating_sub(1), None, 200_000).events)
 }
 
+/// The computer-use runtime starts in the 7 days before `before_ms`.
+pub fn runtimes_before(dir: &Path, before_ms: i64, chat_id: Option<&str>) -> Vec<ActivityEvent> {
+    use super::types::ActivitySource;
+    let earliest = before_ms.saturating_sub(retention::KEEP_LOG_DAYS * 86_400_000);
+    read(dir, earliest, before_ms.saturating_sub(1), chat_id, 200_000)
+        .events
+        .into_iter()
+        .filter(|e| e.source == ActivitySource::Cua && e.kind == "cua.runtime")
+        .collect()
+}
+
 pub fn known_hosts(events: &[ActivityEvent]) -> std::collections::HashSet<String> {
     use super::types::ActivitySource;
+    // Adapter only: collector events are never stored in this log, so an
+    // Eslogger row here was not written by the collector (review U3).
     events
         .iter()
-        .filter(|e| matches!(e.source, ActivitySource::Adapter | ActivitySource::Eslogger))
+        .filter(|e| e.source == ActivitySource::Adapter)
         .filter_map(|e| e.detail.get("host").and_then(serde_json::Value::as_str))
         .map(str::to_ascii_lowercase)
         .collect()

@@ -134,6 +134,24 @@ fn home_of(path: &str) -> Option<String> {
 
 /// Paths a write never flags: scratch space, devices, and the harnesses' own
 /// state (Fenceline's filter for Claude Code's `~/.claude`).
+/// The activity log's and computer use's folders in MonoCode's data folder.
+/// Compared without case: APFS is case-insensitive, so `Activity/` is the
+/// same folder (security review T2).
+fn guarded_path(path: &str) -> bool {
+    let Some(home) = home_of(path) else {
+        return false;
+    };
+    const GUARDED: &[&str] = &["activity", "computer-use"];
+    let lower = path.to_ascii_lowercase();
+    GUARDED.iter().any(|sub| {
+        inside(
+            &lower,
+            &format!("{home}/Library/Application Support/com.monocode.desktop/{sub}")
+                .to_ascii_lowercase(),
+        )
+    })
+}
+
 pub fn noise_path(path: &str, granted_app: bool) -> bool {
     const SYSTEM: &[&str] = &[
         "/tmp",
@@ -152,17 +170,7 @@ pub fn noise_path(path: &str, granted_app: bool) -> bool {
     // in MonoCode's data folder. A chat's process writing there is the
     // tampering the log exists to catch (security review S5). The app's own
     // writes are never attributed to a chat, so they raise nothing.
-    // Compared without case: APFS is case-insensitive, so `Activity/` is the
-    // same folder (security review T2).
-    const GUARDED: &[&str] = &["activity", "computer-use"];
-    let lower = path.to_ascii_lowercase();
-    if GUARDED.iter().any(|sub| {
-        inside(
-            &lower,
-            &format!("{home}/Library/Application Support/com.monocode.desktop/{sub}")
-                .to_ascii_lowercase(),
-        )
-    }) {
+    if guarded_path(path) {
         return false;
     }
     const HARNESS: &[&str] = &[
@@ -228,19 +236,38 @@ pub fn event_host(event: &ActivityEvent) -> Option<&str> {
     })
 }
 
-/// Whether a path is inside computer use's recording folder.
+/// Whether a path is inside computer use's recording folder under its home,
+/// with no `..` (review U6).
 fn in_recordings(path: &str) -> bool {
-    path.to_ascii_lowercase()
-        .contains("/library/application support/com.monocode.desktop/computer-use/recordings/")
+    let Some(home) = home_of(path) else {
+        return false;
+    };
+    !path.split('/').any(|part| part == "..")
+        && inside(
+            &path.to_ascii_lowercase(),
+            &format!(
+                "{home}/Library/Application Support/com.monocode.desktop/computer-use/recordings"
+            )
+            .to_ascii_lowercase(),
+        )
 }
 
-/// The computer-use runtimes each chat started, by pid (`cua.runtime`).
-fn runtime_pids(events: &[ActivityEvent]) -> HashSet<(String, u32)> {
-    events
+/// The computer-use runtimes each chat started: (chat, pid) to the start
+/// time. A write counts as the runtime's only after its start and before
+/// that pid's exit, so a reused pid is not exempted (review U5).
+fn runtime_pids(events: &[ActivityEvent]) -> HashMap<(String, u32), i64> {
+    let mut map = HashMap::new();
+    for e in events
         .iter()
         .filter(|e| e.source == ActivitySource::Cua && e.kind == "cua.runtime")
-        .filter_map(|e| e.pid.map(|pid| (e.chat_id.clone(), pid)))
-        .collect()
+    {
+        if let Some(pid) = e.pid {
+            map.entry((e.chat_id.clone(), pid))
+                .and_modify(|at: &mut i64| *at = (*at).max(e.at))
+                .or_insert(e.at);
+        }
+    }
+    map
 }
 
 /// Tool call windows per chat: call id to (start, end).
@@ -327,15 +354,27 @@ pub fn run(input: &CheckInput) -> Vec<Flag> {
         {
             let granted_app = str_field(event, "grant").is_some();
             let paths = [str_field(event, "path"), str_field(event, "dest")];
-            let own_runtime = event
-                .pid
-                .is_some_and(|pid| runtimes.contains(&(event.chat_id.clone(), pid)));
+            let own_runtime = event.pid.is_some_and(|pid| {
+                runtimes
+                    .get(&(event.chat_id.clone(), pid))
+                    .is_some_and(|&started| {
+                        event.at >= started
+                            && exits
+                                .get(&pid)
+                                .is_none_or(|&ended| ended < started || event.at <= ended)
+                    })
+            });
             for path in paths.into_iter().flatten() {
-                if noise_path(path, granted_app) || folders.iter().any(|f| inside(path, f)) {
-                    continue;
-                }
                 // The chat's own runtime writing its recording (T1).
                 if own_runtime && in_recordings(path) {
+                    continue;
+                }
+                // The log's and the recordings' folders are flagged even when
+                // a chat's folder holds them, such as a chat on ~ (review U9).
+                let guarded = guarded_path(path);
+                if !guarded
+                    && (noise_path(path, granted_app) || folders.iter().any(|f| inside(path, f)))
+                {
                     continue;
                 }
                 let approved = covering(
@@ -663,6 +702,47 @@ mod tests {
         );
         let ids: Vec<&str> = flags.iter().map(|f| f.event_id.as_str()).collect();
         assert_eq!(ids, vec!["2", "3", "4", "5"]);
+    }
+
+    #[test]
+    fn the_runtime_exemption_is_bounded_in_time_and_place() {
+        // Reviews U5, U6 and U9.
+        let base = "/Users/t/Library/Application Support/com.monocode.desktop";
+        let rec = format!("{base}/computer-use/recordings/rt1/turn-00001/after.png");
+        let mut runtime = ev(
+            "r",
+            100,
+            ActivitySource::Cua,
+            "cua.runtime",
+            json!({}),
+            Some(77),
+        );
+        runtime.chat_id = "c1".into();
+        let mut before = es("1", 50, "create", &rec);
+        before.pid = Some(77);
+        let mut during = es("2", 150, "create", &rec);
+        during.pid = Some(77);
+        let mut exit = ev(
+            "x",
+            200,
+            ActivitySource::Eslogger,
+            "exit",
+            json!({}),
+            Some(77),
+        );
+        exit.chat_id = "c1".into();
+        let mut reused = es("3", 300, "create", &rec);
+        reused.pid = Some(77);
+        let mut dotdot = es(
+            "4",
+            160,
+            "write",
+            &format!("{base}/computer-use/recordings/../../activity/app-x.jsonl"),
+        );
+        dotdot.pid = Some(77);
+        let flags = check(&[runtime, before, during, exit, reused, dotdot], &[]);
+        let ids: Vec<&str> = flags.iter().map(|f| f.event_id.as_str()).collect();
+        assert_eq!(ids, vec!["1", "4", "3"]);
     }
 
     #[test]
