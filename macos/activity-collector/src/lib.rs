@@ -2,5 +2,6 @@
 //! builds and is tested on any host. Detection only: nothing here blocks.
 
 pub mod event;
+pub mod filter;
 pub mod timefmt;
 pub mod tree;
