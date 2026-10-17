@@ -968,6 +968,7 @@ pub fn harness_spawn(
 
     // [w3-a] child-env
     // [w3-b] child-env
+    let activity_chat_w3b = session_id.clone();
     // [w3-c] child-env
     crate::control::configure_child(&app, &session_id, &mut cmd);
 
@@ -1068,6 +1069,7 @@ pub fn harness_spawn(
         }
         // [w3-a] exited
         // [w3-b] exited
+        crate::activity::process_exited(wait_pid);
         // [w3-c] exited
         let _ = wait_app.emit(
             EXIT_EVENT,
@@ -1081,6 +1083,7 @@ pub fn harness_spawn(
 
     // [w3-a] spawned
     // [w3-b] spawned
+    crate::activity::register_process(pid, &activity_chat_w3b, crate::activity::ProcessKind::Harness);
     // [w3-c] spawned
     Ok(pid)
 }
