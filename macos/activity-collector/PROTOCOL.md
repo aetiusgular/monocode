@@ -115,3 +115,29 @@ Same framing. One request a connection.
 7 days of logs, a 1 GB cap with the oldest day deleted first, each day
 compressed when it rolls over. Screenshots are not the collector's: they stay
 in the app's log folder.
+
+## Clarifications, as built (16 Oct)
+
+What the first draft left open, settled by the collector's code and tests:
+
+1. `tcc` events also carry `service` and `identity` in `detail`, as eslogger
+   names them. The least certain shape of all; the Mac test checks it.
+2. An `events` request without `chatId` returns every chat. Without `limit`,
+   the limit is 10,000. `since` after `until` is refused with `"bad range"`.
+3. `grantEnded` also stops following the processes the grant attributed.
+4. A refused caller gets one `{"ok":false,"error":"refused"}` line, then the
+   connection closes. At most 8 connections at once; more are closed with no
+   reply.
+5. An event dated before the writer's current day goes into the current
+   day's file, so day files stay in order.
+6. Retention never deletes today's file or the file the writer has open.
+7. `chainOk` checks every file in the range and its link to the day before.
+8. After a restart the writer continues from the last line that parses, so a
+   sequence number never repeats after an edited line. A cut tail gets a
+   newline first, so the cut stays visible.
+9. `/private/etc/sudoers` is sensitive (the real path behind `/etc`). Chrome's
+   `Cookies` and `Login Data` match at any depth under Chrome's folder.
+10. `verify <file>` prints `{"ok","lines","firstBadLine","cut"}` and exits 1
+    when the chain is broken. `parse-fixture <file> --pid <n> --chat <id>
+    [--grant <chat> <bundle> <appPath>]` prints what a tracker would log, for
+    the Mac test's real capture.
