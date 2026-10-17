@@ -136,13 +136,17 @@ impl Facade {
         // A runtime that did not start leaves only MonoCode's own tools; the
         // status tool says what is approved.
         if let Ok(list) = backend.runtime_tools(&self.chat) {
-            tools.extend(list.into_iter().filter(|tool| {
-                tool.get("name")
-                    .and_then(Value::as_str)
-                    .is_some_and(|name| {
-                        tool_allowed(name) && name != REQUEST_TOOL && name != STATUS_TOOL
+            tools.extend(
+                list.into_iter()
+                    .filter(|tool| {
+                        tool.get("name")
+                            .and_then(Value::as_str)
+                            .is_some_and(|name| {
+                                tool_allowed(name) && name != REQUEST_TOOL && name != STATUS_TOOL
+                            })
                     })
-            }));
+                    .map(with_annotations),
+            );
         }
         tools
     }
@@ -222,6 +226,37 @@ impl Facade {
             .collect();
         text_result(&format!("Approved for this chat: {}.", list.join(", ")))
     }
+}
+
+/// Tools that only look. Every other tool acts on an app.
+const LOOK_ONLY: &[&str] = &[
+    "list_apps",
+    "list_windows",
+    "get_window_state",
+    "get_accessibility_tree",
+    "verify_state",
+    "parse_visual_regions",
+    "get_screen_size",
+    "get_cursor_position",
+    "zoom",
+    "get_session",
+];
+
+/// MonoCode's own MCP annotations on a runtime tool, replacing any the
+/// runtime sent, so a harness that keeps a plan turn read only (Claude Code's
+/// plan mode) can hold back every tool that acts.
+fn with_annotations(mut tool: Value) -> Value {
+    let look = tool
+        .get("name")
+        .and_then(Value::as_str)
+        .is_some_and(|name| LOOK_ONLY.contains(&name));
+    if let Some(map) = tool.as_object_mut() {
+        map.insert(
+            "annotations".into(),
+            json!({ "readOnlyHint": look, "destructiveHint": !look, "openWorldHint": false }),
+        );
+    }
+    tool
 }
 
 fn grant_set(grants: &[Grant]) -> BTreeSet<String> {
@@ -439,6 +474,21 @@ mod tests {
         for never in ["start_recording", "get_desktop_state", "run_script"] {
             assert!(!listed.contains(&never.to_string()), "{never} listed");
         }
+        let tool = |name: &str| {
+            reply["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == name)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(tool("click")["annotations"]["readOnlyHint"], false);
+        assert_eq!(tool("click")["annotations"]["destructiveHint"], true);
+        assert_eq!(
+            tool("get_window_state")["annotations"]["readOnlyHint"],
+            true
+        );
         // The runtime's own copy of a MonoCode tool name is never listed twice.
         assert_eq!(listed.iter().filter(|n| *n == REQUEST_TOOL).count(), 1);
     }
