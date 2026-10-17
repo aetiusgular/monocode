@@ -652,10 +652,21 @@ mod tests {
         let s = Arc::clone(&shared);
         thread::spawn(move || serve(listener, s, allow_all, SocketKind::Register));
         // Fill the 8 slots with idle connections; the 9th is closed at once.
+        let wait_for = |n: usize| {
+            for _ in 0..500 {
+                if shared.connections.load(Ordering::Acquire) == n {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            panic!("connections never reached {n}");
+        };
+        // The refused connection releases its slot just after closing.
+        wait_for(0);
         let idle: Vec<UnixStream> = (0..MAX_CONNECTIONS)
             .map(|_| UnixStream::connect(&path2).unwrap())
             .collect();
-        thread::sleep(Duration::from_millis(200));
+        wait_for(MAX_CONNECTIONS);
         let mut extra = UnixStream::connect(&path2).unwrap();
         extra
             .set_read_timeout(Some(Duration::from_secs(2)))

@@ -6,7 +6,7 @@
 //! Days are UTC. Files are `es-YYYY-MM-DD.jsonl`, rolled to `.jsonl.gz`.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -153,8 +153,10 @@ pub struct ChainReport {
     pub cut: bool,
     /// `prev` of the first good line, for linking to the day before.
     pub first_prev: Option<String>,
-    /// `hash` of the last good line.
+    /// `hash` of the last line that parsed (good, or edited but whole).
     pub last_hash: Option<String>,
+    /// `seq` of that line.
+    pub last_seq: Option<u64>,
 }
 
 /// Checks a single line against the previous hash and seq.
@@ -213,7 +215,10 @@ pub fn verify_with<R: BufRead>(
             }
         }
     }
-    report.last_hash = last.map(|(h, _)| h);
+    if let Some((hash, seq)) = last {
+        report.last_hash = Some(hash);
+        report.last_seq = Some(seq);
+    }
     report.ok = report.first_bad_line.is_none();
     Ok(report)
 }
@@ -313,13 +318,18 @@ struct Resume {
 
 fn resume_from(file: &LogFile) -> io::Result<Option<Resume>> {
     let reader = open_log(&file.path, file.compressed)?;
-    let mut last: Option<(String, u64)> = None;
-    let report = verify_with(reader, |line| last = Some((line.hash.clone(), line.seq)))?;
-    Ok(last.map(|(hash, seq)| Resume {
-        hash,
-        seq,
-        needs_newline: report.cut && !file.compressed,
-    }))
+    // Continue from the last line that parses, so seqs never repeat even
+    // after an edited line; the chain still shows the damage.
+    let report = verify(reader)?;
+    let needs_newline = report.cut && !file.compressed;
+    Ok(report
+        .last_hash
+        .zip(report.last_seq)
+        .map(|(hash, seq)| Resume {
+            hash,
+            seq,
+            needs_newline,
+        }))
 }
 
 /// Appends events to today's file, rolling at UTC midnight.
@@ -445,13 +455,6 @@ impl LogWriter {
         self.last_hash = hash;
         Ok(line.event)
     }
-}
-
-/// Reads a whole file into memory with a cap, for tests and tools.
-pub fn read_to_string_capped(path: &Path, cap: u64) -> io::Result<String> {
-    let mut s = String::new();
-    File::open(path)?.take(cap).read_to_string(&mut s)?;
-    Ok(s)
 }
 
 #[cfg(test)]
