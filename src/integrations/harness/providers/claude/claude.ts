@@ -2418,6 +2418,16 @@ function settingsKeyFor(input: HarnessSessionInput): string {
     gatewayConnectors: input.gatewayConnectors,
     toolLoading: loadClaudeToolLoading(),
     // [w3-a] settings-key
+    // Wave 3: the telemetry switches reach Claude Code through its process
+    // environment at spawn, so a change must restart it. The stored text of
+    // `monocode.harnessTelemetry` (harness-telemetry/model/telemetrySettings).
+    telemetry: (() => {
+      try {
+        return localStorage.getItem("monocode.harnessTelemetry") ?? "";
+      } catch {
+        return "";
+      }
+    })(),
     // [w3-b] settings-key
     // [w3-c] settings-key
   })}`;

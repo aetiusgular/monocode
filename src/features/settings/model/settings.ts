@@ -38,6 +38,7 @@ export type SettingsSectionId =
   | "memory"
   | "environment"
   // [w3-a] section-ids
+  | "telemetry"
   // [w3-b] section-ids
   // [w3-c] section-ids
 ;
@@ -223,6 +224,15 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     keywords: "env environment variables secrets keychain dotenv token",
   },
   // [w3-a] sections
+  {
+    id: "telemetry",
+    group: "workspace",
+    label: "Telemetry",
+    description:
+      "What Claude Code and Codex report about their own work, kept on this Mac.",
+    keywords:
+      "telemetry opentelemetry otel otlp activity log tool calls approvals prompts local",
+  },
   // [w3-b] sections
   // [w3-c] sections
 ];
@@ -683,6 +693,30 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "outbound privacy network gh github repo view fork pull request telemetry",
   },
   // [w3-a] index
+  {
+    id: "harness-telemetry",
+    section: "telemetry",
+    label: "Harness telemetry",
+    keywords: "telemetry opentelemetry otel otlp receiver local",
+  },
+  {
+    id: "telemetry-enabled",
+    section: "telemetry",
+    label: "Record harness telemetry",
+    keywords: "telemetry opentelemetry otel otlp claude code codex activity",
+  },
+  {
+    id: "telemetry-prompts",
+    section: "telemetry",
+    label: "Include prompt text",
+    keywords: "telemetry prompt text privacy redact",
+  },
+  {
+    id: "telemetry-status",
+    section: "telemetry",
+    label: "Receiver",
+    keywords: "telemetry receiver events refused status",
+  },
   // [w3-b] index
   // [w3-c] index
 ];

@@ -18,6 +18,7 @@ import { codexChecks } from "./checks/codex.mjs";
 import { claudeChecks } from "./checks/claude.mjs";
 import { editAdapterChecks } from "./checks/editAdapter.mjs";
 // [w3-a] imports
+import { otelCodexChecks as otelCodexChecks_w3a, otelClaudeChecks as otelClaudeChecks_w3a } from "./checks/otel.mjs";
 // [w3-b] imports
 // [w3-c] imports
 
@@ -86,6 +87,7 @@ async function main() {
   if (args.editAdapter) process.env.EDIT_ADAPTER_BIN = path.resolve(args.editAdapter);
   for (const c of editAdapterChecks) plan.push({ ...c, harness: "codex", bin: codexVersion ? args.codex : null, cliVersion: codexVersion });
   // [w3-a] codex-plan
+  for (const c of otelCodexChecks_w3a) plan.push({ ...c, harness: "codex", bin: codexVersion ? args.codex : null, cliVersion: codexVersion });
   // [w3-b] codex-plan
   // [w3-c] codex-plan
   const claudes = args.claude.length ? args.claude : [null];
@@ -93,6 +95,7 @@ async function main() {
     const v = bin && existsSync(bin) ? version(bin) : null;
     for (const c of claudeChecks) plan.push({ ...c, harness: "claude", bin: v ? bin : null, cliVersion: v, id: v ? `${c.id}@${v.split(" ")[0]}` : c.id, baseId: c.id });
     // [w3-a] claude-plan
+    for (const c of otelClaudeChecks_w3a) plan.push({ ...c, harness: "claude", bin: v ? bin : null, cliVersion: v, id: v ? `${c.id}@${v.split(" ")[0]}` : c.id, baseId: c.id });
     // [w3-b] claude-plan
     // [w3-c] claude-plan
   }

@@ -20,6 +20,7 @@ import {
   StickyNote,
   Terminal,
   // [w3-a] icon-imports
+  ChartBreakoutSquare as ChartBreakoutSquare_w3a,
   // [w3-b] icon-imports
   // [w3-c] icon-imports
   type IconComponent,
@@ -51,6 +52,7 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   memory: StickyNote,
   environment: Terminal,
   // [w3-a] icons
+  telemetry: ChartBreakoutSquare_w3a,
   // [w3-b] icons
   // [w3-c] icons
 };

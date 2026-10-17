@@ -1359,6 +1359,8 @@ export function claudeSettingsKey(input: {
   /** #42: connector tool loading, a launch-time `--settings` env value. */
   toolLoading?: "auto" | "upfront";
   // [w3-a] settings-key-input
+  /** Wave 3: the harness telemetry switches, read by the spawn's env. */
+  telemetry?: string;
   // [w3-b] settings-key-input
   // [w3-c] settings-key-input
 }): string {
@@ -1391,6 +1393,7 @@ export function claudeSettingsKey(input: {
       : []),
     ...(input.toolLoading ? [`tool-loading:${input.toolLoading}`] : []),
     // [w3-a] settings-key-parts
+    ...(input.telemetry ? [`telemetry:${input.telemetry}`] : []),
     // [w3-b] settings-key-parts
     // [w3-c] settings-key-parts
   ].join("|");

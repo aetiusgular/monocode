@@ -43,6 +43,31 @@ export class HarnessEventQueue {
 
   enqueue = (sessionId: string, event: HarnessEvent) => {
     // [w3-a] enqueue
+    // Wave 3: the telemetry feed sees each live event once, here, never in
+    // the reducer (replays run it again). Loaded on the first event it reads.
+    if (
+      event.type === "tool.started" ||
+      event.type === "tool.updated" ||
+      event.type === "approval.requested" ||
+      event.type === "approval.resolved" ||
+      event.type === "turn.started" ||
+      event.type === "turn.ready" ||
+      event.type === "session.ended" ||
+      event.type === "session.error"
+    ) {
+      // One import per queue, so every event waits on the same promise and
+      // reaches the feed in the order it came.
+      const self_w3a = this as {
+        telemetryTap_w3a?: Promise<
+          typeof import("../../features/harness-telemetry/model/telemetryTap")
+        >;
+      };
+      self_w3a.telemetryTap_w3a ??=
+        import("../../features/harness-telemetry/model/telemetryTap");
+      void self_w3a.telemetryTap_w3a
+        .then((tap) => tap.tapHarnessEvent(sessionId, event))
+        .catch(() => undefined);
+    }
     // [w3-b] enqueue
     // [w3-c] enqueue
     const events = this.queued.get(sessionId);
