@@ -252,22 +252,58 @@ fn in_recordings(path: &str) -> bool {
         )
 }
 
-/// The computer-use runtimes each chat started: (chat, pid) to the start
-/// time. A write counts as the runtime's only after its start and before
-/// that pid's exit, so a reused pid is not exempted (review U5).
-fn runtime_pids(events: &[ActivityEvent]) -> HashMap<(String, u32), i64> {
-    let mut map = HashMap::new();
-    for e in events
-        .iter()
-        .filter(|e| e.source == ActivitySource::Cua && e.kind == "cua.runtime")
-    {
-        if let Some(pid) = e.pid {
-            map.entry((e.chat_id.clone(), pid))
-                .and_modify(|at: &mut i64| *at = (*at).max(e.at))
-                .or_insert(e.at);
+/// One computer-use runtime: its pid and the time span it ran.
+struct RuntimeSpan {
+    pid: u32,
+    started: i64,
+    ended: Option<i64>,
+}
+
+/// The computer-use runtimes each chat ran. A runtime ends at the first of:
+/// its own stop record, the chat's next runtime start, or the first exit of
+/// its pid after its start. A write counts as the runtime's only inside
+/// that span, so a reused pid is not exempted (reviews U5, V2, V3).
+fn runtime_spans(events: &[ActivityEvent]) -> HashMap<String, Vec<RuntimeSpan>> {
+    let mut starts: HashMap<String, Vec<(i64, u32)>> = HashMap::new();
+    let mut stops: HashMap<(String, u32), Vec<i64>> = HashMap::new();
+    let mut exits: HashMap<u32, Vec<i64>> = HashMap::new();
+    for e in events {
+        let Some(pid) = e.pid else { continue };
+        match (&e.source, e.kind.as_str()) {
+            (ActivitySource::Cua, "cua.runtime") => starts
+                .entry(e.chat_id.clone())
+                .or_default()
+                .push((e.at, pid)),
+            (ActivitySource::Cua, "cua.runtime.stop") => stops
+                .entry((e.chat_id.clone(), pid))
+                .or_default()
+                .push(e.at),
+            (ActivitySource::Eslogger, "exit") => exits.entry(pid).or_default().push(e.at),
+            _ => {}
         }
     }
-    map
+    let first_from = |list: Option<&Vec<i64>>, from: i64| {
+        list.and_then(|times| times.iter().copied().filter(|&t| t >= from).min())
+    };
+    let mut spans = HashMap::new();
+    for (chat, mut list) in starts {
+        list.sort();
+        list.dedup();
+        let mut out = Vec::new();
+        for (i, &(started, pid)) in list.iter().enumerate() {
+            let next = list.get(i + 1).map(|&(at, _)| at);
+            let stop = first_from(stops.get(&(chat.clone(), pid)), started);
+            let exit = first_from(exits.get(&pid), started);
+            let ended = [next, stop, exit].into_iter().flatten().min();
+            out.push(RuntimeSpan {
+                pid,
+                started,
+                ended,
+            });
+        }
+        spans.insert(chat, out);
+    }
+    spans
 }
 
 /// Tool call windows per chat: call id to (start, end).
@@ -311,7 +347,7 @@ pub fn run(input: &CheckInput) -> Vec<Flag> {
         }
     }
     let windows = tool_windows(input.events);
-    let runtimes = runtime_pids(input.events);
+    let runtimes = runtime_spans(input.events);
 
     for event in input.events {
         if event.chat_id.is_empty() {
@@ -355,14 +391,13 @@ pub fn run(input: &CheckInput) -> Vec<Flag> {
             let granted_app = str_field(event, "grant").is_some();
             let paths = [str_field(event, "path"), str_field(event, "dest")];
             let own_runtime = event.pid.is_some_and(|pid| {
-                runtimes
-                    .get(&(event.chat_id.clone(), pid))
-                    .is_some_and(|&started| {
-                        event.at >= started
-                            && exits
-                                .get(&pid)
-                                .is_none_or(|&ended| ended < started || event.at <= ended)
+                runtimes.get(&event.chat_id).is_some_and(|spans| {
+                    spans.iter().any(|span| {
+                        span.pid == pid
+                            && event.at >= span.started
+                            && span.ended.is_none_or(|ended| event.at <= ended)
                     })
+                })
             });
             for path in paths.into_iter().flatten() {
                 // The chat's own runtime writing its recording (T1).
@@ -377,14 +412,18 @@ pub fn run(input: &CheckInput) -> Vec<Flag> {
                 {
                     continue;
                 }
-                let approved = covering(
-                    input.approvals,
-                    &event.chat_id,
-                    ApprovalSubject::Folder,
-                    event.at,
-                    |t| inside(path, t),
-                );
-                if approved.is_none() {
+                // A folder approval does not clear a guarded path either, as
+                // with a chat's folder (review V6).
+                let approved = !guarded
+                    && covering(
+                        input.approvals,
+                        &event.chat_id,
+                        ApprovalSubject::Folder,
+                        event.at,
+                        |t| inside(path, t),
+                    )
+                    .is_some();
+                if !approved {
                     let verb = match event.kind.as_str() {
                         "create" => "Created",
                         "write" => "Wrote",
@@ -743,6 +782,81 @@ mod tests {
         let flags = check(&[runtime, before, during, exit, reused, dotdot], &[]);
         let ids: Vec<&str> = flags.iter().map(|f| f.event_id.as_str()).collect();
         assert_eq!(ids, vec!["1", "4", "3"]);
+    }
+
+    #[test]
+    fn a_runtime_ends_at_its_first_exit_its_stop_or_the_next_start() {
+        // Review V2 and V3.
+        let base = "/Users/t/Library/Application Support/com.monocode.desktop";
+        let rec = format!("{base}/computer-use/recordings/rt1/turn-00001/after.png");
+        let cua = |id: &str, at: i64, kind: &str, pid: u32| {
+            let mut e = ev(id, at, ActivitySource::Cua, kind, json!({}), Some(pid));
+            e.chat_id = "c1".into();
+            e
+        };
+        let exit = |id: &str, at: i64, pid: u32| {
+            let mut e = ev(
+                id,
+                at,
+                ActivitySource::Eslogger,
+                "exit",
+                json!({}),
+                Some(pid),
+            );
+            e.chat_id = "c1".into();
+            e
+        };
+        let write = |id: &str, at: i64, pid: u32| {
+            let mut e = es(id, at, "create", &rec);
+            e.pid = Some(pid);
+            e
+        };
+        let flags = check(
+            &[
+                // pid 77: exits at 200; a later process reusing 77 exits at 500.
+                cua("r1", 100, "cua.runtime", 77),
+                write("1", 150, 77),
+                exit("x1", 200, 77),
+                write("2", 300, 77),
+                exit("x2", 500, 77),
+                // pid 88: its stop record ends it, with no exit in view.
+                cua("r2", 600, "cua.runtime", 88),
+                write("3", 650, 88),
+                cua("s2", 700, "cua.runtime.stop", 88),
+                write("4", 750, 88),
+                // pid 99: the chat's next runtime start ends it.
+                cua("r3", 800, "cua.runtime", 99),
+                write("5", 850, 99),
+                cua("r4", 900, "cua.runtime", 66),
+                write("6", 950, 99),
+                write("7", 960, 66),
+            ],
+            &[],
+        );
+        let ids: Vec<&str> = flags.iter().map(|f| f.event_id.as_str()).collect();
+        assert_eq!(ids, vec!["2", "4", "6"]);
+    }
+
+    #[test]
+    fn a_folder_approval_does_not_clear_the_log_or_the_recordings() {
+        // Review V6.
+        let approvals = [approval(
+            ApprovalSubject::Folder,
+            "/Users/t",
+            ApprovalScope::Chat,
+            0,
+            None,
+        )];
+        let base = "/Users/t/Library/Application Support/com.monocode.desktop";
+        let flags = check(
+            &[
+                es("1", 5, "write", &format!("{base}/activity/app-x.jsonl")),
+                es("2", 6, "write", "/Users/t/Documents/a.txt"),
+            ],
+            &approvals,
+        );
+        let ids: Vec<&str> = flags.iter().map(|f| f.event_id.as_str()).collect();
+        assert_eq!(ids, vec!["1"]);
     }
 
     #[test]

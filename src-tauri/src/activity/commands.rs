@@ -121,14 +121,15 @@ pub fn flags_report(
     now_ms: i64,
 ) -> FlagsReport {
     let back = store::read(dir, since, until, chat_id, READ_LIMIT);
-    let known_hosts = store::hosts_before(dir, since);
+    // One pass over the 7 days before: known hosts, and the runtime starts
+    // and ends the check needs to know a runtime's pid (reviews U1, V3, V5).
+    let before = store::lookback(dir, since, chat_id);
+    let known_hosts = before.hosts;
     let mut events = back.events;
-    // A runtime lives across turns, so its start record usually sits before
-    // `since`; the check needs it to know the runtime's pid (review U1).
-    events.extend(store::runtimes_before(dir, since, chat_id));
+    events.extend(before.runtimes);
     let mut report = FlagsReport {
         chain_ok: back.chain_ok,
-        truncated: back.truncated,
+        truncated: back.truncated || before.truncated,
         ..FlagsReport::default()
     };
     if let Some(reply) = collector_events {

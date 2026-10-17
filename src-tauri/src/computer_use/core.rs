@@ -103,6 +103,16 @@ const ANSWER_TTL: Duration = Duration::from_secs(5 * 60);
 struct RuntimeEntry {
     id: String,
     manifest: String,
+    /// The runtime's pid, when the helper named one.
+    pid: Option<u32>,
+}
+
+/// Records that a runtime ended, so the check stops treating that pid's
+/// writes as the runtime's (review V3).
+fn note_runtime_end(chat: &str, entry: &RuntimeEntry) {
+    if let Some(pid) = entry.pid {
+        crate::activity::record(runtime_stop_event(chat, &entry.id, pid));
+    }
 }
 
 #[derive(Default)]
@@ -318,6 +328,9 @@ impl Core {
             (ended, inner.runtimes.remove(chat))
         };
         self.answered.notify_all();
+        if let Some(runtime) = &runtime {
+            note_runtime_end(chat, runtime);
+        }
         for grant in &ended {
             self.log_approval(grant, true, grant.ended_at);
         }
@@ -529,7 +542,10 @@ impl Core {
         let client = Arc::new(client);
         client.request("hello", json!({"version": 1}), Duration::from_secs(10))?;
         // The runtimes of a helper that went away are gone with it.
-        self.lock().runtimes.clear();
+        let gone: Vec<(String, RuntimeEntry)> = self.lock().runtimes.drain().collect();
+        for (chat, entry) in &gone {
+            note_runtime_end(chat, entry);
+        }
         *guard = Some(client.clone());
         Ok(client)
     }
@@ -557,30 +573,38 @@ impl Core {
             json!({"runtime": id, "manifest": manifest}),
             START_TIMEOUT,
         )?;
-        if let Some(pid) = reply
+        let started_pid = reply
             .get("pid")
             .and_then(Value::as_u64)
             .filter(|pid| *pid <= u32::MAX as u64)
-        {
-            crate::activity::register_process(pid as u32, chat, ProcessKind::CuaRuntime);
+            .map(|pid| pid as u32);
+        if let Some(pid) = started_pid {
+            crate::activity::register_process(pid, chat, ProcessKind::CuaRuntime);
             // The check knows the runtime by this record: its own writes to
             // its recording folder are not flagged (security review T1).
-            crate::activity::record(runtime_event(chat, &id, pid as u32));
+            crate::activity::record(runtime_event(chat, &id, pid));
         }
         {
             let mut inner = self.lock();
             if inner.generation(chat) != generation {
                 drop(inner);
+                if let Some(pid) = started_pid {
+                    crate::activity::record(runtime_stop_event(chat, &id, pid));
+                }
                 let _ = helper.request("stop", json!({"runtime": id}), STOP_TIMEOUT);
                 return Err("Computer use was stopped for this chat.".into());
             }
-            inner.runtimes.insert(
+            let previous = inner.runtimes.insert(
                 chat.to_string(),
                 RuntimeEntry {
                     id: id.clone(),
                     manifest,
+                    pid: started_pid,
                 },
             );
+            if let Some(previous) = previous {
+                note_runtime_end(chat, &previous);
+            }
         }
         (self.notify)(Notice::Changed {
             chat: chat.to_string(),
@@ -590,6 +614,9 @@ impl Core {
 
     fn end_runtime(&self, chat: &str) {
         let runtime = self.lock().runtimes.remove(chat);
+        if let Some(runtime) = &runtime {
+            note_runtime_end(chat, runtime);
+        }
         if let (Some(runtime), Some(helper)) = (runtime, self.connected_helper()) {
             let _ = helper.request("stop", json!({"runtime": runtime.id}), STOP_TIMEOUT);
         }
@@ -635,7 +662,9 @@ impl Core {
                         .find(|(_, entry)| entry.id == runtime)
                         .map(|(chat, _)| chat.clone());
                     if let Some(chat) = &chat {
-                        inner.runtimes.remove(chat);
+                        if let Some(entry) = inner.runtimes.remove(chat) {
+                            note_runtime_end(chat, &entry);
+                        }
                     }
                     chat
                 };
@@ -644,8 +673,11 @@ impl Core {
                 }
             }
             Some("closed") => {
-                let chats: Vec<String> =
-                    self.lock().runtimes.drain().map(|(chat, _)| chat).collect();
+                let gone: Vec<(String, RuntimeEntry)> = self.lock().runtimes.drain().collect();
+                for (chat, entry) in &gone {
+                    note_runtime_end(chat, entry);
+                }
+                let chats: Vec<String> = gone.into_iter().map(|(chat, _)| chat).collect();
                 for chat in chats {
                     (self.notify)(Notice::Changed { chat });
                 }
@@ -730,6 +762,22 @@ pub fn runtime_event(chat: &str, runtime: &str, pid: u32) -> ActivityEvent {
         source: ActivitySource::Cua,
         kind: "cua.runtime".into(),
         summary: "Computer use runtime started".into(),
+        detail: json!({ "runtime": printable(runtime, 32) }),
+        pid: Some(pid),
+        approval_id: None,
+    }
+}
+
+/// The record of a runtime's end, with its pid (review V3).
+pub fn runtime_stop_event(chat: &str, runtime: &str, pid: u32) -> ActivityEvent {
+    ActivityEvent {
+        id: new_id(),
+        at: now_ms(),
+        chat_id: chat.to_string(),
+        harness: String::new(),
+        source: ActivitySource::Cua,
+        kind: "cua.runtime.stop".into(),
+        summary: "Computer use runtime ended".into(),
         detail: json!({ "runtime": printable(runtime, 32) }),
         pid: Some(pid),
         approval_id: None,
@@ -1035,7 +1083,10 @@ impl Backend for Core {
             Err(error) => {
                 // A runtime that failed mid-call is started fresh next time.
                 if !helper.is_open() {
-                    self.lock().runtimes.remove(chat);
+                    let gone = self.lock().runtimes.remove(chat);
+                    if let Some(entry) = &gone {
+                        note_runtime_end(chat, entry);
+                    }
                 }
                 Err(error)
             }
@@ -1147,6 +1198,16 @@ pub mod tests {
             .iter()
             .map(|r| r["op"].as_str().unwrap().to_string())
             .collect()
+    }
+
+    #[test]
+    fn a_runtime_end_is_recorded_with_its_pid() {
+        // Review V3.
+        let event = runtime_stop_event("c1", "rt1", 77);
+        assert_eq!(event.kind, "cua.runtime.stop");
+        assert_eq!(event.source, ActivitySource::Cua);
+        assert_eq!(event.pid, Some(77));
+        assert_eq!(event.chat_id, "c1");
     }
 
     #[test]

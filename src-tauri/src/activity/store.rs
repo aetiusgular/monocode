@@ -225,6 +225,29 @@ pub fn read(
     chat_id: Option<&str>,
     limit: usize,
 ) -> ReadBack {
+    read_where(dir, since_ms, until_ms, chat_id, limit, &|_| true)
+}
+
+/// Whether a record written later under an event's id may take its place.
+/// Only telemetry replaces telemetry, and a source replaces its own: a
+/// webview write can never wipe a computer-use or collector record by
+/// reusing its id (review V1).
+fn may_replace(old: &ActivityEvent, new: &ActivityEvent) -> bool {
+    use super::types::ActivitySource::{Adapter, Otel};
+    old.source == new.source
+        || (matches!(old.source, Adapter | Otel) && matches!(new.source, Adapter | Otel))
+}
+
+/// `read`, keeping only the new events `keep` accepts, so the cap counts
+/// only those (review V5).
+fn read_where(
+    dir: &Path,
+    since_ms: i64,
+    until_ms: i64,
+    chat_id: Option<&str>,
+    limit: usize,
+    keep: &dyn Fn(&ActivityEvent) -> bool,
+) -> ReadBack {
     let mut back = ReadBack {
         chain_ok: true,
         ..ReadBack::default()
@@ -264,7 +287,11 @@ pub fn read(
                         let in_range = event.at >= since_ms && event.at <= until_ms;
                         if in_range && chat_id.is_none_or(|c| c == event.chat_id) {
                             if let Some(&slot) = event_at.get(&event.id) {
-                                back.events[slot] = event;
+                                if may_replace(&back.events[slot], &event) {
+                                    back.events[slot] = event;
+                                }
+                            } else if !keep(&event) {
+                                // Not wanted by this read; not counted.
                             } else if back.events.len() >= limit {
                                 back.truncated = true;
                             } else {
@@ -285,24 +312,51 @@ pub fn read(
     back
 }
 
-/// The hosts seen in the log before `before_ms`, for the "new host" check.
-/// Only from MonoCode's own adapter events and the collector: a host a
-/// harness's telemetry named can raise a flag, never make a host known
-/// (security review T5).
-pub fn hosts_before(dir: &Path, before_ms: i64) -> std::collections::HashSet<String> {
-    let earliest = before_ms.saturating_sub(retention::KEEP_LOG_DAYS * 86_400_000);
-    known_hosts(&read(dir, earliest, before_ms.saturating_sub(1), None, 200_000).events)
+/// What the check needs from the 7 days before `before_ms`, read in one
+/// pass (review V5).
+pub struct Lookback {
+    /// Hosts seen before, for the "new host" check. Only from MonoCode's
+    /// own adapter events: a host a harness's telemetry named can raise a
+    /// flag, never make a host known (security review T5).
+    pub hosts: std::collections::HashSet<String>,
+    /// Computer-use runtime starts and ends, for the chat asked about. A
+    /// runtime lives across turns, so its start usually sits before the
+    /// window (review U1), and its end may too (review V3).
+    pub runtimes: Vec<ActivityEvent>,
+    pub truncated: bool,
 }
 
-/// The computer-use runtime starts in the 7 days before `before_ms`.
-pub fn runtimes_before(dir: &Path, before_ms: i64, chat_id: Option<&str>) -> Vec<ActivityEvent> {
+fn is_runtime_record(e: &ActivityEvent) -> bool {
+    e.source == super::types::ActivitySource::Cua
+        && (e.kind == "cua.runtime" || e.kind == "cua.runtime.stop")
+}
+
+pub fn lookback(dir: &Path, before_ms: i64, chat_id: Option<&str>) -> Lookback {
     use super::types::ActivitySource;
     let earliest = before_ms.saturating_sub(retention::KEEP_LOG_DAYS * 86_400_000);
-    read(dir, earliest, before_ms.saturating_sub(1), chat_id, 200_000)
+    let keep = |e: &ActivityEvent| {
+        (e.source == ActivitySource::Adapter && e.detail.get("host").is_some())
+            || is_runtime_record(e)
+    };
+    let back = read_where(
+        dir,
+        earliest,
+        before_ms.saturating_sub(1),
+        None,
+        200_000,
+        &keep,
+    );
+    let hosts = known_hosts(&back.events);
+    let runtimes = back
         .events
         .into_iter()
-        .filter(|e| e.source == ActivitySource::Cua && e.kind == "cua.runtime")
-        .collect()
+        .filter(|e| is_runtime_record(e) && chat_id.is_none_or(|c| c == e.chat_id))
+        .collect();
+    Lookback {
+        hosts,
+        runtimes,
+        truncated: back.truncated,
+    }
 }
 
 pub fn known_hosts(events: &[ActivityEvent]) -> std::collections::HashSet<String> {
@@ -624,6 +678,55 @@ mod tests {
     }
 
     #[test]
+    fn a_webview_write_cannot_replace_a_computer_use_record() {
+        // Review V1.
+        let dir = temp_dir("replace-cua");
+        let mut writer = ChainWriter::new(dir.clone());
+        let day = 20_377 * DAY;
+        let mut runtime = event("rt", "c1", day + 5);
+        runtime.source = ActivitySource::Cua;
+        runtime.kind = "cua.runtime".into();
+        runtime.pid = Some(77);
+        writer.write(&Entry::Event(runtime), day + 5).unwrap();
+        let forged = event("rt", "c1", day + 6); // an Adapter record, same id
+        writer.write(&Entry::Event(forged), day + 6).unwrap();
+        let back = read(&dir, day, day + DAY - 1, None, 100);
+        assert_eq!(back.events.len(), 1);
+        assert_eq!(back.events[0].source, ActivitySource::Cua);
+        assert_eq!(back.events[0].kind, "cua.runtime");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_lookback_caps_only_what_it_keeps_and_returns_runtime_records() {
+        // Review V5 and V3.
+        let dir = temp_dir("lookback");
+        let mut writer = ChainWriter::new(dir.clone());
+        let t = 20_377 * DAY;
+        for i in 0..50 {
+            writer
+                .write(&Entry::Event(event(&format!("n{i}"), "c1", t + i)), t + i)
+                .unwrap();
+        }
+        for (id, kind, chat) in [
+            ("s", "cua.runtime", "c1"),
+            ("e", "cua.runtime.stop", "c1"),
+            ("o", "cua.runtime", "c2"),
+        ] {
+            let mut r = event(id, chat, t + 60);
+            r.source = ActivitySource::Cua;
+            r.kind = kind.into();
+            r.pid = Some(7);
+            writer.write(&Entry::Event(r), t + 60).unwrap();
+        }
+        let back = lookback(&dir, t + 100, Some("c1"));
+        let ids: Vec<&str> = back.runtimes.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["s", "e"]);
+        assert!(!back.truncated);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn hosts_before_reads_earlier_hosts_only() {
         let dir = temp_dir("hosts");
         let mut writer = ChainWriter::new(dir.clone());
@@ -634,7 +737,7 @@ mod tests {
         new.detail = json!({ "host": "other.dev" });
         writer.write(&Entry::Event(old), t).unwrap();
         writer.write(&Entry::Event(new), t + 10).unwrap();
-        let hosts = hosts_before(&dir, t + 5);
+        let hosts = lookback(&dir, t + 5, None).hosts;
         assert!(hosts.contains("example.com"));
         assert!(!hosts.contains("other.dev"));
         let _ = fs::remove_dir_all(&dir);

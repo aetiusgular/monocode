@@ -283,7 +283,8 @@ pub fn terminal_plan(
     // Staged next to their final places as `.new`, checked there, and only
     // then moved over the installed ones: a reinstall never leaves an
     // unchecked binary where a running or restarting daemon would start it
-    // as root (security review U8).
+    // as root (security review U8). The files move into place before the
+    // old daemon stops, and a failed move or start says so (review V4).
     let binary_sha256 = binary_sha256.to_ascii_lowercase();
     let commands = vec![
         format!(
@@ -295,7 +296,7 @@ pub fn terminal_plan(
             quoted(staged_plist)
         ),
         format!(
-            "/usr/bin/sudo /bin/sh -c 'B=$(/usr/bin/shasum -a 256 {DAEMON_PATH}.new | /usr/bin/cut -d \" \" -f 1); P=$(/usr/bin/shasum -a 256 {PLIST_PATH}.new | /usr/bin/cut -d \" \" -f 1); if [ \"$B\" = \"{binary_sha256}\" ] && [ \"$P\" = \"{plist_sha256}\" ]; then /bin/launchctl bootout system/{LABEL} 2>/dev/null; /bin/mv -f {DAEMON_PATH}.new {DAEMON_PATH} && /bin/mv -f {PLIST_PATH}.new {PLIST_PATH} && /bin/launchctl bootstrap system {PLIST_PATH}; else echo \"hash mismatch, not installed\"; /bin/rm -f {DAEMON_PATH}.new {PLIST_PATH}.new; exit 1; fi'"
+            "/usr/bin/sudo /bin/sh -c 'B=$(/usr/bin/shasum -a 256 {DAEMON_PATH}.new | /usr/bin/cut -d \" \" -f 1); P=$(/usr/bin/shasum -a 256 {PLIST_PATH}.new | /usr/bin/cut -d \" \" -f 1); if [ \"$B\" = \"{binary_sha256}\" ] && [ \"$P\" = \"{plist_sha256}\" ]; then /bin/mv -f {DAEMON_PATH}.new {DAEMON_PATH} && /bin/mv -f {PLIST_PATH}.new {PLIST_PATH} || {{ echo \"could not move the files into place, not installed\"; exit 1; }}; /bin/launchctl bootout system/{LABEL} 2>/dev/null; /bin/launchctl bootstrap system {PLIST_PATH} || {{ echo \"collector not running, start it with: sudo /bin/launchctl bootstrap system {PLIST_PATH}\"; exit 1; }}; else echo \"hash mismatch, not installed\"; /bin/rm -f {DAEMON_PATH}.new {PLIST_PATH}.new; exit 1; fi'"
         ),
     ];
     Ok(InstallPlan {
@@ -574,6 +575,13 @@ mod tests {
         assert!(plan.commands[1].ends_with(&format!("{PLIST_PATH}.new")));
         assert!(matched.contains(&format!("/bin/mv -f {DAEMON_PATH}.new {DAEMON_PATH}")));
         assert!(!mismatched.contains("mv "));
+        // The files move before the old daemon stops, and a failed move or
+        // start says so (review V4).
+        assert!(matched.find("/bin/mv -f").unwrap() < matched.find("bootout").unwrap());
+        assert!(matched.contains("not installed\"; exit 1"));
+        assert!(matched.contains(&format!(
+            "start it with: sudo /bin/launchctl bootstrap system {PLIST_PATH}"
+        )));
         // Every tool by absolute path; nothing found on PATH.
         for tool in ["shasum", "cut", "launchctl", "rm", "mv"] {
             for (at, _) in step.match_indices(tool) {
