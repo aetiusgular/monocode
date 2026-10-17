@@ -969,6 +969,7 @@ pub fn harness_spawn(
     // [w3-a] child-env
     // [w3-b] child-env
     // [w3-c] child-env
+    crate::computer_use::configure_child(&app, &session_id, &mut cmd);
     crate::control::configure_child(&app, &session_id, &mut cmd);
 
     let mut child =

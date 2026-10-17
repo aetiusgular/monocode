@@ -59,7 +59,8 @@ pub const ALLOWED_TOOLS: &[&str] = &[
 /// Tools in the manifest that only the helper calls, on its own connection,
 /// to record the runtime (C7). The facade and the helper refuse them from
 /// MonoCode's side, so no agent reaches them.
-pub const HELPER_ONLY_TOOLS: &[&str] = &["start_recording", "stop_recording", "get_recording_state"];
+pub const HELPER_ONLY_TOOLS: &[&str] =
+    &["start_recording", "stop_recording", "get_recording_state"];
 
 /// How long a runtime may live, and sit idle. A runtime that ends is started
 /// again on the next call while the grants hold.
@@ -154,7 +155,8 @@ mod tests {
 
     #[test]
     fn writes_the_bounded_shape_for_the_granted_apps() {
-        let yaml = manifest_yaml(&[grant("com.apple.calculator"), grant("com.apple.TextEdit")]).unwrap();
+        let yaml =
+            manifest_yaml(&[grant("com.apple.calculator"), grant("com.apple.TextEdit")]).unwrap();
         assert!(yaml.contains("version: 3\n"));
         assert!(yaml.contains("expires_after: \"8h\"\n"));
         assert!(yaml.contains("idle_timeout: \"30m\"\n"));
@@ -162,7 +164,10 @@ mod tests {
         assert!(yaml.contains("    - bundle_id: \"com.apple.TextEdit\"\n"));
         assert!(yaml.contains("terminate: driver_launched"));
         assert!(yaml.ends_with("  desktop:\n    display: false\n"));
-        assert!(!yaml.contains("mode"), "the mode is set at launch, not in the file");
+        assert!(
+            !yaml.contains("mode"),
+            "the mode is set at launch, not in the file"
+        );
     }
 
     #[test]

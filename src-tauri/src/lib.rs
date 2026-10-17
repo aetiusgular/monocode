@@ -75,6 +75,7 @@ mod worktrees;
 // [w3-a] mods
 // [w3-b] mods
 // [w3-c] mods
+pub mod computer_use;
 
 // Phase 1 seam: spawn / kill harness children per MonoCode thread.
 // Adapters own the protocol; this host only supervises processes.
@@ -331,6 +332,11 @@ pub fn run() {
             // [w3-a] setup
             // [w3-b] setup
             // [w3-c] setup
+            {
+                let computer_use_w3c = computer_use::state(app.handle());
+                app.manage(computer_use_w3c);
+                computer_use::init(app.handle());
+            }
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -714,6 +720,14 @@ pub fn run() {
             // [w3-a] commands
             // [w3-b] commands
             // [w3-c] commands
+            computer_use::computer_use_set_chat,
+            computer_use::computer_use_status,
+            computer_use::computer_use_grants,
+            computer_use::computer_use_grant,
+            computer_use::computer_use_revoke,
+            computer_use::computer_use_answer,
+            computer_use::computer_use_stop,
+            computer_use::computer_use_resolve_app,
         ])
         .build(tauri::generate_context!())
         .expect("error while building MonoCode");

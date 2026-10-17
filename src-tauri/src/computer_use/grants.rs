@@ -79,9 +79,11 @@ impl GrantTable {
             return Err(GrantError::NoChat);
         }
         let bundle_id = parse_bundle_id(bundle_id).map_err(GrantError::App)?;
-        if let Some(existing) = self.active(chat_id, now).into_iter().find(|grant| {
-            grant.bundle_id.eq_ignore_ascii_case(&bundle_id)
-        }) {
+        if let Some(existing) = self
+            .active(chat_id, now)
+            .into_iter()
+            .find(|grant| grant.bundle_id.eq_ignore_ascii_case(&bundle_id))
+        {
             return Ok((existing, Vec::new()));
         }
         if self.active(chat_id, now).len() >= MAX_APPS_PER_CHAT {
@@ -97,9 +99,7 @@ impl GrantTable {
         let grant = Grant {
             chat_id: chat_id.to_string(),
             bundle_id,
-            app_name: app_name
-                .map(clean_name)
-                .filter(|name| !name.is_empty()),
+            app_name: app_name.map(clean_name).filter(|name| !name.is_empty()),
             granted_at: now,
             ended_at: None,
             approval_id,
@@ -214,14 +214,19 @@ mod tests {
         assert!(evicted.is_empty());
         assert_eq!(grant.app_name.as_deref(), Some("Calculator"));
         assert_eq!(table.active("c1", 10).len(), 1);
-        assert!(table.active("c2", 10).is_empty(), "another chat holds nothing");
+        assert!(
+            table.active("c2", 10).is_empty(),
+            "another chat holds nothing"
+        );
         assert!(table.active("c1", 9).is_empty(), "nothing before the grant");
     }
 
     #[test]
     fn granting_twice_keeps_one_grant() {
         let mut table = GrantTable::default();
-        table.grant("c1", "com.apple.calculator", None, 10, id(1)).unwrap();
+        table
+            .grant("c1", "com.apple.calculator", None, 10, id(1))
+            .unwrap();
         let (again, _) = table
             .grant("c1", "COM.APPLE.CALCULATOR", None, 20, id(2))
             .unwrap();
@@ -249,8 +254,12 @@ mod tests {
     #[test]
     fn ends_one_app_or_the_whole_chat() {
         let mut table = GrantTable::default();
-        table.grant("c1", "com.apple.calculator", None, 10, id(1)).unwrap();
-        table.grant("c1", "com.apple.TextEdit", None, 11, id(2)).unwrap();
+        table
+            .grant("c1", "com.apple.calculator", None, 10, id(1))
+            .unwrap();
+        table
+            .grant("c1", "com.apple.TextEdit", None, 11, id(2))
+            .unwrap();
         let ended = table.end("c1", "com.apple.calculator", 20).unwrap();
         assert_eq!(ended.ended_at, Some(20));
         assert_eq!(table.active("c1", 21).len(), 1);
@@ -269,7 +278,9 @@ mod tests {
     #[test]
     fn an_end_never_comes_before_the_grant() {
         let mut table = GrantTable::default();
-        table.grant("c1", "com.apple.calculator", None, 100, id(1)).unwrap();
+        table
+            .grant("c1", "com.apple.calculator", None, 100, id(1))
+            .unwrap();
         let ended = table.end("c1", "com.apple.calculator", 50).unwrap();
         assert_eq!(ended.ended_at, Some(100));
     }
@@ -289,7 +300,13 @@ mod tests {
         let mut table = GrantTable::default();
         for n in 0..MAX_CHATS {
             table
-                .grant(&format!("c{n}"), "com.apple.calculator", None, n as i64, id(n))
+                .grant(
+                    &format!("c{n}"),
+                    "com.apple.calculator",
+                    None,
+                    n as i64,
+                    id(n),
+                )
                 .unwrap();
         }
         let (_, evicted) = table
@@ -304,8 +321,12 @@ mod tests {
     #[test]
     fn end_all_ends_every_chat() {
         let mut table = GrantTable::default();
-        table.grant("c1", "com.apple.calculator", None, 1, id(1)).unwrap();
-        table.grant("c2", "com.apple.TextEdit", None, 1, id(2)).unwrap();
+        table
+            .grant("c1", "com.apple.calculator", None, 1, id(1))
+            .unwrap();
+        table
+            .grant("c2", "com.apple.TextEdit", None, 1, id(2))
+            .unwrap();
         assert_eq!(table.end_all(5).len(), 2);
         assert!(table.chats_with_grants(6).is_empty());
     }
@@ -314,7 +335,13 @@ mod tests {
     fn names_are_one_clean_line() {
         let mut table = GrantTable::default();
         let (grant, _) = table
-            .grant("c1", "com.apple.calculator", Some("Calc\n\u{7}ulator"), 1, id(1))
+            .grant(
+                "c1",
+                "com.apple.calculator",
+                Some("Calc\n\u{7}ulator"),
+                1,
+                id(1),
+            )
             .unwrap();
         assert_eq!(grant.app_name.as_deref(), Some("Calculator"));
     }

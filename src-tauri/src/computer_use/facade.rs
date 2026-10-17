@@ -40,7 +40,9 @@ pub struct AccessRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AccessAnswer {
-    Granted { bundle_id: String },
+    Granted {
+        bundle_id: String,
+    },
     Denied,
     /// The card is still open after the wait.
     Pending,
@@ -77,10 +79,6 @@ impl Facade {
             initialized: false,
             listed_for: None,
         }
-    }
-
-    pub fn chat(&self) -> &str {
-        &self.chat
     }
 
     /// A `notifications/tools/list_changed` when the grants differ from the
@@ -122,9 +120,7 @@ impl Facade {
                 self.listed_for = Some(grant_set(&grants));
                 result(id, json!({ "tools": tools }))
             }
-            "tools/call" if self.initialized => {
-                result(id, self.call(backend, &params))
-            }
+            "tools/call" if self.initialized => result(id, self.call(backend, &params)),
             "tools/list" | "tools/call" => error(id, -32002, "Server not initialized"),
             "resources/list" => result(id, json!({ "resources": [] })),
             "prompts/list" => result(id, json!({ "prompts": [] })),
@@ -137,17 +133,16 @@ impl Facade {
         if grants.is_empty() {
             return tools;
         }
-        match backend.runtime_tools(&self.chat) {
-            Ok(list) => tools.extend(list.into_iter().filter(|tool| {
+        // A runtime that did not start leaves only MonoCode's own tools; the
+        // status tool says what is approved.
+        if let Ok(list) = backend.runtime_tools(&self.chat) {
+            tools.extend(list.into_iter().filter(|tool| {
                 tool.get("name")
                     .and_then(Value::as_str)
                     .is_some_and(|name| {
                         tool_allowed(name) && name != REQUEST_TOOL && name != STATUS_TOOL
                     })
-            })),
-            // The runtime did not start: only MonoCode's own tools, and the
-            // status tool says why.
-            Err(_) => {}
+            }));
         }
         tools
     }
@@ -350,7 +345,12 @@ mod tests {
         fn grants(&self, _chat: &str) -> Vec<Grant> {
             self.grants.borrow().clone()
         }
-        fn request_access(&self, _chat: &str, request: AccessRequest, _wait: Duration) -> AccessAnswer {
+        fn request_access(
+            &self,
+            _chat: &str,
+            request: AccessRequest,
+            _wait: Duration,
+        ) -> AccessAnswer {
             self.asked.borrow_mut().push(request);
             self.answer.borrow().clone()
         }
@@ -381,7 +381,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(reply["result"]["protocolVersion"], "2025-06-18");
-        assert_eq!(reply["result"]["capabilities"]["tools"]["listChanged"], true);
+        assert_eq!(
+            reply["result"]["capabilities"]["tools"]["listChanged"],
+            true
+        );
     }
 
     fn names(reply: &Value) -> Vec<String> {
@@ -399,7 +402,10 @@ mod tests {
         let mut facade = Facade::new("c1");
         init(&mut facade, &backend);
         let reply = facade
-            .handle(&backend, &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
+            .handle(
+                &backend,
+                &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+            )
             .unwrap();
         assert_eq!(names(&reply), vec![REQUEST_TOOL, STATUS_TOOL]);
         let reply = facade
@@ -409,7 +415,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(reply["result"]["isError"], true);
-        assert!(backend.calls.borrow().is_empty(), "nothing reached the runtime");
+        assert!(
+            backend.calls.borrow().is_empty(),
+            "nothing reached the runtime"
+        );
     }
 
     #[test]
@@ -419,7 +428,10 @@ mod tests {
         let mut facade = Facade::new("c1");
         init(&mut facade, &backend);
         let reply = facade
-            .handle(&backend, &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
+            .handle(
+                &backend,
+                &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+            )
             .unwrap();
         let listed = names(&reply);
         assert!(listed.contains(&"click".to_string()));
@@ -437,7 +449,13 @@ mod tests {
         backend.grant("com.apple.calculator");
         let mut facade = Facade::new("c1");
         init(&mut facade, &backend);
-        for name in ["start_recording", "get_desktop_state", "run_script", "check_for_update", ""] {
+        for name in [
+            "start_recording",
+            "get_desktop_state",
+            "run_script",
+            "check_for_update",
+            "",
+        ] {
             let reply = facade
                 .handle(
                     &backend,
@@ -454,7 +472,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(reply["result"]["content"][0]["text"], "ok");
-        assert_eq!(backend.calls.borrow()[0], ("click".to_string(), json!({"x":1})));
+        assert_eq!(
+            backend.calls.borrow()[0],
+            ("click".to_string(), json!({"x":1}))
+        );
     }
 
     #[test]
@@ -511,8 +532,14 @@ mod tests {
         let backend = Fake::new();
         let mut facade = Facade::new("c1");
         init(&mut facade, &backend);
-        assert!(facade.list_changed(&backend).is_none(), "nothing listed yet");
-        facade.handle(&backend, &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}));
+        assert!(
+            facade.list_changed(&backend).is_none(),
+            "nothing listed yet"
+        );
+        facade.handle(
+            &backend,
+            &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        );
         assert!(facade.list_changed(&backend).is_none());
         backend.grant("com.apple.calculator");
         let note = facade.list_changed(&backend).unwrap();
@@ -528,7 +555,10 @@ mod tests {
         let mut facade = Facade::new("c1");
         init(&mut facade, &backend);
         let reply = facade
-            .handle(&backend, &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
+            .handle(
+                &backend,
+                &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+            )
             .unwrap();
         assert_eq!(names(&reply), vec![REQUEST_TOOL, STATUS_TOOL]);
     }
@@ -538,7 +568,10 @@ mod tests {
         let backend = Fake::new();
         let mut facade = Facade::new("c1");
         let reply = facade
-            .handle(&backend, &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
+            .handle(
+                &backend,
+                &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+            )
             .unwrap();
         assert_eq!(reply["error"]["code"], -32002, "list before initialize");
         let reply = facade
@@ -546,18 +579,27 @@ mod tests {
             .unwrap();
         assert_eq!(reply["result"]["protocolVersion"], PROTOCOL_VERSIONS[0]);
         assert!(facade
-            .handle(&backend, &json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
+            .handle(
+                &backend,
+                &json!({"jsonrpc":"2.0","method":"notifications/initialized"})
+            )
             .is_none());
         let reply = facade
             .handle(&backend, &json!({"jsonrpc":"2.0","id":"p","method":"ping"}))
             .unwrap();
         assert_eq!(reply["result"], json!({}));
         let reply = facade
-            .handle(&backend, &json!({"jsonrpc":"2.0","id":2,"method":"sampling/createMessage"}))
+            .handle(
+                &backend,
+                &json!({"jsonrpc":"2.0","id":2,"method":"sampling/createMessage"}),
+            )
             .unwrap();
         assert_eq!(reply["error"]["code"], -32601);
         let reply = facade
-            .handle(&backend, &json!({"jsonrpc":"2.0","id":{"x":1},"method":"ping"}))
+            .handle(
+                &backend,
+                &json!({"jsonrpc":"2.0","id":{"x":1},"method":"ping"}),
+            )
             .unwrap();
         assert_eq!(reply["error"]["code"], -32600);
     }

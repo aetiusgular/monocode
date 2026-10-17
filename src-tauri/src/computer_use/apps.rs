@@ -175,8 +175,14 @@ mod tests {
 
     #[test]
     fn warns_for_terminals_finder_and_settings() {
-        assert_eq!(warning_for("com.apple.Terminal"), Some(AppWarning::Terminal));
-        assert_eq!(warning_for("com.googlecode.iterm2"), Some(AppWarning::Terminal));
+        assert_eq!(
+            warning_for("com.apple.Terminal"),
+            Some(AppWarning::Terminal)
+        );
+        assert_eq!(
+            warning_for("com.googlecode.iterm2"),
+            Some(AppWarning::Terminal)
+        );
         assert_eq!(warning_for("com.apple.finder"), Some(AppWarning::Finder));
         assert_eq!(
             warning_for("com.apple.systempreferences"),
