@@ -9,7 +9,9 @@ import { TelemetryFeed } from "./telemetryFeed";
  * harness event, once; the host component feeds it the receiver's batches
  * and its timer.
  */
-export const telemetryFeed = new TelemetryFeed((event) => recordActivity(event));
+export const telemetryFeed = new TelemetryFeed((event) =>
+  recordActivity(event),
+);
 
 /** Which harness each chat runs, kept by the host from the session list. */
 const harnessByChat = new Map<string, HarnessId>();
@@ -34,5 +36,10 @@ export const TAPPED_EVENT_TYPES: ReadonlySet<HarnessEvent["type"]> = new Set([
 /** One live harness event. Never throws. */
 export function tapHarnessEvent(sessionId: string, event: HarnessEvent): void {
   if (!TAPPED_EVENT_TYPES.has(event.type)) return;
-  telemetryFeed.adapter(sessionId, harnessByChat.get(sessionId) ?? "", event, Date.now());
+  telemetryFeed.adapter(
+    sessionId,
+    harnessByChat.get(sessionId) ?? "",
+    event,
+    Date.now(),
+  );
 }

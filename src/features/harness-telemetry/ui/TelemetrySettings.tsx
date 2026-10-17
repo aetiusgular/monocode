@@ -40,12 +40,17 @@ export const TELEMETRY_PROMPTS_DESCRIPTION =
 
 export function telemetryStatusLine(status: TelemetryStatus | null): string {
   if (!status) return "Not available in this build.";
-  if (!status.listening) return "Not started yet. It starts with the first Claude Code or Codex chat.";
+  if (!status.listening)
+    return "Not started yet. It starts with the first Claude Code or Codex chat.";
   const refused = status.refusedToken + status.refusedOther;
   return `Receiving: ${status.events} events from ${status.requests} requests${refused ? `, ${refused} refused` : ""}.`;
 }
 
-export function TelemetrySettings({ Group, Row, Toggle }: TelemetrySettingsParts) {
+export function TelemetrySettings({
+  Group,
+  Row,
+  Toggle,
+}: TelemetrySettingsParts) {
   const settings = useHarnessTelemetry();
   const [status, setStatus] = useState<TelemetryStatus | null>(null);
   useEffect(() => {
@@ -62,7 +67,11 @@ export function TelemetrySettings({ Group, Row, Toggle }: TelemetrySettingsParts
     };
   }, []);
   return (
-    <Group id="harness-telemetry" title="Harness telemetry" description={TELEMETRY_GROUP_DESCRIPTION}>
+    <Group
+      id="harness-telemetry"
+      title="Harness telemetry"
+      description={TELEMETRY_GROUP_DESCRIPTION}
+    >
       <Row
         id="telemetry-enabled"
         label="Record harness telemetry"
@@ -74,14 +83,22 @@ export function TelemetrySettings({ Group, Row, Toggle }: TelemetrySettingsParts
           onChange={(on) => setHarnessTelemetry({ enabled: on })}
         />
       </Row>
-      <Row id="telemetry-prompts" label="Include prompt text" description={TELEMETRY_PROMPTS_DESCRIPTION}>
+      <Row
+        id="telemetry-prompts"
+        label="Include prompt text"
+        description={TELEMETRY_PROMPTS_DESCRIPTION}
+      >
         <Toggle
           label="Include prompt text"
           on={settings.enabled && settings.logPrompts}
           onChange={(on) => setHarnessTelemetry({ logPrompts: on })}
         />
       </Row>
-      <Row id="telemetry-status" label="Receiver" description={telemetryStatusLine(status)} />
+      <Row
+        id="telemetry-status"
+        label="Receiver"
+        description={telemetryStatusLine(status)}
+      />
     </Group>
   );
 }

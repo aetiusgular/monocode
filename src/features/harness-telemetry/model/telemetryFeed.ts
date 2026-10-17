@@ -106,7 +106,8 @@ function clipText(text: string): string {
 export function otelToolKind(harness: string, toolName: string): string {
   if (harness === "codex") {
     const name = toolName.toLowerCase();
-    if (/exec_command|shell|write_stdin|unified_exec/.test(name)) return "execute";
+    if (/exec_command|shell|write_stdin|unified_exec/.test(name))
+      return "execute";
     if (name.includes("apply_patch")) return "edit";
     if (name.includes("web_search")) return "search";
     if (name.includes("view_image")) return "read";
@@ -171,7 +172,12 @@ export class TelemetryFeed {
     if (state.recent.length > RECENT_PER_CHAT) state.recent.shift();
   }
 
-  private hold(state: ChatState, map: HeldMap, key: string | number, held: Held): void {
+  private hold(
+    state: ChatState,
+    map: HeldMap,
+    key: string | number,
+    held: Held,
+  ): void {
     map.set(key, held);
     if (map.size > PENDING_PER_CHAT) {
       const first = map.entries().next().value;
@@ -183,7 +189,12 @@ export class TelemetryFeed {
   }
 
   /** A4: one adapter event for one chat. */
-  adapter(chatId: string, harness: HarnessId | "", event: HarnessEvent, now: number): void {
+  adapter(
+    chatId: string,
+    harness: HarnessId | "",
+    event: HarnessEvent,
+    now: number,
+  ): void {
     try {
       this.adapterEvent(chatId, harness, event, now);
     } catch {
@@ -191,7 +202,12 @@ export class TelemetryFeed {
     }
   }
 
-  private adapterEvent(chatId: string, harness: HarnessId | "", event: HarnessEvent, now: number): void {
+  private adapterEvent(
+    chatId: string,
+    harness: HarnessId | "",
+    event: HarnessEvent,
+    now: number,
+  ): void {
     if (!chatId) return;
     const state = this.chat(chatId, harness);
     const base = { chatId, harness: state.harness, source: "adapter" as const };
@@ -213,7 +229,8 @@ export class TelemetryFeed {
           if (TERMINAL.has(status) && existing.endedAt === undefined) {
             existing.endedAt = now;
             detail.endedAt = now;
-            if (existing.joined) this.flushOne(state, state.tools, event.callId);
+            if (existing.joined)
+              this.flushOne(state, state.tools, event.callId);
           }
           return;
         }
@@ -230,8 +247,12 @@ export class TelemetryFeed {
               toolKind,
               ...(status ? { status } : {}),
               ...(event.command ? { command: clipText(event.command) } : {}),
-              ...(event.paths?.length ? { paths: event.paths.slice(0, 50) } : {}),
-              ...(event.type === "tool.started" && event.background ? { background: true } : {}),
+              ...(event.paths?.length
+                ? { paths: event.paths.slice(0, 50) }
+                : {}),
+              ...(event.type === "tool.started" && event.background
+                ? { background: true }
+                : {}),
             },
           },
           callId: event.callId,
@@ -296,7 +317,14 @@ export class TelemetryFeed {
       case "turn.ready":
         if (!state.turnActive) return;
         state.turnActive = false;
-        this.emit({ ...base, id: this.nextId(state, chatId, "turn"), at: now, kind: "turn.end", summary: "Turn ended", detail: {} });
+        this.emit({
+          ...base,
+          id: this.nextId(state, chatId, "turn"),
+          at: now,
+          kind: "turn.end",
+          summary: "Turn ended",
+          detail: {},
+        });
         return;
       case "session.ended":
         this.flushChat(state);
@@ -306,7 +334,10 @@ export class TelemetryFeed {
           id: this.nextId(state, chatId, "session"),
           at: now,
           kind: "session.end",
-          summary: event.code == null ? "Harness stopped" : `Harness stopped (exit ${event.code})`,
+          summary:
+            event.code == null
+              ? "Harness stopped"
+              : `Harness stopped (exit ${event.code})`,
           detail: event.code == null ? {} : { code: event.code },
         });
         return;
@@ -337,7 +368,13 @@ export class TelemetryFeed {
   }
 
   private otelEvent(event: ActivityEvent, now: number): void {
-    if (!event || typeof event !== "object" || event.source !== "otel" || !event.chatId) return;
+    if (
+      !event ||
+      typeof event !== "object" ||
+      event.source !== "otel" ||
+      !event.chatId
+    )
+      return;
     const state = this.chat(event.chatId, event.harness);
     const a = attrs(event);
     const callId = str(a.tool_use_id) ?? str(a.call_id);
@@ -351,7 +388,9 @@ export class TelemetryFeed {
       return;
     }
     const recent: HeldMap = new Map(
-      state.recent.filter((h) => h.event.kind === event.kind).map((h, i) => [i, h]),
+      state.recent
+        .filter((h) => h.event.kind === event.kind)
+        .map((h, i) => [i, h]),
     );
     const held =
       this.match(map, event.harness, callId, kind, event.at, now) ??
@@ -395,7 +434,9 @@ export class TelemetryFeed {
     now: number,
     written = false,
   ): Held | undefined {
-    const open = [...map.values()].filter((h) => !h.joined && h.written === written);
+    const open = [...map.values()].filter(
+      (h) => !h.joined && h.written === written,
+    );
     if (callId) {
       const byId = open.find((h) => h.callId === callId);
       if (byId) return byId;
@@ -406,7 +447,8 @@ export class TelemetryFeed {
     const { earlyMs, joinWindowMs, maxHoldMs } = this.options;
     // A call still running may end at any moment; one written unended was
     // last known running at its hold limit.
-    const end = (h: Held) => h.endedAt ?? (written ? h.startedAt + maxHoldMs : now);
+    const end = (h: Held) =>
+      h.endedAt ?? (written ? h.startedAt + maxHoldMs : now);
     return open
       .filter((h) => h.toolKind === kind)
       .filter((h) => at >= h.startedAt - earlyMs && at <= end(h) + joinWindowMs)
@@ -421,8 +463,10 @@ export class TelemetryFeed {
   }
 
   private flushChat(state: ChatState): void {
-    for (const key of [...state.tools.keys()]) this.flushOne(state, state.tools, key);
-    for (const key of [...state.approvals.keys()]) this.flushOne(state, state.approvals, key);
+    for (const key of [...state.tools.keys()])
+      this.flushOne(state, state.tools, key);
+    for (const key of [...state.approvals.keys()])
+      this.flushOne(state, state.approvals, key);
   }
 
   /** Writes what has waited long enough. Called on a timer. */
@@ -430,14 +474,23 @@ export class TelemetryFeed {
     try {
       const { joinWindowMs, maxHoldMs } = this.options;
       for (const [chatId, state] of this.chats) {
-        for (const map of [state.tools, state.approvals] ) {
+        for (const map of [state.tools, state.approvals]) {
           for (const [key, held] of [...map.entries()]) {
-            const ended = held.endedAt !== undefined && now - held.endedAt >= joinWindowMs;
-            if (ended || now - held.startedAt >= maxHoldMs) this.flushOne(state, map, key);
+            const ended =
+              held.endedAt !== undefined && now - held.endedAt >= joinWindowMs;
+            if (ended || now - held.startedAt >= maxHoldMs)
+              this.flushOne(state, map, key);
           }
         }
-        state.recent = state.recent.filter((h) => now - h.startedAt < RECENT_MS);
-        if (!state.tools.size && !state.approvals.size && !state.recent.length && !state.turnActive) {
+        state.recent = state.recent.filter(
+          (h) => now - h.startedAt < RECENT_MS,
+        );
+        if (
+          !state.tools.size &&
+          !state.approvals.size &&
+          !state.recent.length &&
+          !state.turnActive
+        ) {
           this.chats.delete(chatId);
         }
       }
@@ -454,7 +507,8 @@ export class TelemetryFeed {
   /** Held calls, for tests. */
   heldCount(): number {
     let n = 0;
-    for (const state of this.chats.values()) n += state.tools.size + state.approvals.size;
+    for (const state of this.chats.values())
+      n += state.tools.size + state.approvals.size;
     return n;
   }
 }

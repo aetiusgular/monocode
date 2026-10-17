@@ -40,7 +40,10 @@ export async function configureHarnessTelemetry(
         chats: chats.slice(0, MAX_CHAT_IDS),
       }),
       new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error("timeout")), CONFIGURE_TIMEOUT_MS);
+        timer = setTimeout(
+          () => reject(new Error("timeout")),
+          CONFIGURE_TIMEOUT_MS,
+        );
       }),
     ]);
     return true;

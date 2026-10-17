@@ -694,6 +694,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
   },
   // [w3-a] index
   {
+    id: "harness-telemetry",
+    section: "telemetry",
+    label: "Harness telemetry",
+    keywords: "telemetry opentelemetry otel otlp receiver local",
+  },
+  {
     id: "telemetry-enabled",
     section: "telemetry",
     label: "Record harness telemetry",
@@ -704,6 +710,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     section: "telemetry",
     label: "Include prompt text",
     keywords: "telemetry prompt text privacy redact",
+  },
+  {
+    id: "telemetry-status",
+    section: "telemetry",
+    label: "Receiver",
+    keywords: "telemetry receiver events refused status",
   },
   // [w3-b] index
   // [w3-c] index

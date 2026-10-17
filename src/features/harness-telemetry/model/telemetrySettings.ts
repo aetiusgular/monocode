@@ -64,7 +64,10 @@ export function harnessTelemetryKey(): string {
 export function setHarnessTelemetry(
   patch: Partial<HarnessTelemetrySettings>,
 ): void {
-  const next = sanitizeHarnessTelemetry({ ...loadHarnessTelemetry(), ...patch });
+  const next = sanitizeHarnessTelemetry({
+    ...loadHarnessTelemetry(),
+    ...patch,
+  });
   cache = next;
   try {
     localStorage.setItem(HARNESS_TELEMETRY_KEY, JSON.stringify(next));

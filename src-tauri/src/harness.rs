@@ -969,7 +969,13 @@ pub fn harness_spawn(
     // [w3-a] child-env
     // Wave 3: a chat's Claude Code or Codex exports its telemetry to the
     // loopback receiver. Does nothing when switched off or not a chat.
-    crate::otel_receiver::apply_to_child(&app, &session_id, binary_provider.as_deref(), &args, &mut cmd);
+    crate::otel_receiver::apply_to_child(
+        &app,
+        &session_id,
+        binary_provider.as_deref(),
+        &args,
+        &mut cmd,
+    );
     // [w3-b] child-env
     // [w3-c] child-env
     crate::control::configure_child(&app, &session_id, &mut cmd);

@@ -62,9 +62,8 @@ export class HarnessEventQueue {
           typeof import("../../features/harness-telemetry/model/telemetryTap")
         >;
       };
-      self_w3a.telemetryTap_w3a ??= import(
-        "../../features/harness-telemetry/model/telemetryTap"
-      );
+      self_w3a.telemetryTap_w3a ??=
+        import("../../features/harness-telemetry/model/telemetryTap");
       void self_w3a.telemetryTap_w3a
         .then((tap) => tap.tapHarnessEvent(sessionId, event))
         .catch(() => undefined);

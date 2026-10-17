@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const tauri = vi.hoisted(() => ({ isTauri: true, invoke: vi.fn(), listen: vi.fn() }));
+const tauri = vi.hoisted(() => ({
+  isTauri: true,
+  invoke: vi.fn(),
+  listen: vi.fn(),
+}));
 vi.mock("@tauri-apps/api/core", () => ({
   isTauri: () => tauri.isTauri,
   invoke: (...args: unknown[]) => tauri.invoke(...args),
