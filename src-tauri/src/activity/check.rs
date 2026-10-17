@@ -106,10 +106,11 @@ fn covering<'a>(
     matches: impl Fn(&str) -> bool,
 ) -> Option<&'a ApprovalRecord> {
     approvals.iter().find(|record| {
-        record.subject == subject
-            && record.chat_id == chat_id
-            && holds_at(record, at)
-            && matches(&record.target)
+        // A project's site rule is kept per folder, not per chat, so it is
+        // recorded with no chat and covers a host in every chat.
+        let chat_matches = record.chat_id == chat_id
+            || (subject == ApprovalSubject::Host && record.chat_id.is_empty());
+        record.subject == subject && chat_matches && holds_at(record, at) && matches(&record.target)
     })
 }
 
@@ -744,6 +745,42 @@ mod tests {
         );
         let ids: Vec<&str> = flags.iter().map(|f| f.event_id.as_str()).collect();
         assert_eq!(ids, vec!["3", "5"]);
+    }
+
+    #[test]
+    fn a_project_host_rule_covers_every_chat_but_a_folder_rule_does_not() {
+        let mut host = approval(
+            ApprovalSubject::Host,
+            "docs.rs",
+            ApprovalScope::Always,
+            0,
+            None,
+        );
+        host.chat_id = String::new();
+        let mut folder = approval(
+            ApprovalSubject::Folder,
+            "/Users/t/Documents",
+            ApprovalScope::Always,
+            0,
+            None,
+        );
+        folder.chat_id = String::new();
+        let flags = check(
+            &[
+                ev(
+                    "1",
+                    1,
+                    ActivitySource::Otel,
+                    "net",
+                    json!({"host": "docs.rs"}),
+                    None,
+                ),
+                es("2", 2, "write", "/Users/t/Documents/a"),
+            ],
+            &[host, folder],
+        );
+        let ids: Vec<&str> = flags.iter().map(|f| f.event_id.as_str()).collect();
+        assert_eq!(ids, vec!["2"]);
     }
 
     #[test]
