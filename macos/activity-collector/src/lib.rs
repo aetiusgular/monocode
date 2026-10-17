@@ -5,5 +5,6 @@ pub mod event;
 pub mod filter;
 pub mod lines;
 pub mod log;
+pub mod retention;
 pub mod timefmt;
 pub mod tree;
