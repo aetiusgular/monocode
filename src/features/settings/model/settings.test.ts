@@ -623,6 +623,7 @@ describe("settings navigation", () => {
       "worktrees",
       "environment",
       // [w3-a] rail-workspace
+      "telemetry",
       // [w3-b] rail-workspace
       // [w3-c] rail-workspace
     ]);

@@ -885,6 +885,7 @@ import {
 import { setPrBarHost } from "../features/pr-bar/model/prBar";
 import { forgetSiteRules } from "../features/browser-tools/model/siteRules";
 // [w3-a] imports
+import { HarnessTelemetryHost as HarnessTelemetryHost_w3a } from "../features/harness-telemetry/ui/HarnessTelemetryHost";
 // [w3-b] imports
 // [w3-c] imports
 
@@ -14251,6 +14252,7 @@ function Workspace({
             />
           ) : null}
           {/* [w3-a] mounts */}
+          <HarnessTelemetryHost_w3a sessions={sessions} />
           {/* [w3-b] mounts */}
           {/* [w3-c] mounts */}
           {providerSignInRequest ? (

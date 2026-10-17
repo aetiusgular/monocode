@@ -172,6 +172,8 @@ type Live = {
    */
   gatewayKey: string;
   // [w3-a] live
+  /** Wave 3: the telemetry switches this app-server started with. */
+  telemetryKey_w3a?: string;
   // [w3-b] live
   // [w3-c] live
   runtimeMode: RuntimeMode;
@@ -650,6 +652,15 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     ),
   );
   // [w3-a] app-server-flags
+  // Wave 3: the receiver's `-c` flags and token are added at spawn (Rust,
+  // otel_receiver.rs), from switches stored as `monocode.harnessTelemetry`.
+  // A change starts a new app-server, as a changed gateway flag does.
+  let telemetryKey_w3a = "";
+  try {
+    telemetryKey_w3a = localStorage.getItem("monocode.harnessTelemetry") ?? "";
+  } catch {
+    telemetryKey_w3a = "";
+  }
   // [w3-b] app-server-flags
   // [w3-c] app-server-flags
   const gatewayKey = gatewayArgs.join("\n");
@@ -677,6 +688,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     && existing.identityKey === identityKey
     && existing.editAdapterKey === editAdapter.key
     // [w3-a] reuse
+    && (existing.telemetryKey_w3a ?? "") === telemetryKey_w3a
     // [w3-b] reuse
     // [w3-c] reuse
   ) {
@@ -994,6 +1006,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       mcpRequested,
       gatewayKey,
       // [w3-a] live-init
+      telemetryKey_w3a,
       // [w3-b] live-init
       // [w3-c] live-init
       runtimeMode: input.runtimeMode,

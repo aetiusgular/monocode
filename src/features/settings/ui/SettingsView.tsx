@@ -436,6 +436,7 @@ import { MemoryPage } from "../../project-memory/ui/MemoryPage";
 import { EnvironmentPage } from "../../environment/ui/EnvironmentPage";
 import { OutboundCallsSettings } from "../../privacy-view/ui/OutboundCallsSettings";
 // [w3-a] imports
+import { TelemetrySettings as TelemetrySettings_w3a } from "../../harness-telemetry/ui/TelemetrySettings";
 // [w3-b] imports
 // [w3-c] imports
 
@@ -683,6 +684,9 @@ export function SettingsView({
                 />
               ) : null}
               {/* [w3-a] section-switch */}
+              {section === "telemetry" ? (
+                <TelemetrySettings_w3a Group={Group} Row={Row} Toggle={Toggle} />
+              ) : null}
               {/* [w3-b] section-switch */}
               {/* [w3-c] section-switch */}
             </div>
