@@ -118,6 +118,9 @@ struct Inner {
     /// an older number is stopped as soon as its start returns, so a stop
     /// that raced a start still wins (security review, finding 4).
     generation: HashMap<String, u64>,
+    /// Chats whose current turn is a plan turn: only look-only tools run
+    /// (rules section 5, item 7; security review S6).
+    planning: std::collections::HashSet<String>,
 }
 
 impl Inner {
@@ -849,7 +852,29 @@ fn constant_eq(a: &[u8], b: &[u8]) -> bool {
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+impl Core {
+    /// Marks the chat's turn as a plan turn, or ends that. Bounded: a chat
+    /// id over 256 characters is ignored, and at most 4,096 chats are held.
+    pub fn set_plan(&self, chat: &str, plan: bool) {
+        if chat.is_empty() || chat.len() > 256 {
+            return;
+        }
+        let mut inner = self.lock();
+        if plan {
+            if inner.planning.len() < 4096 {
+                inner.planning.insert(chat.to_string());
+            }
+        } else {
+            inner.planning.remove(chat);
+        }
+    }
+}
+
 impl Backend for Core {
+    fn plan_turn(&self, chat: &str) -> bool {
+        self.lock().planning.contains(chat)
+    }
+
     fn grants(&self, chat: &str) -> Vec<Grant> {
         Core::grants(self, chat)
     }

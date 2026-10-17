@@ -106,7 +106,7 @@ describe("the host from Claude Code's OTel tool_result", () => {
     };
   }
 
-  it("a joined WebFetch call gets detail.host from tool_input", () => {
+  it("a joined WebFetch call gets detail.otel.host from tool_input", () => {
     const written: ActivityEvent[] = [];
     const f = new TelemetryFeed((e) => written.push(structuredClone(e)), opts);
     f.adapter(
@@ -122,7 +122,10 @@ describe("the host from Claude Code's OTel tool_result", () => {
     );
     f.tick(5000);
     expect(written).toHaveLength(1);
-    expect(written[0].detail).toMatchObject({ callId: "w1", host: "news.example.org" });
+    expect(written[0].detail.callId).toBe("w1");
+    // Kept under the OTel detail, never in the adapter's own fields (S4).
+    expect(written[0].detail.host).toBeUndefined();
+    expect((written[0].detail.otel as Record<string, unknown>).host).toBe("news.example.org");
   });
 
   it("an object tool_input works too, and a non-fetch tool gets none", () => {
@@ -137,5 +140,35 @@ describe("the host from Claude Code's OTel tool_result", () => {
     const hosts = written.map((e) => e.detail.host);
     expect(hosts).toContain("obj.example.net");
     expect(hosts.filter(Boolean)).toHaveLength(1);
+  });
+});
+
+describe("adapter event ids", () => {
+  function oneCall(f: TelemetryFeed, at: number) {
+    f.adapter(
+      "c1",
+      "claude",
+      { type: "tool.started", callId: `t${at}`, title: "ls", kind: "execute", status: "completed" },
+      at,
+    );
+    f.tick(at + 2000);
+  }
+
+  it("never repeat across two runs of the app (security review S3)", () => {
+    const first: ActivityEvent[] = [];
+    oneCall(new TelemetryFeed((e) => first.push(e), opts), 0);
+    const second: ActivityEvent[] = [];
+    oneCall(new TelemetryFeed((e) => second.push(e), opts), 0);
+    expect(first[0].id).not.toBe(second[0].id);
+  });
+
+  it("never repeat after a chat's state was dropped as idle", () => {
+    const written: ActivityEvent[] = [];
+    const f = new TelemetryFeed((e) => written.push(e), opts);
+    oneCall(f, 0);
+    f.tick(60 * 60 * 1000);
+    oneCall(f, 60 * 60 * 1000 + 1);
+    expect(written).toHaveLength(2);
+    expect(written[0].id).not.toBe(written[1].id);
   });
 });

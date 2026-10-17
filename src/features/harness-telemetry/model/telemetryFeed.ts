@@ -80,14 +80,18 @@ type ChatState = {
   recent: Held[];
   turnActive: boolean;
   seq: number;
+  /** Random per chat state, so ids never repeat after a restart or after
+   * the state was dropped as idle (security review S3). */
+  epoch: string;
 };
 
 /** One line of plain text, cut to `max` characters. */
 /**
  * The host a fetch-like tool call names, for the check's "new host" flag
  * (lane B's request 4). Only a tool whose kind says fetch, and only the first
- * http(s) URL in its title or preview. Untrusted text: a made-up host can
- * only raise a flag, never clear one.
+ * http(s) URL in its title or preview. Untrusted text. A host from OTel is
+ * stamped with the time it was received, so it cannot be placed before a
+ * real call, and it raises its own "new host" flag when it arrives.
  */
 export function fetchHost(
   toolKind: string | undefined,
@@ -106,6 +110,14 @@ export function fetchHost(
     }
   }
   return undefined;
+}
+
+function randomEpoch(): string {
+  try {
+    return globalThis.crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+  } catch {
+    return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+  }
 }
 
 function inputText(value: unknown): string | undefined {
@@ -182,6 +194,7 @@ export class TelemetryFeed {
         recent: [],
         turnActive: false,
         seq: 0,
+        epoch: randomEpoch(),
       };
       this.chats.set(chatId, state);
     }
@@ -199,7 +212,7 @@ export class TelemetryFeed {
 
   private nextId(state: ChatState, chatId: string, part: string): string {
     state.seq += 1;
-    return `adapter-${chatId}-${part}-${state.seq}`;
+    return `adapter-${chatId}-${part}-${state.epoch}-${state.seq}`;
   }
 
   private writeHeld(state: ChatState, held: Held): void {
@@ -455,14 +468,15 @@ export class TelemetryFeed {
       return;
     }
     held.joined = true;
+    // The host stays with the OTel detail it came from, never in the
+    // adapter's own fields (security review S4).
     held.event.detail.otel = {
       event: event.detail.event,
       trust: "harness",
       summary: event.summary,
       attributes: a,
+      ...(otelHost ? { host: otelHost } : {}),
     };
-    if (otelHost && held.event.detail.host === undefined)
-      held.event.detail.host = otelHost;
     if (held.written) {
       // Late: write it again under the same id.
       this.emit(held.event);

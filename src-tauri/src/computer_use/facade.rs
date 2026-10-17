@@ -61,7 +61,15 @@ pub trait Backend {
     fn runtime_tools(&self, chat: &str) -> Result<Vec<Value>, String>;
     /// One `tools/call` on the runtime; the result as the runtime sent it.
     fn runtime_call(&self, chat: &str, name: &str, arguments: Value) -> Result<Value, String>;
+    /// Whether the chat's current turn is a plan turn. Then only look-only
+    /// tools run, on every harness (security review S6).
+    fn plan_turn(&self, _chat: &str) -> bool {
+        false
+    }
 }
+
+const PLAN_REFUSAL: &str =
+    "This is a plan turn: only look-only computer-use tools run. Describe the action in the plan instead.";
 
 /// One harness connection's MCP session.
 pub struct Facade {
@@ -158,6 +166,9 @@ impl Facade {
             .cloned()
             .filter(Value::is_object)
             .unwrap_or_else(|| json!({}));
+        if backend.plan_turn(&self.chat) && name != STATUS_TOOL && !look_only(name) {
+            return tool_error(PLAN_REFUSAL);
+        }
         match name {
             REQUEST_TOOL => self.request(backend, &arguments),
             STATUS_TOOL => self.status(backend),
@@ -357,6 +368,7 @@ mod tests {
         asked: RefCell<Vec<AccessRequest>>,
         calls: RefCell<Vec<(String, Value)>>,
         runtime_ok: bool,
+        plan: RefCell<bool>,
     }
 
     impl Fake {
@@ -367,6 +379,7 @@ mod tests {
                 asked: RefCell::new(Vec::new()),
                 calls: RefCell::new(Vec::new()),
                 runtime_ok: true,
+                plan: RefCell::new(false),
             }
         }
         fn grant(&self, bundle: &str) {
@@ -410,6 +423,9 @@ mod tests {
         fn runtime_call(&self, _chat: &str, name: &str, arguments: Value) -> Result<Value, String> {
             self.calls.borrow_mut().push((name.into(), arguments));
             Ok(json!({"content": [{"type": "text", "text": "ok"}]}))
+        }
+        fn plan_turn(&self, _chat: &str) -> bool {
+            *self.plan.borrow()
         }
     }
 
@@ -496,6 +512,38 @@ mod tests {
         );
         // The runtime's own copy of a MonoCode tool name is never listed twice.
         assert_eq!(listed.iter().filter(|n| *n == REQUEST_TOOL).count(), 1);
+    }
+
+    #[test]
+    fn a_plan_turn_runs_only_look_only_tools() {
+        // Security review S6: Codex's plan turn does not hold MCP tools back.
+        let backend = Fake::new();
+        backend.grant("com.apple.calculator");
+        *backend.plan.borrow_mut() = true;
+        let mut facade = Facade::new("c1");
+        init(&mut facade, &backend);
+        let call = |facade: &mut Facade, name: &str| {
+            facade
+                .handle(
+                    &backend,
+                    &json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":name,"arguments":{"app":"com.apple.TextEdit"}}}),
+                )
+                .unwrap()
+        };
+        let click = call(&mut facade, "click");
+        assert_eq!(click["result"]["isError"], true);
+        let ask = call(&mut facade, REQUEST_TOOL);
+        assert_eq!(ask["result"]["isError"], true);
+        assert!(backend.asked.borrow().is_empty(), "no card in a plan turn");
+        assert!(backend.calls.borrow().is_empty());
+        let look = call(&mut facade, "get_window_state");
+        assert_eq!(look["result"]["content"][0]["text"], "ok");
+        let status = call(&mut facade, STATUS_TOOL);
+        assert!(status["result"]["isError"] != true);
+        // The plan turn ends: actions run again.
+        *backend.plan.borrow_mut() = false;
+        let click = call(&mut facade, "click");
+        assert_eq!(click["result"]["content"][0]["text"], "ok");
     }
 
     #[test]

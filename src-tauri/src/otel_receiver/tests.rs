@@ -90,7 +90,9 @@ fn a_chats_events_arrive_attributed_by_token() {
     assert_eq!(events[0].chat_id, "chat-1");
     assert_eq!(events[0].harness, "claude");
     assert_eq!(events[0].kind, "tool.call");
-    assert_eq!(events[0].at, 5);
+    // Stamped when received, not when the harness says (security review S4).
+    assert_eq!(events[0].detail["harnessAt"], 5);
+    assert!(events[0].at > 1_700_000_000_000);
 }
 
 #[test]

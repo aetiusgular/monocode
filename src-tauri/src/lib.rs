@@ -735,6 +735,7 @@ pub fn run() {
             activity::commands::activity_screenshot,
             // [w3-c] commands
             computer_use::computer_use_set_chat,
+            computer_use::computer_use_set_plan,
             computer_use::computer_use_status,
             computer_use::computer_use_grants,
             computer_use::computer_use_grant,

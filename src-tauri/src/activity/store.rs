@@ -18,8 +18,6 @@ use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::Mutex;
 use std::thread;
 
-use serde_json::Value;
-
 use super::chain::{self, GENESIS};
 use super::retention::{self, LOG_PREFIX, LOG_SUFFIX};
 use super::types::{ActivityEvent, ApprovalRecord};
@@ -292,7 +290,7 @@ pub fn hosts_before(dir: &Path, before_ms: i64) -> std::collections::HashSet<Str
     let mut hosts = std::collections::HashSet::new();
     let earliest = before_ms.saturating_sub(retention::KEEP_LOG_DAYS * 86_400_000);
     for event in read(dir, earliest, before_ms.saturating_sub(1), None, 200_000).events {
-        if let Some(host) = event.detail.get("host").and_then(Value::as_str) {
+        if let Some(host) = super::check::event_host(&event) {
             hosts.insert(host.to_ascii_lowercase());
         }
     }

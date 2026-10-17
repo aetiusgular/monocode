@@ -200,16 +200,18 @@ pub fn to_activity(
     if dropped > 0 {
         detail.insert("droppedAttributes".into(), Value::from(dropped));
     }
+    if log.time_ms > 0 {
+        detail.insert("harnessAt".into(), Value::from(log.time_ms));
+    }
     if let Some(service) = log.resource.get("service.name").and_then(Value::as_str) {
         detail.insert("service".into(), Value::String(clip(service, 200)));
     }
     Some(ActivityEvent {
         id: format!("otel-{}", uuid::Uuid::new_v4().simple()),
-        at: if log.time_ms > 0 {
-            log.time_ms
-        } else {
-            received_at
-        },
+        // The receive time, never the harness's own: a back-dated record
+        // could otherwise sit before a real action and change what the
+        // check sees (security review S4). The harness's time is kept.
+        at: received_at,
         chat_id: chat_id.to_string(),
         harness: harness.to_string(),
         source: ActivitySource::Otel,
@@ -251,7 +253,9 @@ mod tests {
         assert_eq!(e.chat_id, "chat-1");
         assert_eq!(e.harness, "claude");
         assert_eq!(e.source, ActivitySource::Otel);
-        assert_eq!(e.at, 10);
+        // The receive time; the record's own time is kept apart (S4).
+        assert_eq!(e.at, 99);
+        assert_eq!(e.detail["harnessAt"], 10);
         assert_eq!(e.detail["trust"], "harness");
         assert_eq!(
             e.detail["attributes"]["tool_parameters"],
@@ -382,7 +386,7 @@ mod tests {
             tool.detail["attributes"]["tool_use_id"],
             "toolu_1b45099a6ab049728f96"
         );
-        assert!(tool.at > 1_700_000_000_000);
+        assert!(tool.detail["harnessAt"].as_i64().unwrap() > 1_700_000_000_000);
         for e in &events {
             let attrs = e.detail["attributes"].as_object().unwrap();
             assert!(!attrs.contains_key("user.id"), "{}", e.kind);
@@ -407,7 +411,7 @@ mod tests {
         assert_eq!(tool.summary, "exec_command ok, 63 ms");
         assert_eq!(tool.detail["attributes"]["call_id"], "otel1");
         // Codex writes timeUnixNano 0; the observed time stands in.
-        assert!(tool.at > 1_700_000_000_000);
+        assert!(tool.detail["harnessAt"].as_i64().unwrap() > 1_700_000_000_000);
         let decision = events.iter().find(|e| e.kind == "approval").unwrap();
         assert_eq!(decision.summary, "exec_command: approved (Config)");
         assert!(events.iter().any(|e| e.kind == "session.start"));

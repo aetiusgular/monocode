@@ -148,6 +148,19 @@ pub fn noise_path(path: &str, granted_app: bool) -> bool {
     let Some(home) = home_of(path) else {
         return false;
     };
+    // The log itself, its install staging and computer use's recordings sit
+    // in MonoCode's data folder. A chat's process writing there is the
+    // tampering the log exists to catch (security review S5). The app's own
+    // writes are never attributed to a chat, so they raise nothing.
+    const GUARDED: &[&str] = &["activity", "computer-use"];
+    if GUARDED.iter().any(|sub| {
+        inside(
+            path,
+            &format!("{home}/Library/Application Support/com.monocode.desktop/{sub}"),
+        )
+    }) {
+        return false;
+    }
     const HARNESS: &[&str] = &[
         ".claude",
         ".codex",
@@ -197,6 +210,18 @@ fn host_matches(target: &str, host: &str) -> bool {
         return host == suffix || host.ends_with(&format!(".{suffix}"));
     }
     target == host
+}
+
+/// The host an event reached: its own `host`, or the one its OTel detail
+/// named (`detail.otel.host`, lane A's feed keeps it there).
+pub fn event_host(event: &ActivityEvent) -> Option<&str> {
+    str_field(event, "host").or_else(|| {
+        event
+            .detail
+            .get("otel")
+            .and_then(|otel| otel.get("host"))
+            .and_then(Value::as_str)
+    })
 }
 
 /// Tool call windows per chat: call id to (start, end).
@@ -320,7 +345,7 @@ pub fn run(input: &CheckInput) -> Vec<Flag> {
 
         // New hosts.
         if found.is_none() {
-            if let Some(host) = str_field(event, "host") {
+            if let Some(host) = event_host(event) {
                 let lower = host.to_ascii_lowercase();
                 let approved = covering(
                     input.approvals,
@@ -544,6 +569,38 @@ mod tests {
     }
 
     #[test]
+    fn a_write_to_the_log_or_the_recordings_is_flagged() {
+        // Security review S5.
+        let base = "/Users/t/Library/Application Support/com.monocode.desktop";
+        let flags = check(
+            &[
+                es(
+                    "1",
+                    1,
+                    "write",
+                    &format!("{base}/activity/app-2026-10-16.jsonl"),
+                ),
+                es(
+                    "2",
+                    2,
+                    "create",
+                    &format!("{base}/activity/install/c.plist"),
+                ),
+                es(
+                    "3",
+                    3,
+                    "unlink",
+                    &format!("{base}/computer-use/recordings/r/turn-00001/after.png"),
+                ),
+                es("4", 4, "write", &format!("{base}/monocode.db")),
+            ],
+            &[],
+        );
+        let ids: Vec<&str> = flags.iter().map(|f| f.event_id.as_str()).collect();
+        assert_eq!(ids, vec!["1", "2", "3"]);
+    }
+
+    #[test]
     fn noise_paths_never_flag() {
         let flags = check(
             &[
@@ -745,6 +802,24 @@ mod tests {
         );
         let ids: Vec<&str> = flags.iter().map(|f| f.event_id.as_str()).collect();
         assert_eq!(ids, vec!["3", "5"]);
+    }
+
+    #[test]
+    fn a_host_under_the_otel_detail_flags_too() {
+        // Integration: lane A keeps an OTel-derived host at detail.otel.host.
+        let flags = check(
+            &[ev(
+                "1",
+                1,
+                ActivitySource::Adapter,
+                "tool.call",
+                json!({"callId": "w1", "otel": {"host": "news.example.org"}}),
+                None,
+            )],
+            &[],
+        );
+        assert_eq!(flags.len(), 1);
+        assert_eq!(flags[0].reason, FlagReason::NewHost);
     }
 
     #[test]

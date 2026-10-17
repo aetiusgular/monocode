@@ -328,6 +328,19 @@ export function listHarnesses(): HarnessAdapter[] {
   return [...adapters.values()];
 }
 
+/**
+ * Tells computer use whether this chat's turn is a plan turn, so its MCP
+ * server runs only look-only tools then, on every harness (security review
+ * S6). Never throws: computer use may be off or not on this platform.
+ */
+async function markPlanTurn(chatId: string, plan: boolean): Promise<void> {
+  try {
+    await invoke("computer_use_set_plan", { chatId, plan });
+  } catch {
+    // Nothing to mark.
+  }
+}
+
 export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
   return queueSessionOperation(input.sessionId, async () => {
     const adapter = requireHarness(input.harness);
@@ -342,6 +355,7 @@ export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
         cwd: input.cwd,
         appAccess: input.appAccess === true,
       });
+    if (controlled) await markPlanTurn(input.sessionId, input.intent === "plan");
     activeTurnSessions.add(input.sessionId);
     try {
       await adapter.sendTurn({
@@ -353,8 +367,10 @@ export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
       });
     } finally {
       activeTurnSessions.delete(input.sessionId);
-      if (controlled)
+      if (controlled) {
+        await markPlanTurn(input.sessionId, false);
         await invoke("control_turn_finished", { sessionId: input.sessionId });
+      }
       scheduleIdlePark(input.harness, input.sessionId);
     }
   });

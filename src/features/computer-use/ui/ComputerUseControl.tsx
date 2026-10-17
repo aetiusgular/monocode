@@ -28,6 +28,10 @@ const SELF = "[data-computer-use-control]";
  * holds, adding one by hand (the same card as an agent's request), and the
  * stop control (C4).
  */
+/** Security review S10: the switch starts an app outside the sandbox. */
+export const COMPUTER_USE_HELPER_NOTE =
+  "When the agent first asks for an app, MonoCode starts MonoCode Computer Use, a separate app that runs outside the sandbox. Each app still needs your approval.";
+
 export function ComputerUseControl({
   session,
 }: {
@@ -128,6 +132,9 @@ export function ComputerUseControl({
               }
             />
           </label>
+          <p className="text-content/60">
+            {COMPUTER_USE_HELPER_NOTE}
+          </p>
           {view.note ? <p className="text-content/60">{view.note}</p> : null}
           {view.tone === "blocked" || sw.withoutVision ? (
             <label className="flex items-center justify-between gap-2">

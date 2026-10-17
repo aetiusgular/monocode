@@ -270,6 +270,12 @@ pub fn terminal_plan(
     if binary_sha256.len() != 64 || !binary_sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("The collector binary's hash is not a SHA-256.".into());
     }
+    // The plist is staged in a folder you own, so anything running as you
+    // could swap it after the plan is shown. It is checked by hash too, once
+    // it sits in a root-owned place, and nothing starts unless both checks
+    // passed (security review S1).
+    let plist_text = plist(DAEMON_PATH, Some(dev_peer_path));
+    let plist_sha256 = text_sha256(&plist_text);
     let commands = vec![
         format!("sudo install -o root -g wheel -m 755 {} {DAEMON_PATH}", quoted(built_binary)),
         format!(
@@ -277,12 +283,17 @@ pub fn terminal_plan(
             binary_sha256.to_ascii_lowercase()
         ),
         format!("sudo install -o root -g wheel -m 644 {} {PLIST_PATH}", quoted(staged_plist)),
-        format!("[ -f {DAEMON_PATH} ] && sudo launchctl bootstrap system {PLIST_PATH}"),
+        format!(
+            "[ \"$(shasum -a 256 {PLIST_PATH} | cut -d ' ' -f 1)\" = \"{plist_sha256}\" ] || {{ echo 'plist hash mismatch, not installed'; sudo rm -f {PLIST_PATH}; }}"
+        ),
+        format!(
+            "[ -f {DAEMON_PATH} ] && [ -f {PLIST_PATH} ] && sudo launchctl bootstrap system {PLIST_PATH}"
+        ),
     ];
     Ok(InstallPlan {
         route: "terminal".into(),
         explanation: explanation(true),
-        plist: plist(DAEMON_PATH, Some(dev_peer_path)),
+        plist: plist_text,
         commands,
         staged_plist: Some(staged_plist.to_string()),
     })
@@ -310,6 +321,9 @@ pub fn explanation(dev_build: bool) -> Vec<String> {
     if dev_build {
         lines.push(
             "This is a development build, which is unsigned: the collector will accept this one app file by its path instead, which is weaker than a signature.".to_string(),
+        );
+        lines.push(
+            "The commands check the collector binary and the plist against the hashes shown here before anything starts. The binary is the one in your build folder: a development install trusts whatever was built there.".to_string(),
         );
     }
     lines
@@ -417,6 +431,14 @@ mod sm {
 }
 
 /// SHA-256 of a file, in lowercase hex.
+pub fn text_sha256(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 pub fn file_sha256(path: &Path) -> std::io::Result<String> {
     use sha2::{Digest, Sha256};
     let mut file = std::fs::File::open(path)?;
@@ -511,11 +533,33 @@ mod tests {
             "/Users/t/mono/MonoCode",
         )
         .unwrap();
-        assert_eq!(plan.commands.len(), 4);
+        assert_eq!(plan.commands.len(), 5);
         assert!(plan.commands[0].contains(DAEMON_PATH));
         assert!(plan.commands[1].contains(&hash));
-        assert!(plan.commands[3].contains("launchctl bootstrap system"));
+        assert!(plan.commands[4].contains("launchctl bootstrap system"));
         assert!(plan.explanation.iter().any(|l| l.contains("unsigned")));
+    }
+
+    #[test]
+    fn the_staged_plist_is_checked_by_hash_before_anything_starts() {
+        // Security review S1: the plist is staged in a folder you own.
+        let plan = terminal_plan(
+            "/Users/t/build/collector",
+            &"b".repeat(64),
+            "/Users/t/stage/c.plist",
+            "/Users/t/mono/MonoCode",
+        )
+        .unwrap();
+        let plist_hash = text_sha256(&plan.plist);
+        let check = &plan.commands[3];
+        assert!(check.contains(PLIST_PATH) && check.contains(&plist_hash));
+        assert!(check.contains(&format!("sudo rm -f {PLIST_PATH}")));
+        // Installed before it is checked, checked before it is started.
+        assert!(plan.commands[2].contains("install") && plan.commands[2].contains(PLIST_PATH));
+        let start = &plan.commands[4];
+        assert!(start.starts_with(&format!("[ -f {DAEMON_PATH} ] && [ -f {PLIST_PATH} ]")));
+        // A different plist would fail the check.
+        assert_ne!(text_sha256(&plan.plist.replace("run", "rux")), plist_hash);
     }
 
     #[test]

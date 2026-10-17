@@ -75,6 +75,7 @@ pub fn decode_json(body: &[u8]) -> Result<Decoded, String> {
             .get("resource")
             .map(|r| json_attributes(r.get("attributes"), 0))
             .transpose()?
+            .map(slim_resource)
             .unwrap_or_default();
         for scope_logs in array(resource_logs, &["scopeLogs", "scope_logs"]) {
             for record in array(scope_logs, &["logRecords", "log_records"]) {
@@ -303,7 +304,7 @@ fn pb_resource_logs(buf: &[u8], out: &mut Decoded) -> Result<(), String> {
     let mut wire = Wire::new(buf);
     while !wire.done() {
         match wire.next()? {
-            (1, Field::Bytes(r)) => resource = pb_resource(r)?,
+            (1, Field::Bytes(r)) => resource = slim_resource(pb_resource(r)?),
             (2, Field::Bytes(s)) => scopes.push(s),
             _ => {}
         }
@@ -321,6 +322,23 @@ fn pb_resource_logs(buf: &[u8], out: &mut Decoded) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Longest `service.name` kept.
+const MAX_SERVICE_CHARS: usize = 200;
+
+/// The resource as each record keeps it: `service.name` alone, clipped.
+/// Every record carries a copy, so a large resource times many records
+/// must not multiply (security review S2: 4 MiB times 2,000 records).
+fn slim_resource(resource: Map<String, Value>) -> Map<String, Value> {
+    let mut slim = Map::new();
+    if let Some(Value::String(service)) = resource.get("service.name") {
+        slim.insert(
+            "service.name".into(),
+            Value::String(service.chars().take(MAX_SERVICE_CHARS).collect()),
+        );
+    }
+    slim
 }
 
 fn pb_resource(buf: &[u8]) -> Result<Map<String, Value>, String> {
@@ -646,5 +664,41 @@ mod tests {
         let req = request(&[], &[(1, vec![key_value("b", &any)])]);
         let decoded = decode_protobuf(&req).unwrap();
         assert_eq!(decoded.logs[0].attributes["b"], "<6 bytes>");
+    }
+
+    #[test]
+    fn a_large_resource_is_not_copied_into_every_record() {
+        // Security review S2: one big resource attribute and many records.
+        let big = "x".repeat(1024 * 1024);
+        let records: Vec<_> = (0..MAX_RECORDS).map(|_| json!({})).collect();
+        let body = json!({ "resourceLogs": [{
+            "resource": { "attributes": [
+                { "key": "service.name", "value": { "stringValue": "claude-code" } },
+                { "key": "huge", "value": { "stringValue": big } }
+            ]},
+            "scopeLogs": [{ "logRecords": records }]
+        }]});
+        let decoded = decode_json(&serde_json::to_vec(&body).unwrap()).unwrap();
+        assert_eq!(decoded.logs.len(), MAX_RECORDS);
+        for log in &decoded.logs {
+            assert_eq!(log.resource.len(), 1);
+            assert_eq!(log.resource["service.name"], "claude-code");
+        }
+        // A long service name is clipped.
+        let long = json!({ "resourceLogs": [{
+            "resource": { "attributes": [
+                { "key": "service.name", "value": { "stringValue": "s".repeat(5000) } }
+            ]},
+            "scopeLogs": [{ "logRecords": [{}] }]
+        }]});
+        let decoded = decode_json(&serde_json::to_vec(&long).unwrap()).unwrap();
+        assert_eq!(
+            decoded.logs[0].resource["service.name"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count(),
+            MAX_SERVICE_CHARS
+        );
     }
 }
