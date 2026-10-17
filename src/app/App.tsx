@@ -892,6 +892,7 @@ import {
   approvalPaneProps as approvalPaneProps_w3b,
 } from "../features/activity/ui/ActivityBridge";
 // [w3-c] imports
+import { ComputerUseHost as ComputerUseHost_w3c } from "../features/computer-use/ui/ComputerUseHost";
 
 const SearchView = lazySurface(
   async () => {
@@ -14261,6 +14262,7 @@ function Workspace({
           {/* [w3-b] mounts */}
           <ActivityBridge_w3b sessions={sessions} />
           {/* [w3-c] mounts */}
+          <ComputerUseHost_w3c />
           {providerSignInRequest ? (
             <ProviderSignInDialog
               key={providerSignInRequest.key}

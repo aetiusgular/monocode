@@ -152,6 +152,7 @@ import { sessionWasUsed } from "../../../integrations/harness/core/helperPrompt"
 // [w3-a] imports
 // [w3-b] imports
 // [w3-c] imports
+import { ComputerUseCards as ComputerUseCards_w3c } from "../../computer-use/ui/ComputerUseCards";
 
 export type SessionPaneProps = {
   session: Session;
@@ -1561,6 +1562,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
         {/* [w3-a] overlays */}
         {/* [w3-b] overlays */}
         {/* [w3-c] overlays */}
+        <ComputerUseCards_w3c session={session} />
         <ToolImageGalleryHost blocks={session.blocks} cwd={workCwd} />
       </div>
     </div>

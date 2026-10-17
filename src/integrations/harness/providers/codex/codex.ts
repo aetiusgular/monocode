@@ -663,6 +663,19 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   }
   // [w3-b] app-server-flags
   // [w3-c] app-server-flags
+  // Computer use: Codex hands a stdio MCP server only the variables it is
+  // told to (contract check cu-env-codex), so the chat's bridge needs its
+  // endpoint and token named. Values stay in the environment, off the line.
+  if (
+    (input.gatewayConnectors ?? []).some(
+      (server) => server.name === "monocode_computer_use",
+    )
+  ) {
+    gatewayArgs.push(
+      "-c",
+      'mcp_servers.monocode_computer_use.env_vars=["MONOCODE_CU_ENDPOINT","MONOCODE_CU_TOKEN"]',
+    );
+  }
   const gatewayKey = gatewayArgs.join("\n");
   const identity = codexThreadIdentity(input);
   const identityKey = codexThreadIdentityKey(identity);

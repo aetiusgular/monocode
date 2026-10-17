@@ -9,6 +9,10 @@ fn main() {
             std::env::args().skip(2).collect(),
         ));
     }
+    // Computer use (wave 3, lane C): the stdio MCP server a harness starts.
+    if std::env::args().nth(1).as_deref() == Some("computer-use-mcp") {
+        std::process::exit(monocode_lib::computer_use::bridge_cli::run());
+    }
     if std::env::args().nth(1).as_deref() == Some("app") {
         std::process::exit(monocode_lib::control_cli::run_app(
             std::env::args().skip(2).collect(),

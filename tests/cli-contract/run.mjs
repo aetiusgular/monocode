@@ -21,6 +21,7 @@ import { editAdapterChecks } from "./checks/editAdapter.mjs";
 import { otelCodexChecks as otelCodexChecks_w3a, otelClaudeChecks as otelClaudeChecks_w3a } from "./checks/otel.mjs";
 // [w3-b] imports
 // [w3-c] imports
+import { computerUseClaudeChecks as computerUseClaudeChecks_w3c, computerUseCodexChecks as computerUseCodexChecks_w3c } from "../../src/features/computer-use/contract/computerUseChecks.mjs";
 
 function parseArgs(argv) {
   const out = { codex: null, claude: [], only: null, json: null, timeout: 240 };
@@ -90,6 +91,7 @@ async function main() {
   for (const c of otelCodexChecks_w3a) plan.push({ ...c, harness: "codex", bin: codexVersion ? args.codex : null, cliVersion: codexVersion });
   // [w3-b] codex-plan
   // [w3-c] codex-plan
+  for (const c of computerUseCodexChecks_w3c) plan.push({ ...c, harness: "codex", bin: codexVersion ? args.codex : null, cliVersion: codexVersion });
   const claudes = args.claude.length ? args.claude : [null];
   for (const bin of claudes) {
     const v = bin && existsSync(bin) ? version(bin) : null;
@@ -98,6 +100,7 @@ async function main() {
     for (const c of otelClaudeChecks_w3a) plan.push({ ...c, harness: "claude", bin: v ? bin : null, cliVersion: v, id: v ? `${c.id}@${v.split(" ")[0]}` : c.id, baseId: c.id });
     // [w3-b] claude-plan
     // [w3-c] claude-plan
+    for (const c of computerUseClaudeChecks_w3c) plan.push({ ...c, harness: "claude", bin: v ? bin : null, cliVersion: v, id: v ? `${c.id}@${v.split(" ")[0]}` : c.id, baseId: c.id });
   }
 
   const results = [];
