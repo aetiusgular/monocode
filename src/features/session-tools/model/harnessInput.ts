@@ -21,6 +21,12 @@ import { harnessDisabledMcpServers } from "./connectors";
 import { harnessExtraDirs } from "./extraDirs";
 import { sanitizeModelProvider } from "../../model-setup/model/modelProvider";
 import { sanitizeGatewayOn } from "../../gateway-connectors/model/localDefault";
+import {
+  computerUseLaunchServer as computerUseLaunchServer_w3c,
+  withComputerUseServer as withComputerUseServer_w3c,
+} from "../../computer-use/model/offer";
+import { computerUseCliPath as computerUseCliPath_w3c } from "../../computer-use/model/client";
+import { IS_MAC as IS_MAC_w3c } from "../../../platform/tauri/platform";
 
 /** The session fields a harness turn's composer tools are built from. */
 type SessionTools = Pick<
@@ -91,6 +97,17 @@ export function sessionToolsInput(
   // [w3-a] tools-input-body
   // [w3-b] tools-input-body
   // [w3-c] tools-input-body
+  // Computer use: the chat's bridge joins the launch servers, so it reaches
+  // Claude Code, Codex and the ACP harnesses, and every restart key, the way
+  // gateway connectors do. Any other server under its name is dropped.
+  const computerUse_w3c = computerUseLaunchServer_w3c(session, {
+    isMac: IS_MAC_w3c,
+    cliPath: computerUseCliPath_w3c(),
+  });
+  const launchServers_w3c = withComputerUseServer_w3c(
+    gatewayConnectors,
+    computerUse_w3c,
+  );
   return {
     ...(extraDirs ? { extraDirs } : {}),
     ...(disabledMcpServers ? { disabledMcpServers } : {}),
@@ -106,6 +123,13 @@ export function sessionToolsInput(
     // [w3-a] tools-input-return
     // [w3-b] tools-input-return
     // [w3-c] tools-input-return
+    // Replaces the gateway list above only when computer use changed it.
+    ...(launchServers_w3c.length > 0 &&
+    (computerUse_w3c || launchServers_w3c.length !== gatewayConnectors.length)
+      ? { gatewayConnectors: launchServers_w3c }
+      : launchServers_w3c.length !== gatewayConnectors.length
+        ? { gatewayConnectors: undefined }
+        : {}),
   };
 }
 

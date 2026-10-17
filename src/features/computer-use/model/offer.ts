@@ -14,8 +14,8 @@ export const COMPUTER_USE_SERVER = "monocode_computer_use";
 /** The argument the desktop executable takes to run as the chat's bridge. */
 export const COMPUTER_USE_CLI_ARG = "computer-use-mcp";
 
-export type OfferSession = Pick<Session, "harness" | "model"> &
-  Partial<Pick<Session, "id">>;
+export type OfferSession = Pick<Session, "harness"> &
+  Partial<Pick<Session, "id" | "model">>;
 
 export type OfferBlock =
   /** Computer use runs only on macOS. */
