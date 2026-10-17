@@ -112,6 +112,8 @@ struct RuntimeEntry {
 fn note_runtime_end(chat: &str, entry: &RuntimeEntry) {
     if let Some(pid) = entry.pid {
         crate::activity::record(runtime_stop_event(chat, &entry.id, pid));
+        // The collector stops following that pid (review W3).
+        crate::activity::process_exited(pid);
     }
 }
 
@@ -328,9 +330,6 @@ impl Core {
             (ended, inner.runtimes.remove(chat))
         };
         self.answered.notify_all();
-        if let Some(runtime) = &runtime {
-            note_runtime_end(chat, runtime);
-        }
         for grant in &ended {
             self.log_approval(grant, true, grant.ended_at);
         }
@@ -339,7 +338,10 @@ impl Core {
             ..StopReport::default()
         };
         // Ask the helper even with no runtime known: it checks the buttons.
-        let runtime_id = runtime.map(|r| r.id).unwrap_or_else(|| "none".into());
+        let runtime_id = runtime
+            .as_ref()
+            .map(|r| r.id.clone())
+            .unwrap_or_else(|| "none".into());
         match self.connected_helper() {
             Some(helper) => {
                 match helper.request("stop", json!({"runtime": runtime_id}), STOP_TIMEOUT) {
@@ -365,6 +367,11 @@ impl Core {
                 }
             }
             None => report.stopped = true,
+        }
+        // Recorded once the helper has answered, so the runtime's last
+        // recording writes fall inside its span (review W1).
+        if let Some(runtime) = &runtime {
+            note_runtime_end(chat, runtime);
         }
         (self.notify)(Notice::Changed {
             chat: chat.to_string(),
@@ -588,10 +595,11 @@ impl Core {
             let mut inner = self.lock();
             if inner.generation(chat) != generation {
                 drop(inner);
+                let _ = helper.request("stop", json!({"runtime": id}), STOP_TIMEOUT);
                 if let Some(pid) = started_pid {
                     crate::activity::record(runtime_stop_event(chat, &id, pid));
+                    crate::activity::process_exited(pid);
                 }
-                let _ = helper.request("stop", json!({"runtime": id}), STOP_TIMEOUT);
                 return Err("Computer use was stopped for this chat.".into());
             }
             let previous = inner.runtimes.insert(
@@ -614,11 +622,12 @@ impl Core {
 
     fn end_runtime(&self, chat: &str) {
         let runtime = self.lock().runtimes.remove(chat);
+        if let (Some(runtime), Some(helper)) = (&runtime, self.connected_helper()) {
+            let _ = helper.request("stop", json!({"runtime": runtime.id}), STOP_TIMEOUT);
+        }
+        // After the helper's answer (review W1).
         if let Some(runtime) = &runtime {
             note_runtime_end(chat, runtime);
-        }
-        if let (Some(runtime), Some(helper)) = (runtime, self.connected_helper()) {
-            let _ = helper.request("stop", json!({"runtime": runtime.id}), STOP_TIMEOUT);
         }
     }
 
