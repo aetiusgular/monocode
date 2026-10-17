@@ -83,6 +83,43 @@ type ChatState = {
 };
 
 /** One line of plain text, cut to `max` characters. */
+/**
+ * The host a fetch-like tool call names, for the check's "new host" flag
+ * (lane B's request 4). Only a tool whose kind says fetch, and only the first
+ * http(s) URL in its title or preview. Untrusted text: a made-up host can
+ * only raise a flag, never clear one.
+ */
+export function fetchHost(
+  toolKind: string | undefined,
+  texts: Array<string | undefined>,
+): string | undefined {
+  if (!toolKind || !/fetch/i.test(toolKind)) return undefined;
+  for (const text of texts) {
+    if (!text) continue;
+    const match = /https?:\/\/[^\s"'<>`]+/i.exec(text.slice(0, 4000));
+    if (!match) continue;
+    try {
+      const host = new URL(match[0]).hostname.toLowerCase();
+      if (host && host.length <= 253) return host;
+    } catch {
+      // Not a URL; try the next text.
+    }
+  }
+  return undefined;
+}
+
+function inputText(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object") {
+    try {
+      return JSON.stringify(value).slice(0, 4000);
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
 export function clipLine(text: string, max = SUMMARY_CHARS): string {
   let out = "";
   let count = 0;
@@ -226,6 +263,10 @@ export class TelemetryFeed {
           if (status) detail.status = status;
           if (event.command) detail.command = clipText(event.command);
           if (event.paths?.length) detail.paths = event.paths.slice(0, 50);
+          if (detail.host === undefined) {
+            const host = fetchHost(existing.toolKind, [event.title]);
+            if (host) detail.host = host;
+          }
           if (TERMINAL.has(status) && existing.endedAt === undefined) {
             existing.endedAt = now;
             detail.endedAt = now;
@@ -235,6 +276,12 @@ export class TelemetryFeed {
           return;
         }
         const toolKind = event.kind ?? "other";
+        const host = fetchHost(toolKind, [
+          event.title,
+          ...(event.type === "tool.started" && event.preview
+            ? [event.preview.query, event.preview.path, event.preview.title]
+            : []),
+        ]);
         const held: Held = {
           event: {
             ...base,
@@ -250,6 +297,7 @@ export class TelemetryFeed {
               ...(event.paths?.length
                 ? { paths: event.paths.slice(0, 50) }
                 : {}),
+              ...(host ? { host } : {}),
               ...(event.type === "tool.started" && event.background
                 ? { background: true }
                 : {}),
@@ -380,6 +428,12 @@ export class TelemetryFeed {
     const callId = str(a.tool_use_id) ?? str(a.call_id);
     const toolName = str(a.tool_name) ?? "";
     const kind = toolName ? otelToolKind(event.harness, toolName) : "";
+    // Claude Code's tool_result carries the tool's input with tool details
+    // on; a WebFetch names its URL there and nowhere in the adapter event.
+    const otelHost = fetchHost(toolName, [
+      inputText(a.tool_input),
+      inputText(a.tool_parameters),
+    ]);
     let map: HeldMap | null = null;
     if (event.kind === "tool.call") map = state.tools;
     else if (event.kind === "approval") map = state.approvals;
@@ -387,6 +441,7 @@ export class TelemetryFeed {
       this.emit(event);
       return;
     }
+    if (otelHost && event.detail.host === undefined) event.detail.host = otelHost;
     const recent: HeldMap = new Map(
       state.recent
         .filter((h) => h.event.kind === event.kind)
@@ -406,6 +461,8 @@ export class TelemetryFeed {
       summary: event.summary,
       attributes: a,
     };
+    if (otelHost && held.event.detail.host === undefined)
+      held.event.detail.host = otelHost;
     if (held.written) {
       // Late: write it again under the same id.
       this.emit(held.event);

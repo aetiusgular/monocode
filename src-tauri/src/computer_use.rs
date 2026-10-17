@@ -98,6 +98,12 @@ impl HelperLauncher for SystemLauncher {
             .is_some_and(|app| app.join("Contents").join("MacOS").is_dir())
     }
 
+    /// The helper writes each runtime's recording under
+    /// `<app data>/computer-use/recordings/<runtime>/`.
+    fn recordings_root(&self) -> Option<PathBuf> {
+        Some(self.data.as_ref()?.join("computer-use").join("recordings"))
+    }
+
     #[cfg(not(target_os = "macos"))]
     fn launch(&self, _events: EventSink) -> Result<HelperClient, String> {
         Err("Computer use runs on macOS only.".into())
@@ -308,7 +314,22 @@ pub async fn computer_use_grant(
     app_name: Option<String>,
 ) -> Result<Grant, String> {
     let core = state.core.clone();
-    blocking(move || core.grant(&chat_id, &harness, &bundle_id, app_name.as_deref())).await?
+    blocking(move || {
+        // The app's folder, for the collector to follow (B2). Looked up here,
+        // never taken from the webview.
+        let app_path = core
+            .resolve(&bundle_id)
+            .filter(|app| app.bundle_id.eq_ignore_ascii_case(&bundle_id))
+            .and_then(|app| app.path);
+        core.grant(
+            &chat_id,
+            &harness,
+            &bundle_id,
+            app_name.as_deref(),
+            app_path.as_deref(),
+        )
+    })
+    .await?
 }
 
 #[tauri::command]

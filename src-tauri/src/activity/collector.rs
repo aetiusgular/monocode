@@ -220,6 +220,27 @@ pub fn plist(program: &str, dev_peer_path: Option<&str>) -> String {
     )
 }
 
+/// The plist a signed bundle carries in `Contents/Library/LaunchDaemons` for
+/// `SMAppService` (lane B's request 1). The program is named relative to the
+/// bundle, and only MonoCode's own bundle id may register it. The file at
+/// `macos/activity-collector/bundle/` must match this text (tested).
+#[cfg(test)]
+pub fn bundled_plist_text() -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+<plist version=\"1.0\">\n<dict>\n\
+\t<key>Label</key>\n\t<string>{LABEL}</string>\n\
+\t<key>BundleProgram</key>\n\t<string>Contents/MacOS/monocode-activity-collector</string>\n\
+\t<key>ProgramArguments</key>\n\t<array>\n\t\t<string>monocode-activity-collector</string>\n\t\t<string>run</string>\n\t</array>\n\
+\t<key>AssociatedBundleIdentifiers</key>\n\t<array>\n\t\t<string>com.monocode.desktop</string>\n\t</array>\n\
+\t<key>RunAtLoad</key>\n\t<true/>\n\
+\t<key>KeepAlive</key>\n\t<true/>\n\
+\t<key>ProcessType</key>\n\t<string>Background</string>\n\
+</dict>\n</plist>\n"
+    )
+}
+
 /// A path is safe to put on a command line you will paste into a shell only
 /// if it needs no quoting beyond single quotes and holds no single quote.
 fn shell_quotable(path: &str) -> bool {
@@ -457,6 +478,18 @@ mod tests {
         assert_eq!(value["op"], "events");
         assert_eq!(value["limit"], MAX_EVENTS);
         assert_eq!(value["chatId"], "c1");
+    }
+
+    #[test]
+    fn the_bundled_plist_file_matches_and_names_no_dev_path() {
+        let text = bundled_plist_text();
+        assert!(text.contains("<key>BundleProgram</key>"));
+        assert!(text.contains("<string>com.monocode.desktop</string>"));
+        assert!(!text.contains("dev-peer"));
+        let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../macos/activity-collector/bundle")
+            .join(format!("{LABEL}.plist"));
+        assert_eq!(std::fs::read_to_string(file).unwrap(), text);
     }
 
     #[test]

@@ -232,6 +232,9 @@ pub fn read(
         ..ReadBack::default()
     };
     let mut approvals: HashMap<String, ApprovalRecord> = HashMap::new();
+    // An event written again under its id (a telemetry call that an OTel
+    // detail joined late, lane A) replaces the earlier copy: last write wins.
+    let mut event_at: HashMap<String, usize> = HashMap::new();
     let first_day = retention::day_of_ms(since_ms);
     let last_day = retention::day_of_ms(until_ms);
     let mut prev_hash: Option<String> = None;
@@ -262,9 +265,12 @@ pub fn read(
                     if let Ok(event) = serde_json::from_value::<ActivityEvent>(link.record) {
                         let in_range = event.at >= since_ms && event.at <= until_ms;
                         if in_range && chat_id.is_none_or(|c| c == event.chat_id) {
-                            if back.events.len() >= limit {
+                            if let Some(&slot) = event_at.get(&event.id) {
+                                back.events[slot] = event;
+                            } else if back.events.len() >= limit {
                                 back.truncated = true;
                             } else {
+                                event_at.insert(event.id.clone(), back.events.len());
                                 back.events.push(event);
                             }
                         }
@@ -455,6 +461,34 @@ mod tests {
             )
             .unwrap();
         assert!(read(&dir, day1, day1 + 2 * DAY, None, 100).chain_ok);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_event_written_again_under_its_id_counts_once_with_the_last_copy() {
+        // Integration (wave 3): lane A writes a joined call again when its
+        // OTel detail arrives late.
+        let dir = temp_dir("same-id");
+        let mut writer = ChainWriter::new(dir.clone());
+        let day = 20_377 * DAY;
+        writer
+            .write(&Entry::Event(event("t1", "c1", day + 5)), day + 5)
+            .unwrap();
+        writer
+            .write(&Entry::Event(event("t2", "c1", day + 6)), day + 6)
+            .unwrap();
+        let mut late = event("t1", "c1", day + 5);
+        late.detail = json!({ "callId": "c1", "otel": { "event": "tool_result" } });
+        writer.write(&Entry::Event(late), day + 9).unwrap();
+
+        let back = read(&dir, day, day + DAY - 1, None, 100);
+        assert_eq!(back.events.len(), 2);
+        let t1 = back.events.iter().find(|e| e.id == "t1").unwrap();
+        assert_eq!(t1.detail["otel"]["event"], "tool_result");
+        // The replacement does not count against the limit.
+        let capped = read(&dir, day, day + DAY - 1, None, 2);
+        assert_eq!(capped.events.len(), 2);
+        assert!(!capped.truncated);
         let _ = fs::remove_dir_all(&dir);
     }
 

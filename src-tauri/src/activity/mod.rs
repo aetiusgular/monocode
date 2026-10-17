@@ -50,8 +50,6 @@ pub(crate) fn chats() -> &'static Mutex<HashMap<String, check::ChatContext>> {
 }
 
 /// Adds one event to the log.
-// Lanes A and C call this; integration removes the allow once they do.
-#[allow(dead_code)]
 pub fn record(event: ActivityEvent) {
     if let Some(log) = LOG.get() {
         log.submit(store::Entry::Event(event));
@@ -60,8 +58,6 @@ pub fn record(event: ActivityEvent) {
 
 /// Adds what one approval card, rule or grant allowed. A later record with
 /// the same id (its `ended_at` set, say) replaces the earlier one on read.
-// Lanes A and C call this; integration removes the allow once they do.
-#[allow(dead_code)]
 pub fn record_approval(record: ApprovalRecord) {
     if let Some(log) = LOG.get() {
         log.submit(store::Entry::Approval(record));
@@ -83,14 +79,10 @@ pub fn process_exited(pid: u32) {
 /// A computer-use grant began: the collector follows the app at `app_path`
 /// for this chat until `end_grant`. Lane C calls it beside its
 /// `ApprovalRecord` for the grant.
-// Lanes A and C call this; integration removes the allow once they do.
-#[allow(dead_code)]
 pub fn register_grant(chat_id: &str, bundle_id: &str, app_path: Option<&str>) {
     registry::register_grant(chat_id, bundle_id, app_path, store::now_ms());
 }
 
-// Lanes A and C call this; integration removes the allow once they do.
-#[allow(dead_code)]
 pub fn end_grant(chat_id: &str, bundle_id: &str) {
     registry::end_grant(chat_id, bundle_id, store::now_ms());
 }
@@ -98,8 +90,6 @@ pub fn end_grant(chat_id: &str, bundle_id: &str) {
 /// Where computer use's recording may save a screenshot for `event_id`, or
 /// `None`: no log, a bad id, or free disk under your floor (B7). The folder
 /// is the day's, so retention keeps screenshots 3 days.
-// Lanes A and C call this; integration removes the allow once they do.
-#[allow(dead_code)]
 pub fn screenshot_path(event_id: &str) -> Option<PathBuf> {
     let log = LOG.get()?;
     let id: String = event_id

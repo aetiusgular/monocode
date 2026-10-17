@@ -11,10 +11,10 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { codexHomeConfig, isolatedEnv, makeTempDirs } from "../../../../tests/cli-contract/lib/codexDriver.mjs";
-import { ClaudeSession } from "../../../../tests/cli-contract/lib/claudeDriver.mjs";
-import { startFakeMessages, textBlock } from "../../../../tests/cli-contract/lib/fakeMessages.mjs";
-import { startFakeResponses, text } from "../../../../tests/cli-contract/lib/fakeResponses.mjs";
+import { codexHomeConfig, isolatedEnv, makeTempDirs } from "../lib/codexDriver.mjs";
+import { ClaudeSession } from "../lib/claudeDriver.mjs";
+import { startFakeMessages, textBlock } from "../lib/fakeMessages.mjs";
+import { startFakeResponses, text } from "../lib/fakeResponses.mjs";
 
 const ENDPOINT = "MONOCODE_CU_ENDPOINT";
 const TOKEN = "MONOCODE_CU_TOKEN";

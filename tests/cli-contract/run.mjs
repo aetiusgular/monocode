@@ -21,7 +21,7 @@ import { editAdapterChecks } from "./checks/editAdapter.mjs";
 import { otelCodexChecks as otelCodexChecks_w3a, otelClaudeChecks as otelClaudeChecks_w3a } from "./checks/otel.mjs";
 // [w3-b] imports
 // [w3-c] imports
-import { computerUseClaudeChecks as computerUseClaudeChecks_w3c, computerUseCodexChecks as computerUseCodexChecks_w3c } from "../../src/features/computer-use/contract/computerUseChecks.mjs";
+import { computerUseClaudeChecks as computerUseClaudeChecks_w3c, computerUseCodexChecks as computerUseCodexChecks_w3c } from "./checks/computerUse.mjs";
 
 function parseArgs(argv) {
   const out = { codex: null, claude: [], only: null, json: null, timeout: 240 };

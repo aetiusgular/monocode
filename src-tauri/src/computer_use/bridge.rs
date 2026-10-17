@@ -253,7 +253,7 @@ mod tests {
                 .len(),
             2
         );
-        core.grant("c1", "claude", "com.apple.calculator", None)
+        core.grant("c1", "claude", "com.apple.calculator", None, None)
             .unwrap();
         assert_eq!(
             read(&mut reader)["method"],

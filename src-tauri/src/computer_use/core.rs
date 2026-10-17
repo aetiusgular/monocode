@@ -3,6 +3,7 @@
 //! Kept apart from Tauri so the cloud tests run it whole, with a fake helper.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -53,6 +54,12 @@ pub trait HelperLauncher: Send + Sync {
     fn location(&self) -> Option<String>;
     /// Whether the helper is installed there.
     fn installed(&self) -> bool;
+    /// The folder the helper's recordings sit under. A screenshot path an
+    /// action record names is copied into the activity log only from inside
+    /// it. None: no screenshot is copied.
+    fn recordings_root(&self) -> Option<PathBuf> {
+        None
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -241,6 +248,7 @@ impl Core {
         harness: &str,
         bundle_id: &str,
         app_name: Option<&str>,
+        app_path: Option<&str>,
     ) -> Result<Grant, String> {
         if !self.supported {
             return Err("Computer use runs on macOS only.".into());
@@ -261,6 +269,8 @@ impl Core {
         };
         if grant.granted_at == now {
             self.log_approval(&grant, true, None);
+            // B2: the collector follows the granted app for this chat.
+            crate::activity::register_grant(chat, &grant.bundle_id, app_path);
         }
         for ended in &evicted {
             self.log_approval(ended, true, ended.ended_at);
@@ -379,7 +389,13 @@ impl Core {
                     .refusal
                     .unwrap_or_else(|| "MonoCode could not find that app.".into()));
             };
-            let grant = self.grant(&view.chat_id, harness, &app.bundle_id, app.name.as_deref())?;
+            let grant = self.grant(
+                &view.chat_id,
+                harness,
+                &app.bundle_id,
+                app.name.as_deref(),
+                app.path.as_deref(),
+            )?;
             AccessAnswer::Granted {
                 bundle_id: grant.bundle_id,
             }
@@ -592,11 +608,14 @@ impl Core {
                     let harness = inner.harness.get(&chat).cloned().unwrap_or_default();
                     (chat, harness)
                 };
-                crate::activity::record(action_event(
-                    &chat,
-                    &harness,
-                    event.get("action").unwrap_or(&Value::Null),
-                ));
+                let mut action =
+                    action_event(&chat, &harness, event.get("action").unwrap_or(&Value::Null));
+                attach_screenshot(
+                    &mut action,
+                    self.launcher.recordings_root().as_deref(),
+                    crate::activity::screenshot_path,
+                );
+                crate::activity::record(action);
             }
             Some("exited") => {
                 let Some(runtime) = event.get("runtime").and_then(Value::as_str) else {
@@ -659,6 +678,9 @@ impl Core {
     }
 
     fn log_approval(&self, grant: &Grant, granted: bool, ended_at: Option<i64>) {
+        if ended_at.is_some() {
+            crate::activity::end_grant(&grant.chat_id, &grant.bundle_id);
+        }
         let harness = self
             .lock()
             .harness
@@ -703,6 +725,10 @@ pub fn action_event(chat: &str, harness: &str, action: &Value) -> ActivityEvent 
         .get("error")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let mut detail = action.clone();
+    if let (Some(bundle), Value::Object(map)) = (action_bundle_id(action), &mut detail) {
+        map.insert("bundleId".into(), Value::String(bundle));
+    }
     ActivityEvent {
         id: new_id(),
         at: now_ms(),
@@ -715,7 +741,7 @@ pub fn action_event(chat: &str, harness: &str, action: &Value) -> ActivityEvent 
         } else {
             tool
         },
-        detail: action.clone(),
+        detail,
         pid: action
             .get("pid")
             .and_then(Value::as_u64)
@@ -723,6 +749,97 @@ pub fn action_event(chat: &str, harness: &str, action: &Value) -> ActivityEvent 
             .map(|pid| pid as u32),
         approval_id: None,
     }
+}
+
+/// The app an action names in its arguments, as a bundle id, for the check's
+/// "app not granted" flag. Only a valid bundle id counts; a name or a pid
+/// names nothing here.
+fn action_bundle_id(action: &Value) -> Option<String> {
+    let args = action.get("arguments")?;
+    ["bundle_id", "bundleId", "app"]
+        .iter()
+        .filter_map(|key| args.get(*key).and_then(Value::as_str))
+        .find_map(|raw| parse_bundle_id(raw).ok())
+}
+
+/// Largest screenshot copied into the log.
+const MAX_SCREENSHOT_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Moves an action's screenshot into the activity log's own folder (lane B's
+/// request 5), so the panel can show it. The helper's path is dropped from
+/// the record either way. A copy is made only from a regular PNG file inside
+/// `recordings`, opened without following a link, under the size cap, to the
+/// place `dest_for` names (None: no log, or disk under your floor).
+fn attach_screenshot(
+    event: &mut ActivityEvent,
+    recordings: Option<&Path>,
+    dest_for: impl Fn(&str) -> Option<PathBuf>,
+) {
+    let Value::Object(map) = &mut event.detail else {
+        return;
+    };
+    let Some(Value::String(source)) = map.remove("screenshot") else {
+        return;
+    };
+    let Some(root) = recordings.and_then(|r| r.canonicalize().ok()) else {
+        return;
+    };
+    let source = Path::new(&source);
+    let Some(parent) = source.parent().and_then(|p| p.canonicalize().ok()) else {
+        return;
+    };
+    if !parent.starts_with(&root) || source.file_name().is_none() {
+        return;
+    }
+    let Some(bytes) = read_png_nofollow(&parent.join(source.file_name().unwrap())) else {
+        return;
+    };
+    let Some(dest) = dest_for(&event.id) else {
+        return;
+    };
+    if write_new_private(&dest, &bytes).is_ok() {
+        map.insert(
+            "screenshot".into(),
+            Value::String(dest.to_string_lossy().into_owned()),
+        );
+    }
+}
+
+fn read_png_nofollow(path: &Path) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options.open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.len() > MAX_SCREENSHOT_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    file.take(MAX_SCREENSHOT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_SCREENSHOT_BYTES || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return None;
+    }
+    Some(bytes)
+}
+
+fn write_new_private(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options.open(dest)?;
+    file.write_all(bytes)
 }
 
 fn constant_eq(a: &[u8], b: &[u8]) -> bool {
@@ -985,14 +1102,14 @@ pub mod tests {
     fn a_chat_must_be_switched_on_before_a_grant() {
         let (core, _, _) = core_with(FakeLauncher::new());
         assert!(core
-            .grant("c1", "claude", "com.apple.calculator", None)
+            .grant("c1", "claude", "com.apple.calculator", None, None)
             .is_err());
         core.set_chat("c1", true);
         assert!(core
-            .grant("c1", "claude", "com.apple.calculator", None)
+            .grant("c1", "claude", "com.apple.calculator", None, None)
             .is_ok());
         assert!(core
-            .grant("c1", "claude", "com.monocode.desktop", None)
+            .grant("c1", "claude", "com.monocode.desktop", None, None)
             .is_err());
     }
 
@@ -1013,7 +1130,7 @@ pub mod tests {
             t1,
             "switching on again keeps the token"
         );
-        core.grant("c1", "claude", "com.apple.calculator", None)
+        core.grant("c1", "claude", "com.apple.calculator", None, None)
             .unwrap();
         core.set_chat("c1", false);
         assert_eq!(core.chat_for_token(&t1), None);
@@ -1029,7 +1146,7 @@ pub mod tests {
             "no grant, no runtime"
         );
         assert!(ops(&log).is_empty(), "the helper was not even started");
-        core.grant("c1", "claude", "com.apple.calculator", None)
+        core.grant("c1", "claude", "com.apple.calculator", None, None)
             .unwrap();
         let result = core.runtime_call("c1", "click", json!({"x": 1})).unwrap();
         assert_eq!(result["content"][0]["text"], "done");
@@ -1041,7 +1158,7 @@ pub mod tests {
             .to_string();
         assert!(manifest.contains("com.apple.calculator"));
         assert!(manifest.contains("display: false"));
-        core.grant("c1", "claude", "com.apple.TextEdit", None)
+        core.grant("c1", "claude", "com.apple.TextEdit", None, None)
             .unwrap();
         core.runtime_call("c1", "click", json!({})).unwrap();
         assert_eq!(&ops(&log)[4..], ["start", "call"]);
@@ -1053,7 +1170,7 @@ pub mod tests {
         let (core, log, _) = core_with(FakeLauncher::new());
         core.set_chat("c1", true);
         core.set_chat("c2", true);
-        core.grant("c1", "claude", "com.apple.calculator", None)
+        core.grant("c1", "claude", "com.apple.calculator", None, None)
             .unwrap();
         assert_eq!(
             core.request_access(
@@ -1084,7 +1201,7 @@ pub mod tests {
         launcher.start_delay = Duration::from_millis(400);
         let (core, log, _) = core_with(launcher);
         core.set_chat("c1", true);
-        core.grant("c1", "claude", "com.apple.calculator", None)
+        core.grant("c1", "claude", "com.apple.calculator", None, None)
             .unwrap();
         let caller = {
             let core = core.clone();
@@ -1117,7 +1234,7 @@ pub mod tests {
     fn revoking_an_app_stops_its_runtime() {
         let (core, log, _) = core_with(FakeLauncher::new());
         core.set_chat("c1", true);
-        core.grant("c1", "claude", "com.apple.calculator", None)
+        core.grant("c1", "claude", "com.apple.calculator", None, None)
             .unwrap();
         core.runtime_call("c1", "click", json!({})).unwrap();
         assert!(core.revoke("c1", "com.apple.calculator"));
@@ -1130,7 +1247,7 @@ pub mod tests {
     fn stop_ends_everything_and_reports_the_buttons() {
         let (core, log, notices) = core_with(FakeLauncher::new());
         core.set_chat("c1", true);
-        core.grant("c1", "claude", "com.apple.calculator", None)
+        core.grant("c1", "claude", "com.apple.calculator", None, None)
             .unwrap();
         core.runtime_call("c1", "click", json!({})).unwrap();
         let report = core.stop("c1");
@@ -1249,7 +1366,7 @@ pub mod tests {
     fn an_app_already_granted_answers_at_once() {
         let (core, _, _) = core_with(FakeLauncher::new());
         core.set_chat("c1", true);
-        core.grant("c1", "claude", "com.apple.calculator", None)
+        core.grant("c1", "claude", "com.apple.calculator", None, None)
             .unwrap();
         let answer = core.request_access(
             "c1",
@@ -1287,7 +1404,7 @@ pub mod tests {
         launcher.working = false;
         let (core, _, _) = core_with(launcher);
         core.set_chat("c1", true);
-        core.grant("c1", "claude", "com.apple.calculator", None)
+        core.grant("c1", "claude", "com.apple.calculator", None, None)
             .unwrap();
         let error = core.runtime_call("c1", "click", json!({})).unwrap_err();
         assert!(error.contains("missing"));
@@ -1312,7 +1429,7 @@ pub mod tests {
         let core = Core::new(Box::new(FakeLauncher::new()), Box::new(|_| {}), false);
         core.set_chat("c1", true);
         assert!(core
-            .grant("c1", "claude", "com.apple.calculator", None)
+            .grant("c1", "claude", "com.apple.calculator", None, None)
             .is_err());
         assert_eq!(core.status().helper, "unsupported");
         assert!(matches!(
@@ -1326,5 +1443,118 @@ pub mod tests {
             ),
             AccessAnswer::Refused(_)
         ));
+    }
+
+    // Integration (wave 3): lane C's actions in lane B's log.
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("cu-int-{name}-{}", new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\nrest";
+
+    fn shot_event(path: &Path) -> ActivityEvent {
+        action_event(
+            "c1",
+            "claude",
+            &json!({"tool": "click", "screenshot": path.to_string_lossy()}),
+        )
+    }
+
+    #[test]
+    fn an_action_names_its_app_only_by_a_valid_bundle_id() {
+        let named = action_event(
+            "c1",
+            "claude",
+            &json!({"tool": "launch_app", "arguments": {"bundle_id": "com.apple.calculator"}}),
+        );
+        assert_eq!(named.detail["bundleId"], "com.apple.calculator");
+        let by_name = action_event(
+            "c1",
+            "claude",
+            &json!({"tool": "launch_app", "arguments": {"app": "Calculator"}}),
+        );
+        assert!(by_name.detail.get("bundleId").is_none());
+        let none = action_event(
+            "c1",
+            "claude",
+            &json!({"tool": "click", "arguments": {"x": 1}}),
+        );
+        assert!(none.detail.get("bundleId").is_none());
+    }
+
+    #[test]
+    fn a_screenshot_inside_the_recordings_is_copied_into_the_log() {
+        let root = scratch("root");
+        let turn = root.join("rt1").join("turn-00001");
+        std::fs::create_dir_all(&turn).unwrap();
+        std::fs::write(turn.join("after.png"), PNG).unwrap();
+        let out = scratch("out");
+        let mut event = shot_event(&turn.join("after.png"));
+        let dest = out.join("x.png");
+        let d = dest.clone();
+        attach_screenshot(&mut event, Some(&root), move |_| Some(d.clone()));
+        assert_eq!(event.detail["screenshot"], dest.to_string_lossy().as_ref());
+        assert_eq!(std::fs::read(&dest).unwrap(), PNG);
+    }
+
+    #[test]
+    fn a_screenshot_outside_the_recordings_or_not_a_png_is_dropped() {
+        let root = scratch("root2");
+        let elsewhere = scratch("else");
+        std::fs::write(elsewhere.join("a.png"), PNG).unwrap();
+        std::fs::write(root.join("notpng.png"), b"hello").unwrap();
+        let out = scratch("out2");
+        for source in [
+            elsewhere.join("a.png"),
+            root.join("notpng.png"),
+            root.join("..")
+                .join(elsewhere.file_name().unwrap())
+                .join("a.png"),
+            root.join("missing.png"),
+        ] {
+            let mut event = shot_event(&source);
+            let d = out.join("y.png");
+            attach_screenshot(&mut event, Some(&root), move |_| Some(d.clone()));
+            assert!(event.detail.get("screenshot").is_none(), "{source:?}");
+        }
+        assert!(!out.join("y.png").exists());
+        // No recordings folder known, or no place in the log: dropped too.
+        std::fs::write(root.join("ok.png"), PNG).unwrap();
+        let mut event = shot_event(&root.join("ok.png"));
+        attach_screenshot(&mut event, None, |_| Some(out.join("z.png")));
+        assert!(event.detail.get("screenshot").is_none());
+        let mut event = shot_event(&root.join("ok.png"));
+        attach_screenshot(&mut event, Some(&root), |_| None);
+        assert!(event.detail.get("screenshot").is_none());
+    }
+
+    #[test]
+    fn a_screenshot_link_is_not_followed() {
+        let root = scratch("root3");
+        let elsewhere = scratch("else3");
+        std::fs::write(elsewhere.join("secret.png"), PNG).unwrap();
+        std::os::unix::fs::symlink(elsewhere.join("secret.png"), root.join("after.png")).unwrap();
+        let out = scratch("out3");
+        let mut event = shot_event(&root.join("after.png"));
+        let d = out.join("s.png");
+        attach_screenshot(&mut event, Some(&root), move |_| Some(d.clone()));
+        assert!(event.detail.get("screenshot").is_none());
+        assert!(!out.join("s.png").exists());
+    }
+
+    #[test]
+    fn an_existing_file_at_the_destination_is_never_overwritten() {
+        let root = scratch("root4");
+        std::fs::write(root.join("after.png"), PNG).unwrap();
+        let out = scratch("out4");
+        std::fs::write(out.join("taken.png"), b"mine").unwrap();
+        let mut event = shot_event(&root.join("after.png"));
+        let d = out.join("taken.png");
+        attach_screenshot(&mut event, Some(&root), move |_| Some(d.clone()));
+        assert!(event.detail.get("screenshot").is_none());
+        assert_eq!(std::fs::read(out.join("taken.png")).unwrap(), b"mine");
     }
 }
