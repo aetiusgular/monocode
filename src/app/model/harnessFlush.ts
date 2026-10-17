@@ -55,7 +55,17 @@ export class HarnessEventQueue {
       event.type === "session.ended" ||
       event.type === "session.error"
     ) {
-      void import("../../features/harness-telemetry/model/telemetryTap")
+      // One import per queue, so every event waits on the same promise and
+      // reaches the feed in the order it came.
+      const self_w3a = this as {
+        telemetryTap_w3a?: Promise<
+          typeof import("../../features/harness-telemetry/model/telemetryTap")
+        >;
+      };
+      self_w3a.telemetryTap_w3a ??= import(
+        "../../features/harness-telemetry/model/telemetryTap"
+      );
+      void self_w3a.telemetryTap_w3a
         .then((tap) => tap.tapHarnessEvent(sessionId, event))
         .catch(() => undefined);
     }
