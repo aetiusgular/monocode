@@ -30,9 +30,9 @@ export async function configureHarnessTelemetry(
   logPrompts: boolean,
   chats: readonly string[],
 ): Promise<boolean> {
-  if (!isTauri()) return false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
+    if (!isTauri()) return false;
     await Promise.race([
       invoke("harness_telemetry_configure", {
         enabled,
@@ -55,8 +55,8 @@ export async function configureHarnessTelemetry(
 }
 
 export async function harnessTelemetryStatus(): Promise<TelemetryStatus | null> {
-  if (!isTauri()) return null;
   try {
+    if (!isTauri()) return null;
     return await invoke<TelemetryStatus>("harness_telemetry_status");
   } catch {
     return null;
@@ -85,7 +85,11 @@ export function isReceiverEvent(value: unknown): value is ActivityEvent {
 export function listenHarnessTelemetry(
   onEvents: (events: ActivityEvent[]) => void,
 ): () => void {
-  if (!isTauri()) return () => {};
+  try {
+    if (!isTauri()) return () => {};
+  } catch {
+    return () => {};
+  }
   let stopped = false;
   const subscription: Promise<UnlistenFn | void> = listen<unknown>(
     TELEMETRY_EVENTS_CHANNEL,
