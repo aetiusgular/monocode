@@ -13,6 +13,10 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 /// The largest line from the helper: a tool result with a screenshot.
+#[cfg_attr(
+    all(not(target_os = "macos"), not(test)),
+    expect(dead_code, reason = "the helper is launched on macOS only")
+)]
 pub const MAX_LINE: usize = 64 * 1024 * 1024;
 
 pub type EventSink = Box<dyn Fn(Value) + Send + Sync>;
@@ -27,6 +31,10 @@ pub struct HelperClient {
 impl HelperClient {
     /// Takes a connected stream's two halves. `on_event` gets each event line
     /// (`record`, `exited`) and, once, `{"event":"closed"}`.
+    #[cfg_attr(
+        all(not(target_os = "macos"), not(test)),
+        expect(dead_code, reason = "the helper is launched on macOS only")
+    )]
     pub fn new(
         reader: impl Read + Send + 'static,
         writer: impl Write + Send + 'static,
@@ -130,6 +138,10 @@ impl HelperClient {
     }
 }
 
+#[cfg_attr(
+    all(not(target_os = "macos"), not(test)),
+    expect(dead_code, reason = "the helper is launched on macOS only")
+)]
 fn read_line(reader: &mut BufReader<impl Read>) -> Option<Vec<u8>> {
     let mut line = Vec::new();
     loop {

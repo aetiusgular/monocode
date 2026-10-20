@@ -12,10 +12,6 @@
 //!   becomes a bounded manifest (`manifest.rs`) for that chat's runtime.
 //! - Stop ends the runtime and the grants, and releases a held mouse button.
 
-// Computer use runs on macOS only: off it, the launcher and the menu bar item
-// are stubs, and the parts only they call would warn as unused.
-#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
-
 #[path = "computer_use/apps.rs"]
 mod apps;
 #[path = "computer_use/bridge.rs"]

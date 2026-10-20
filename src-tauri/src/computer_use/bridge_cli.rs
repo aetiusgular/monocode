@@ -288,12 +288,8 @@ impl Relay {
 
     /// MonoCode to the harness, a line at a time, until the connection ends.
     fn from_monocode(self: Arc<Self>, mut reader: BufReader<TcpStream>, serial: u64) {
-        loop {
-            let line = match read_capped(&mut reader, MAX_LINE) {
-                Ok(Some(Ok(line))) => line,
-                // A reply too large to pass on ends the connection.
-                Ok(Some(Err(TooLong))) | Ok(None) | Err(_) => break,
-            };
+        // A reply too large to pass on ends the connection.
+        while let Ok(Some(Ok(line))) = read_capped(&mut reader, MAX_LINE) {
             let message = serde_json::from_slice::<Value>(&line).ok();
             let id = message
                 .as_ref()

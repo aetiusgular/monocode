@@ -384,6 +384,10 @@ impl Core {
     }
 
     /// Every chat, as at quit.
+    #[cfg_attr(
+        not(target_os = "macos"),
+        expect(dead_code, reason = "only the macOS menu bar item calls it")
+    )]
     pub fn stop_all(&self) {
         let chats: Vec<String> = {
             let inner = self.lock();
