@@ -114,8 +114,9 @@ pub fn peer_meets(fd: c_int, requirement: &str) -> Option<bool> {
         if data.is_null() {
             return None;
         }
-        let keys = [kSecGuestAttributeAudit as *const c_void];
-        let values = [data as *const c_void];
+        // Both are CFTypeRef already (`*const c_void`, the aliases above).
+        let keys = [kSecGuestAttributeAudit];
+        let values = [data];
         let attributes = CFDictionaryCreate(
             std::ptr::null(),
             keys.as_ptr(),

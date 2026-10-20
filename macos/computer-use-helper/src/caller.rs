@@ -2,25 +2,60 @@
 //! (note W, section 4). Agents can start the helper with open(1) and connect
 //! to its socket; the check is what refuses them.
 
-/// The code requirement MonoCode's signature must meet, set at build time
-/// from the identity both apps are signed with (`MONOCODE_HELPER_IDENTITY`,
-/// plan section 3, call 4). Absent in a build without one.
-pub fn built_requirement() -> Option<&'static str> {
-    option_env!("MONOCODE_HELPER_CALLER_REQUIREMENT").filter(|text| !text.trim().is_empty())
+/// The bundle id of the MonoCode the helper answers: `MONOCODE_APP_ID` at
+/// build time, else `com.monocode.desktop`, or `com.monocode.desktop.dev` for
+/// a debug helper (the user's decision 1). `bundle.sh` sets it the same way.
+pub fn monocode_app_id() -> Option<&'static str> {
+    let id = option_env!("MONOCODE_APP_ID").unwrap_or(if cfg!(debug_assertions) {
+        "com.monocode.desktop.dev"
+    } else {
+        "com.monocode.desktop"
+    });
+    plain_id(id).then_some(id)
 }
 
-/// The requirement for MonoCode signed with one certificate, pinned by its
-/// SHA-1 (`security find-certificate -c <identity> -Z`). A name is not enough:
-/// any process of the user can make a self-signed certificate with the same
-/// common name (security review, finding 1). Anything but 40 hex digits is
-/// refused.
-pub fn requirement_for(sha1: &str) -> Option<String> {
+/// A reverse-DNS id that can go inside a quoted requirement as is.
+fn plain_id(id: &str) -> bool {
+    id.len() <= 255
+        && id.split('.').count() >= 2
+        && id.split('.').all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        })
+}
+
+/// The code requirement MonoCode's signature must meet, built in at build
+/// time from the certificate both apps are signed with
+/// (`MONOCODE_HELPER_CERT_SHA1`, set by `bundle.sh`; plan section 3, call 4).
+/// Absent in a build without one.
+#[cfg_attr(
+    all(not(target_os = "macos"), not(test)),
+    expect(dead_code, reason = "called only from the macOS `run` in main.rs")
+)]
+pub fn built_requirement() -> Option<&'static str> {
+    static BUILT: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let sha1 = option_env!("MONOCODE_HELPER_CERT_SHA1")?;
+            requirement_for(monocode_app_id()?, sha1)
+        })
+        .as_deref()
+}
+
+/// The requirement for MonoCode (`app_id`) signed with one certificate,
+/// pinned by its SHA-1. A name is not enough: any process of the user can
+/// make a self-signed certificate with the same common name (security
+/// review, finding 1). Anything but 40 hex digits, or an id that is not
+/// plain reverse-DNS, is refused.
+pub fn requirement_for(app_id: &str, sha1: &str) -> Option<String> {
     let sha1 = sha1.trim();
-    if sha1.len() != 40 || !sha1.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if sha1.len() != 40 || !sha1.bytes().all(|b| b.is_ascii_hexdigit()) || !plain_id(app_id) {
         return None;
     }
     Some(format!(
-        "identifier \"com.monocode.desktop\" and certificate leaf = H\"{}\"",
+        "identifier \"{app_id}\" and certificate leaf = H\"{}\"",
         sha1.to_ascii_uppercase()
     ))
 }
@@ -42,6 +77,10 @@ pub enum Verdict {
 /// A release build with no requirement refuses everyone. A debug build with
 /// no requirement takes only the pid it was started for, and says so in its
 /// log: an agent that starts the helper itself can name its own pid.
+#[cfg_attr(
+    all(not(target_os = "macos"), not(test)),
+    expect(dead_code, reason = "called only from the macOS `run` in main.rs")
+)]
 pub fn decide(
     signed: Option<bool>,
     peer_pid: Option<i32>,
@@ -105,15 +144,60 @@ mod tests {
     }
 
     #[test]
+    fn the_requirement_names_the_monocode_app_id_built_in() {
+        // Debug helpers answer the dev build of MonoCode (the user's
+        // decision 1); `MONOCODE_APP_ID` set at build time wins.
+        let expected = option_env!("MONOCODE_APP_ID").unwrap_or(if cfg!(debug_assertions) {
+            "com.monocode.desktop.dev"
+        } else {
+            "com.monocode.desktop"
+        });
+        assert_eq!(monocode_app_id(), Some(expected));
+        assert_eq!(
+            requirement_for("com.monocode.desktop.dev", "0123456789abcdef0123456789abcdef01234567").unwrap(),
+            "identifier \"com.monocode.desktop.dev\" and certificate leaf = H\"0123456789ABCDEF0123456789ABCDEF01234567\""
+        );
+        for bad in [
+            "",
+            "com",
+            "com.monocode.\"x",
+            "com.mono code",
+            "com..x",
+            ".com.x",
+        ] {
+            assert!(
+                requirement_for(bad, "0123456789abcdef0123456789abcdef01234567").is_none(),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_built_requirement_pins_the_built_in_certificate() {
+        match option_env!("MONOCODE_HELPER_CERT_SHA1") {
+            // A plain `cargo test` builds none in, and so answers no one.
+            None => assert_eq!(built_requirement(), None),
+            Some(sha1) => assert_eq!(
+                built_requirement().map(str::to_string),
+                requirement_for(monocode_app_id().unwrap(), sha1)
+            ),
+        }
+    }
+
+    #[test]
     fn requirement_text() {
         assert_eq!(
-            requirement_for("0123456789abcdef0123456789abcdef01234567").unwrap(),
+            requirement_for("com.monocode.desktop", "0123456789abcdef0123456789abcdef01234567").unwrap(),
             "identifier \"com.monocode.desktop\" and certificate leaf = H\"0123456789ABCDEF0123456789ABCDEF01234567\""
         );
         // A name, a quote trick, a short hash: all refused.
-        assert!(requirement_for("MonoCode Dev").is_none());
-        assert!(requirement_for("x\" or true or \"").is_none());
-        assert!(requirement_for("0123456789abcdef0123456789abcdef0123456").is_none());
-        assert!(requirement_for(" ").is_none());
+        assert!(requirement_for("com.monocode.desktop", "MonoCode Dev").is_none());
+        assert!(requirement_for("com.monocode.desktop", "x\" or true or \"").is_none());
+        assert!(requirement_for(
+            "com.monocode.desktop",
+            "0123456789abcdef0123456789abcdef0123456"
+        )
+        .is_none());
+        assert!(requirement_for("com.monocode.desktop", " ").is_none());
     }
 }

@@ -3,8 +3,10 @@
 //! Cua writes one folder per action under the output directory,
 //! `turn-00001/` and on, each with `action.json` and screenshots (recording
 //! guide, read 16 Oct 2026). The helper reads each new `action.json` once and
-//! sends MonoCode one record. Field names are read loosely, since only the
-//! guide's prose describes them; the Mac test replaces this with a real one.
+//! sends MonoCode one record. Cua 0.37.0 writes `tool`, `arguments`,
+//! `result_summary`, `result_error`, `timestamp` and the session offsets, and
+//! no top-level `pid` (`cua-driver-core/src/recording.rs:1436-1447`). Other
+//! names are still read as a fallback.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -30,7 +32,7 @@ pub fn record_from_action(turn: &str, action: &Value, dir: &Path) -> Value {
     let tool = field(&["tool", "tool_name", "name"])
         .and_then(Value::as_str)
         .unwrap_or("unknown");
-    let error = field(&["error", "is_error", "isError"])
+    let error = field(&["result_error", "error", "is_error", "isError"])
         .map(|value| match value {
             Value::Bool(flag) => *flag,
             Value::Null => false,
@@ -38,7 +40,9 @@ pub fn record_from_action(turn: &str, action: &Value, dir: &Path) -> Value {
             _ => true,
         })
         .unwrap_or(false);
-    let pid = field(&["pid"])
+    // The target app's pid is an argument of the call, not a field of its own.
+    let pid = field(&["arguments"])
+        .and_then(|arguments| arguments.get("pid"))
         .and_then(Value::as_u64)
         .filter(|pid| *pid <= u32::MAX as u64);
     let at = field(&["timestamp", "at", "time"])
@@ -72,6 +76,34 @@ pub fn record_from_action(turn: &str, action: &Value, dir: &Path) -> Value {
     if let Some(screenshot) = screenshot {
         record.insert("screenshot".into(), json!(screenshot));
     }
+    Value::Object(record)
+}
+
+/// The helper's own record of a call Cua does not record: a read-only tool,
+/// or any call while recording is off. Same fields as Cua's, plus
+/// `"source": "helper"`; `turn` is `call-NNNNNN`.
+pub fn helper_record(
+    turn: &str,
+    tool: &str,
+    arguments: &Value,
+    error: bool,
+    at: &str,
+    summary: Option<&str>,
+    screenshot: Option<&str>,
+) -> Value {
+    let mut record = Map::new();
+    record.insert("turn".into(), json!(clip(turn, 32)));
+    record.insert("tool".into(), json!(clip(tool, 64)));
+    record.insert("arguments".into(), clip_value(arguments));
+    record.insert("error".into(), json!(error));
+    record.insert("at".into(), json!(clip(at, 40)));
+    if let Some(summary) = summary {
+        record.insert("summary".into(), json!(clip(summary, MAX_ARG_CHARS)));
+    }
+    if let Some(screenshot) = screenshot {
+        record.insert("screenshot".into(), json!(screenshot));
+    }
+    record.insert("source".into(), json!("helper"));
     Value::Object(record)
 }
 
@@ -184,6 +216,19 @@ fn read_small_json(path: &Path) -> Option<Value> {
 mod tests {
     use super::*;
 
+    /// An `action.json` as Cua 0.37.0 writes it.
+    fn action(tool: &str) -> Value {
+        json!({
+            "tool": tool,
+            "arguments": {"pid": 501},
+            "result_summary": "done",
+            "result_error": false,
+            "timestamp": "2026-10-16T20:00:00.000Z",
+            "t_ms_from_session_start": 10,
+            "t_start_ms_from_session_start": 2
+        })
+    }
+
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "cu-helper-{name}-{}-{:?}",
@@ -196,10 +241,40 @@ mod tests {
     }
 
     #[test]
+    fn reads_cua_0370_action_json() {
+        // The shape Cua 0.37.0 writes (cua-driver-core/src/recording.rs:1436-1447).
+        let record = record_from_action(
+            "turn-00001",
+            &json!({
+                "tool": "click",
+                "arguments": {"pid": 4242, "x": 10, "y": 20},
+                "result_summary": "Refused",
+                "result_error": true,
+                "timestamp": "2026-10-16T20:00:00.123Z",
+                "t_ms_from_session_start": 1200,
+                "t_start_ms_from_session_start": 1100,
+                "click_point": {"x": 10, "y": 20}
+            }),
+            Path::new("/nonexistent"),
+        );
+        assert_eq!(record["error"], true, "result_error is the error flag");
+        assert_eq!(record["pid"], 4242, "pid comes from arguments.pid");
+        assert_eq!(record["at"], "2026-10-16T20:00:00.123Z");
+        assert_eq!(record["summary"], "Refused");
+        let no_pid = record_from_action(
+            "turn-2",
+            &json!({"tool":"press_key","arguments":{"pid":"x"},"result_error":false,"pid":7}),
+            Path::new("/x"),
+        );
+        assert_eq!(no_pid["error"], false);
+        assert!(no_pid.get("pid").is_none(), "only a numeric arguments.pid");
+    }
+
+    #[test]
     fn reads_an_action_loosely() {
         let record = record_from_action(
             "turn-00001",
-            &json!({"tool":"click","arguments":{"x":10,"text":"a".repeat(500)},"error":false,"pid":42,"timestamp":"2026-10-16T20:00:00Z"}),
+            &json!({"tool":"click","arguments":{"pid":42,"x":10,"text":"a".repeat(500)},"result_summary":"ok","result_error":false,"timestamp":"2026-10-16T20:00:00.000Z","t_ms_from_session_start":5,"t_start_ms_from_session_start":1}),
             Path::new("/nonexistent"),
         );
         assert_eq!(record["tool"], "click");
@@ -227,7 +302,7 @@ mod tests {
             fs::create_dir_all(root.join(turn)).unwrap();
             fs::write(
                 root.join(turn).join("action.json"),
-                json!({"tool": tool}).to_string(),
+                action(tool).to_string(),
             )
             .unwrap();
         }
@@ -245,7 +320,7 @@ mod tests {
         assert!(scanner.scan().is_empty(), "nothing twice");
         fs::write(
             root.join("turn-00003").join("action.json"),
-            "{\"tool\":\"scroll\"}",
+            action("scroll").to_string(),
         )
         .unwrap();
         assert_eq!(scanner.scan()[0]["tool"], "scroll");

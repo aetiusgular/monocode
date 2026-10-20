@@ -37,8 +37,10 @@ pub const ALLOWED_TOOLS: &[&str] = &[
 pub const HELPER_ONLY_TOOLS: &[&str] =
     &["start_recording", "stop_recording", "get_recording_state"];
 
+/// A tool MonoCode may relay. The helper's own tools never are, even if a
+/// later edit put one in both lists.
 pub fn relayable(name: &str) -> bool {
-    ALLOWED_TOOLS.contains(&name)
+    ALLOWED_TOOLS.contains(&name) && !HELPER_ONLY_TOOLS.contains(&name)
 }
 
 #[cfg(test)]

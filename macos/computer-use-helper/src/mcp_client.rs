@@ -1,4 +1,4 @@
-//! A small MCP client over the driver proxy's stdio.
+//! A small MCP client over the driver's stdio.
 
 use std::io::{BufReader, Read, Write};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -54,6 +54,12 @@ impl McpClient {
             .write_all(&line)
             .and_then(|_| self.writer.flush())
             .map_err(|e| format!("The computer-use runtime closed: {e}"))
+    }
+
+    /// Closes the driver's stdin. Cua's direct loop then ends this
+    /// transport's sessions and the process (`cua-driver/src/proxy.rs:66-84`).
+    pub fn close(&mut self) {
+        self.writer = Box::new(std::io::sink());
     }
 
     pub fn notify(&mut self, method: &str, params: Value) -> Result<(), String> {

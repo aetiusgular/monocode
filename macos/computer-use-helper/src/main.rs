@@ -6,8 +6,9 @@
 //!   shell inherits them (note W, section 4).
 //! - It listens on one Unix socket MonoCode names, takes one caller, and
 //!   checks that caller's code signature against MonoCode's (`caller.rs`).
-//! - Per chat it starts `cua-driver serve --embedded` itself, bounded by the
-//!   chat's manifest, with Cua's telemetry and update check off.
+//! - Per chat it starts one `cua-driver mcp --direct --embedded` itself,
+//!   bounded by the chat's manifest, talked to over its stdio with no socket,
+//!   with Cua's telemetry and update check off.
 //! - When MonoCode's connection closes, or MonoCode exits, every runtime ends
 //!   and the helper quits.
 //!
@@ -15,10 +16,8 @@
 //! <pid> --data <dir>`. A debug build also takes `--driver <path>`; a release
 //! build uses the `cua-driver` beside its own executable only.
 
-// Off macOS only the tests use most of this crate.
-#![cfg_attr(not(target_os = "macos"), allow(dead_code, unused_imports))]
-
 mod apps;
+mod base64;
 mod caller;
 mod driver;
 mod lines;
@@ -32,8 +31,6 @@ mod stop;
 mod tools;
 
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 #[derive(Debug, PartialEq, Eq)]
 struct Args {
@@ -103,6 +100,8 @@ fn run(_args: Args) -> i32 {
 fn run(args: Args) -> i32 {
     use std::os::unix::io::AsRawFd;
     use std::os::unix::net::UnixListener;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -119,11 +118,12 @@ fn run(args: Args) -> i32 {
     if runtime::private_dir(&socket_dir).is_err() {
         return 2;
     }
-    // Sockets for the runtimes beside MonoCode's, in the same private folder.
+    // Each start's manifest goes in a fresh folder inside this private one,
+    // which MonoCode made 0700 with a random name.
     let runtimes = runtime::Runtimes::new(
         driver.clone(),
         args.data.clone(),
-        socket_dir.join("rt"),
+        socket_dir.clone(),
         home.clone(),
     );
     let shared = Arc::new(server::Shared::new(
@@ -154,14 +154,7 @@ fn run(args: Args) -> i32 {
         std::thread::spawn(move || loop {
             std::thread::sleep(Duration::from_secs(2));
             if !process_alive(pid) {
-                let ids = shared
-                    .runtimes
-                    .lock()
-                    .map(|r| r.running_ids())
-                    .unwrap_or_default();
-                for id in ids {
-                    server::stop_now(&shared, &id);
-                }
+                shared.runtimes.stop_all(shared.mouse.as_ref());
                 let _ = std::fs::remove_file(&socket);
                 std::process::exit(0);
             }
@@ -225,6 +218,133 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// `bundle.sh` with `DRY_RUN=1`: its output, and whether it succeeded.
+    fn dry_run(env: &[(&str, &str)]) -> (bool, String) {
+        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("bundle.sh");
+        let mut command = std::process::Command::new("bash");
+        command
+            .arg(&script)
+            .arg("/out")
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("DRY_RUN", "1")
+            .env("CUA_DRIVER_BIN", "/verified/cua-driver");
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        let output = command.output().unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        (output.status.success(), text)
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("cu-bundle-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_debug_bundle_signs_ad_hoc_with_its_own_ids_and_no_keychain() {
+        let (ok, out) = dry_run(&[("HELPER_DEBUG", "1")]);
+        assert!(ok, "{out}");
+        assert!(!out.contains("security"), "no keychain lookup: {out}");
+        assert!(out.contains("--sign - "), "{out}");
+        assert!(!out.contains("MONOCODE_HELPER_CERT_SHA1"), "{out}");
+        assert!(
+            out.contains("--identifier com.monocode.computer-use-helper.dev "),
+            "{out}"
+        );
+        assert!(
+            out.contains("Set\\ :CFBundleIdentifier\\ com.monocode.computer-use-helper.dev"),
+            "{out}"
+        );
+        assert!(
+            out.contains("MONOCODE_APP_ID=com.monocode.desktop.dev"),
+            "{out}"
+        );
+        let (ok, out) = dry_run(&[
+            ("HELPER_DEBUG", "1"),
+            ("MONOCODE_APP_ID", "com.example.mine"),
+        ]);
+        assert!(
+            ok && out.contains("MONOCODE_APP_ID=com.example.mine"),
+            "{out}"
+        );
+        let (ok, out) = dry_run(&[("HELPER_DEBUG", "1"), ("MONOCODE_APP_ID", "x\" or 1")]);
+        assert!(!ok, "{out}");
+    }
+
+    #[test]
+    fn a_release_bundle_takes_exactly_one_certificate_by_its_exact_name() {
+        let dir = scratch("ids");
+        let listing = dir.join("identities.txt");
+        let a = "1111111111111111111111111111111111111111";
+        let b = "2222222222222222222222222222222222222222";
+        let c = "3333333333333333333333333333333333333333";
+        std::fs::write(
+            &listing,
+            format!(
+                "  1) {a} \"MonoCode Dev\"\n  2) {b} \"MonoCode Dev 2\"\n  3) {c} \"Evil MonoCode Dev\"\n     3 valid identities found\n"
+            ),
+        )
+        .unwrap();
+        let listing = listing.to_str().unwrap();
+        let (ok, out) = dry_run(&[
+            ("MONOCODE_HELPER_IDENTITY", "MonoCode Dev"),
+            ("DRY_RUN_IDENTITIES", listing),
+        ]);
+        assert!(ok, "{out}");
+        assert!(
+            out.contains("security find-identity -v -p codesigning"),
+            "{out}"
+        );
+        assert!(!out.contains("find-certificate"), "{out}");
+        assert!(
+            out.contains(&format!("MONOCODE_HELPER_CERT_SHA1={a}")),
+            "{out}"
+        );
+        assert!(
+            out.contains(&format!("--sign {a} ")),
+            "signs by the SHA-1: {out}"
+        );
+        assert!(
+            out.contains("MONOCODE_APP_ID=com.monocode.desktop "),
+            "{out}"
+        );
+        assert!(
+            out.contains("--identifier com.monocode.computer-use-helper "),
+            "{out}"
+        );
+        assert!(!out.contains(".dev"), "{out}");
+        // A name only part of others matches nothing.
+        let (ok, out) = dry_run(&[
+            ("MONOCODE_HELPER_IDENTITY", "MonoCode"),
+            ("DRY_RUN_IDENTITIES", listing),
+        ]);
+        assert!(!ok && out.contains("No signing identity named"), "{out}");
+        // Two certificates with the same name: refused.
+        let twice = dir.join("twice.txt");
+        std::fs::write(
+            &twice,
+            format!("  1) {a} \"MonoCode Dev\"\n  2) {b} \"MonoCode Dev\"\n     2 valid identities found\n"),
+        )
+        .unwrap();
+        let (ok, out) = dry_run(&[
+            ("MONOCODE_HELPER_IDENTITY", "MonoCode Dev"),
+            ("DRY_RUN_IDENTITIES", twice.to_str().unwrap()),
+        ]);
+        assert!(!ok && out.contains("2 signing identities named"), "{out}");
+        // A release build needs the identity.
+        let (ok, out) = dry_run(&[]);
+        assert!(!ok && out.contains("MONOCODE_HELPER_IDENTITY"), "{out}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
