@@ -595,6 +595,9 @@ impl Core {
             // its recording folder are not flagged (security review T1).
             crate::activity::record(runtime_event(chat, &id, pid));
         }
+        if let Some(event) = recording_event(chat, &id, &reply) {
+            crate::activity::record(event);
+        }
         {
             let mut inner = self.lock();
             if inner.generation(chat) != generation {
@@ -795,6 +798,33 @@ pub fn runtime_stop_event(chat: &str, runtime: &str, pid: u32) -> ActivityEvent 
         pid: Some(pid),
         approval_id: None,
     }
+}
+
+/// The record of a runtime whose recording did not start (Mac test 4.9),
+/// from the helper's `start` reply: `"recording": {"on": false, "error": ..}`.
+/// None when it started, or the reply does not say.
+pub fn recording_event(chat: &str, runtime: &str, reply: &Value) -> Option<ActivityEvent> {
+    let recording = reply.get("recording")?;
+    if recording.get("on").and_then(Value::as_bool) != Some(false) {
+        return None;
+    }
+    let error = recording
+        .get("error")
+        .and_then(Value::as_str)
+        .map(|text| printable(text, 300))
+        .unwrap_or_default();
+    Some(ActivityEvent {
+        id: new_id(),
+        at: now_ms(),
+        chat_id: chat.to_string(),
+        harness: String::new(),
+        source: ActivitySource::Cua,
+        kind: "cua.recording".into(),
+        summary: "Computer use recording did not start".into(),
+        detail: json!({ "on": false, "error": error, "runtime": printable(runtime, 32) }),
+        pid: None,
+        approval_id: None,
+    })
 }
 
 /// One Cua action as an activity event (C7).
@@ -1215,6 +1245,54 @@ pub mod tests {
             .iter()
             .map(|r| r["op"].as_str().unwrap().to_string())
             .collect()
+    }
+
+    #[test]
+    fn a_recording_that_did_not_start_is_recorded() {
+        // 4.9: the helper's start reply says whether Cua recorded.
+        let reply = json!({"id": 1, "ok": true, "pid": 9, "recording": {"on": false, "error": format!("bounded_resource_outside_manifest\n{}", "x".repeat(400))}});
+        let event = recording_event("c1", "rt1", &reply).expect("an event");
+        assert_eq!(event.source, ActivitySource::Cua);
+        assert_eq!(event.kind, "cua.recording");
+        assert_eq!(event.summary, "Computer use recording did not start");
+        assert_eq!(event.chat_id, "c1");
+        assert_eq!(event.detail["on"], false);
+        assert_eq!(event.detail["runtime"], "rt1");
+        let error = event.detail["error"].as_str().unwrap();
+        assert!(error.starts_with("bounded_resource_outside_manifest x"));
+        assert_eq!(error.chars().count(), 300);
+        let bare = recording_event("c1", "rt1", &json!({"recording": {"on": false}})).unwrap();
+        assert_eq!(bare.detail["error"], "");
+        assert!(recording_event("c1", "rt1", &json!({"recording": {"on": true}})).is_none());
+        assert!(
+            recording_event("c1", "rt1", &json!({"pid": 9})).is_none(),
+            "an older helper says nothing"
+        );
+    }
+
+    #[test]
+    fn a_helper_record_with_a_turn_and_no_pid_keeps_its_screenshot() {
+        // 4.9: the helper's own records, beside Cua's turn folders.
+        let root = scratch("root6");
+        let calls = root.join("rt1").join("1760000000000").join("calls");
+        std::fs::create_dir_all(&calls).unwrap();
+        std::fs::write(calls.join("call-000001.png"), PNG).unwrap();
+        let mut event = action_event(
+            "c1",
+            "claude",
+            &json!({"source": "helper", "tool": "click", "turn": "call-000001", "error": false,
+                    "screenshot": calls.join("call-000001.png").to_string_lossy()}),
+        );
+        assert_eq!(event.pid, None);
+        assert_eq!(event.summary, "click");
+        assert_eq!(event.detail["source"], "helper");
+        assert_eq!(event.detail["turn"], "call-000001");
+        let out = scratch("out6");
+        let d = out.join("h.png");
+        let d2 = d.clone();
+        attach_screenshot(&mut event, Some(&root), move |_| Some(d2.clone()));
+        assert_eq!(event.detail["screenshot"], d.to_string_lossy().as_ref());
+        assert_eq!(std::fs::read(&d).unwrap(), PNG);
     }
 
     #[test]
