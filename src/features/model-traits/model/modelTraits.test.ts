@@ -81,6 +81,25 @@ describe("model traits", () => {
     expect(modelTimeoutFactor(LOCAL.id)).toBe(1);
   });
 
+  it("takes vision from the model server over the catalog and the harness, below yours", () => {
+    setHarnessModels("codex", [{ ...LOCAL, vision: true }]);
+    expect(modelTraits(LOCAL.id, {}, { vision: false })).toMatchObject({
+      vision: false,
+      source: { vision: "server" },
+    });
+    // Asked, no answer yet: unknown, not the catalog's claim.
+    const waiting = modelTraits(LOCAL.id, {}, {});
+    expect(waiting.vision).toBeUndefined();
+    expect(waiting.source.vision).toBe("unknown");
+    expect(modelTraits("claude:opus-5", {}, { vision: false }).vision).toBe(
+      false,
+    );
+    expect(
+      modelTraits(LOCAL.id, { [LOCAL.id]: { vision: true } }, { vision: false })
+        .source.vision,
+    ).toBe("yours");
+  });
+
   it("puts your settings above the catalog", () => {
     // Codex fallback metadata on a local home claims image input.
     setHarnessModels("codex", [

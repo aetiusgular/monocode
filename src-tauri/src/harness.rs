@@ -979,7 +979,7 @@ pub fn harness_spawn(
     // [w3-b] child-env
     let activity_chat_w3b = session_id.clone();
     // [w3-c] child-env
-    crate::computer_use::configure_child(&app, &session_id, &mut cmd);
+    crate::computer_use::configure_child(&app, &session_id, &args, &mut cmd);
     crate::control::configure_child(&app, &session_id, &mut cmd);
 
     let mut child =

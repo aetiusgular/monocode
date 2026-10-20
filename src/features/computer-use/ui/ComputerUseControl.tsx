@@ -3,6 +3,7 @@ import { IS_MAC } from "../../../platform/tauri/platform";
 import { Popover } from "../../../shared/ui/Popover";
 import { CursorMagicSelection, Square, X } from "../../../shared/ui/icons";
 import type { LocalitySession } from "../../server-locality/model/locality";
+import { useTraitOverridesVersion } from "../../model-traits/model/modelTraits";
 import { chatSwitch, useChatSwitchVersion } from "../model/chatSwitch";
 import {
   chatGrants,
@@ -39,6 +40,8 @@ export function ComputerUseControl({
 }) {
   useComputerUseVersion();
   useChatSwitchVersion();
+  // Ollama's answer on vision lands as a traits change.
+  useTraitOverridesVersion();
   const anchor = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");

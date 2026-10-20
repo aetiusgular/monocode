@@ -119,8 +119,13 @@ fn note_runtime_end(chat: &str, entry: &RuntimeEntry) {
 
 #[derive(Default)]
 struct Inner {
-    /// Chats computer use is switched on for, with each one's bridge token.
+    /// Each chat's bridge token, made the first time the chat is switched on
+    /// and kept for the app run, so a harness started with it keeps its
+    /// connection through off and on (Mac test 4.7). A token gives nothing
+    /// while its chat is off.
     tokens: HashMap<String, String>,
+    /// Chats computer use is switched on for now.
+    on: std::collections::HashSet<String>,
     grants: GrantTable,
     pending: HashMap<String, Pending>,
     runtimes: HashMap<String, RuntimeEntry>,
@@ -208,36 +213,35 @@ impl Core {
     // --- Chats and tokens ---
 
     /// Switches computer use on or off for a chat. Off ends its grants, its
-    /// cards and its runtime, and its token stops working.
+    /// cards and its runtime; its connections stay, and offer nothing until
+    /// it is on again.
     pub fn set_chat(&self, chat: &str, on: bool) {
         if chat.is_empty() || chat.len() > 200 {
             return;
         }
         if on {
-            self.lock()
+            let mut inner = self.lock();
+            inner
                 .tokens
                 .entry(chat.to_string())
                 .or_insert_with(|| format!("{}{}", new_id(), new_id()));
+            inner.on.insert(chat.to_string());
             return;
         }
-        let had = self.lock().tokens.remove(chat).is_some();
+        let had = self.lock().on.remove(chat);
         if had {
             self.stop(chat);
         }
     }
 
-    /// The bridge token for a chat, when computer use is on for it.
-    pub fn token(&self, chat: &str) -> Option<String> {
-        self.lock().tokens.get(chat).cloned()
+    /// Whether computer use is switched on for a chat now.
+    pub fn is_on(&self, chat: &str) -> bool {
+        self.lock().on.contains(chat)
     }
 
-    /// Whether `token` is still the chat's token. A connection keeps the token
-    /// it opened with, so switching off and on again ends it (review, 10).
-    pub fn token_is(&self, chat: &str, token: &str) -> bool {
-        self.lock()
-            .tokens
-            .get(chat)
-            .is_some_and(|known| constant_eq(known.as_bytes(), token.as_bytes()))
+    /// The bridge token for a chat once it has been switched on in this run.
+    pub fn token(&self, chat: &str) -> Option<String> {
+        self.lock().tokens.get(chat).cloned()
     }
 
     /// The chat a token belongs to. Compared in constant time per token.
@@ -271,7 +275,7 @@ impl Core {
         let now = now_ms();
         let (grant, evicted) = {
             let mut inner = self.lock();
-            if !inner.tokens.contains_key(chat) {
+            if !inner.on.contains(chat) {
                 return Err("Switch computer use on for this chat first.".into());
             }
             inner
@@ -380,6 +384,10 @@ impl Core {
     }
 
     /// Every chat, as at quit.
+    #[cfg_attr(
+        not(target_os = "macos"),
+        expect(dead_code, reason = "only the macOS menu bar item calls it")
+    )]
     pub fn stop_all(&self) {
         let chats: Vec<String> = {
             let inner = self.lock();
@@ -591,6 +599,9 @@ impl Core {
             // its recording folder are not flagged (security review T1).
             crate::activity::record(runtime_event(chat, &id, pid));
         }
+        if let Some(event) = recording_event(chat, &id, &reply) {
+            crate::activity::record(event);
+        }
         {
             let mut inner = self.lock();
             if inner.generation(chat) != generation {
@@ -793,6 +804,33 @@ pub fn runtime_stop_event(chat: &str, runtime: &str, pid: u32) -> ActivityEvent 
     }
 }
 
+/// The record of a runtime whose recording did not start (Mac test 4.9),
+/// from the helper's `start` reply: `"recording": {"on": false, "error": ..}`.
+/// None when it started, or the reply does not say.
+pub fn recording_event(chat: &str, runtime: &str, reply: &Value) -> Option<ActivityEvent> {
+    let recording = reply.get("recording")?;
+    if recording.get("on").and_then(Value::as_bool) != Some(false) {
+        return None;
+    }
+    let error = recording
+        .get("error")
+        .and_then(Value::as_str)
+        .map(|text| printable(text, 300))
+        .unwrap_or_default();
+    Some(ActivityEvent {
+        id: new_id(),
+        at: now_ms(),
+        chat_id: chat.to_string(),
+        harness: String::new(),
+        source: ActivitySource::Cua,
+        kind: "cua.recording".into(),
+        summary: "Computer use recording did not start".into(),
+        detail: json!({ "on": false, "error": error, "runtime": printable(runtime, 32) }),
+        pid: None,
+        approval_id: None,
+    })
+}
+
 /// One Cua action as an activity event (C7).
 pub fn action_event(chat: &str, harness: &str, action: &Value) -> ActivityEvent {
     let tool = action
@@ -954,6 +992,10 @@ impl Core {
 }
 
 impl Backend for Core {
+    fn enabled(&self, chat: &str) -> bool {
+        self.is_on(chat)
+    }
+
     fn plan_turn(&self, chat: &str) -> bool {
         self.lock().planning.contains(chat)
     }
@@ -1210,6 +1252,54 @@ pub mod tests {
     }
 
     #[test]
+    fn a_recording_that_did_not_start_is_recorded() {
+        // 4.9: the helper's start reply says whether Cua recorded.
+        let reply = json!({"id": 1, "ok": true, "pid": 9, "recording": {"on": false, "error": format!("bounded_resource_outside_manifest\n{}", "x".repeat(400))}});
+        let event = recording_event("c1", "rt1", &reply).expect("an event");
+        assert_eq!(event.source, ActivitySource::Cua);
+        assert_eq!(event.kind, "cua.recording");
+        assert_eq!(event.summary, "Computer use recording did not start");
+        assert_eq!(event.chat_id, "c1");
+        assert_eq!(event.detail["on"], false);
+        assert_eq!(event.detail["runtime"], "rt1");
+        let error = event.detail["error"].as_str().unwrap();
+        assert!(error.starts_with("bounded_resource_outside_manifest x"));
+        assert_eq!(error.chars().count(), 300);
+        let bare = recording_event("c1", "rt1", &json!({"recording": {"on": false}})).unwrap();
+        assert_eq!(bare.detail["error"], "");
+        assert!(recording_event("c1", "rt1", &json!({"recording": {"on": true}})).is_none());
+        assert!(
+            recording_event("c1", "rt1", &json!({"pid": 9})).is_none(),
+            "an older helper says nothing"
+        );
+    }
+
+    #[test]
+    fn a_helper_record_with_a_turn_and_no_pid_keeps_its_screenshot() {
+        // 4.9: the helper's own records, beside Cua's turn folders.
+        let root = scratch("root6");
+        let calls = root.join("rt1").join("1760000000000").join("calls");
+        std::fs::create_dir_all(&calls).unwrap();
+        std::fs::write(calls.join("call-000001.png"), PNG).unwrap();
+        let mut event = action_event(
+            "c1",
+            "claude",
+            &json!({"source": "helper", "tool": "click", "turn": "call-000001", "error": false,
+                    "screenshot": calls.join("call-000001.png").to_string_lossy()}),
+        );
+        assert_eq!(event.pid, None);
+        assert_eq!(event.summary, "click");
+        assert_eq!(event.detail["source"], "helper");
+        assert_eq!(event.detail["turn"], "call-000001");
+        let out = scratch("out6");
+        let d = out.join("h.png");
+        let d2 = d.clone();
+        attach_screenshot(&mut event, Some(&root), move |_| Some(d2.clone()));
+        assert_eq!(event.detail["screenshot"], d.to_string_lossy().as_ref());
+        assert_eq!(std::fs::read(&d).unwrap(), PNG);
+    }
+
+    #[test]
     fn a_runtime_end_is_recorded_with_its_pid() {
         // Review V3.
         let event = runtime_stop_event("c1", "rt1", 77);
@@ -1235,7 +1325,7 @@ pub mod tests {
     }
 
     #[test]
-    fn tokens_are_per_chat_and_end_with_the_switch() {
+    fn tokens_are_per_chat_and_last_the_app_run_while_the_switch_is_a_flag() {
         let (core, _, _) = core_with(FakeLauncher::new());
         core.set_chat("c1", true);
         core.set_chat("c2", true);
@@ -1253,9 +1343,21 @@ pub mod tests {
         );
         core.grant("c1", "claude", "com.apple.calculator", None, None)
             .unwrap();
+        assert!(core.is_on("c1"));
         core.set_chat("c1", false);
-        assert_eq!(core.chat_for_token(&t1), None);
+        assert!(!core.is_on("c1"));
         assert!(core.grants("c1").is_empty(), "off ends the grants");
+        assert!(
+            core.grant("c1", "claude", "com.apple.calculator", None, None)
+                .is_err(),
+            "nothing is granted while off"
+        );
+        // 4.7: the token outlives the switch, so a harness started with it
+        // keeps working once the chat is on again.
+        assert_eq!(core.chat_for_token(&t1).as_deref(), Some("c1"));
+        core.set_chat("c1", true);
+        assert_eq!(core.token("c1").unwrap(), t1);
+        assert!(core.is_on("c1"));
     }
 
     #[test]

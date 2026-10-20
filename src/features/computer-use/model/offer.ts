@@ -1,6 +1,6 @@
 import { harnessCan } from "../../../integrations/harness/core/capabilities";
 import type { HarnessLaunchMcpServer } from "../../../integrations/harness/core/types";
-import { modelReadsImages } from "../../model-traits/model/modelTraits";
+import { sessionModelReadsImages } from "../../model-traits/model/ollamaVision";
 import type { Session } from "../../sessions/model/session";
 import { chatSwitch, type ChatSwitch } from "./chatSwitch";
 
@@ -15,7 +15,7 @@ export const COMPUTER_USE_SERVER = "monocode_computer_use";
 export const COMPUTER_USE_CLI_ARG = "computer-use-mcp";
 
 export type OfferSession = Pick<Session, "harness"> &
-  Partial<Pick<Session, "id" | "model">>;
+  Partial<Pick<Session, "id" | "model" | "modelProvider" | "providerAccountId">>;
 
 export type OfferBlock =
   /** Computer use runs only on macOS. */
@@ -37,7 +37,10 @@ export type OfferContext = {
   cliPath?: string;
   /** For tests; the stored switch otherwise. */
   switchFor?: (chatId: string | undefined) => ChatSwitch;
-  /** For tests; the model's vision trait otherwise. */
+  /**
+   * For tests; the model's vision trait otherwise, which on Ollama is what
+   * Ollama reports for the model (`ollamaVision.ts`).
+   */
   readsImages?: (model: string) => boolean;
 };
 
@@ -53,7 +56,9 @@ export function computerUseBlock(
 ): OfferBlock | undefined {
   if (!context.isMac) return "platform";
   if (!harnessCan(session.harness, "mcpInject")) return "harness";
-  const reads = context.readsImages ?? modelReadsImages;
+  const reads =
+    context.readsImages ??
+    ((id: string) => sessionModelReadsImages(session, id));
   // Model ids carry their harness (`claude:opus-5-5`); a bare one is read
   // both ways, so its harness's own traits still count.
   const model = session.model;

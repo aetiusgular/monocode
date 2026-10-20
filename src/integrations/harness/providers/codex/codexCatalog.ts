@@ -259,7 +259,10 @@ function parseModel(raw: unknown): AgentModel | null {
 /**
  * `inputModalities` from the model list: image input means vision. Absent or
  * malformed leaves it unknown. On a local home this can be Codex's fallback
- * metadata, which claims image input; Settings, Models overrides it.
+ * metadata, which claims image input (Codex 0.161.0
+ * `protocol/src/openai_models.rs:191-192`, `default_input_modalities`
+ * is text and image). For a chat on Ollama, Ollama's own answer replaces
+ * it (`model-traits/model/ollamaVision.ts`); Settings, Models overrides both.
  */
 export function parseVision(rec: Record<string, unknown>): boolean | undefined {
   const modalities = rec.inputModalities;

@@ -13,6 +13,9 @@ import type { HarnessId } from "../../sessions/model/session";
  * Sources, strongest first:
  * 1. What you set under Settings, Models. A local model's catalog entry is a
  *    default, not a fact (step 3c, section 5), so your value wins.
+ * 1a. For vision, on a model server that says (Ollama's `capabilities`, see
+ *    `ollamaVision.ts`): its answer replaces everything below, and while it
+ *    is not in, vision is unknown.
  * 2. What the harness catalog reported: Codex `inputModalities`, the context
  *    window.
  * 3. Static traits for a harness whose models are all known: Claude models
@@ -35,7 +38,11 @@ export type ModelTraits = {
   };
 };
 
-export type TraitSource = "yours" | "catalog" | "harness" | "unknown";
+export type TraitSource =
+  "yours" | "server" | "catalog" | "harness" | "unknown";
+
+/** What the model's own server reported, when the caller asked it. */
+export type ServerTraits = { vision?: boolean };
 
 /** Your settings for one model id. Every field is optional. */
 export type TraitOverride = {
@@ -231,6 +238,7 @@ function harnessOf(id: string): HarnessId | undefined {
 export function modelTraits(
   model: AgentModel | string,
   overrides: Record<string, TraitOverride> = loadTraitOverrides(),
+  server?: ServerTraits,
 ): ModelTraits {
   const entry = typeof model === "string" ? findModel(model) : model;
   const id = typeof model === "string" ? model : model.id;
@@ -241,11 +249,15 @@ export function modelTraits(
   const vision =
     yours?.vision !== undefined
       ? { value: yours.vision, source: "yours" as const }
-      : entry?.vision !== undefined
-        ? { value: entry.vision, source: "catalog" as const }
-        : fixed
-          ? { value: fixed.vision, source: "harness" as const }
-          : { value: undefined, source: "unknown" as const };
+      : server
+        ? server.vision !== undefined
+          ? { value: server.vision, source: "server" as const }
+          : { value: undefined, source: "unknown" as const }
+        : entry?.vision !== undefined
+          ? { value: entry.vision, source: "catalog" as const }
+          : fixed
+            ? { value: fixed.vision, source: "harness" as const }
+            : { value: undefined, source: "unknown" as const };
   const tools =
     yours?.tools !== undefined
       ? { value: yours.tools, source: "yours" as const }

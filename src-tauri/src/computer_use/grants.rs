@@ -137,7 +137,10 @@ impl GrantTable {
         ended
     }
 
-    /// Ends every grant of every chat, as at quit.
+    /// Ends every grant of every chat. Tests only: at quit and from the menu
+    /// bar, `Core::stop_all` ends each chat through `Core::stop`, which also
+    /// writes the approval records and stops the runtimes.
+    #[cfg(test)]
     pub fn end_all(&mut self, now: i64) -> Vec<Grant> {
         let chats: Vec<String> = self.chats.keys().cloned().collect();
         chats
@@ -160,11 +163,19 @@ impl GrantTable {
     }
 
     /// Every grant kept for a chat, ended ones included.
+    #[cfg(test)]
     pub fn history(&self, chat_id: &str) -> Vec<Grant> {
         self.chats.get(chat_id).cloned().unwrap_or_default()
     }
 
     /// Chats that hold at least one grant now.
+    #[cfg_attr(
+        all(not(target_os = "macos"), not(test)),
+        expect(
+            dead_code,
+            reason = "only Core::stop_all, called from the macOS menu bar, uses it"
+        )
+    )]
     pub fn chats_with_grants(&self, now: i64) -> Vec<String> {
         self.order
             .iter()
