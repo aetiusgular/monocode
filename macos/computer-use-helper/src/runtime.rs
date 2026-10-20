@@ -23,7 +23,7 @@ use crate::driver::{direct_launch, runtime_id, Launch};
 use crate::mcp_client::McpClient;
 use crate::recording::{self, Scanner};
 use crate::stop::{self, Mouse, Processes, StopReport};
-use crate::tools::relayable;
+use crate::tools::{output_path_argument, relayable};
 
 /// The most runtimes at once, one per chat.
 pub const MAX_RUNTIMES: usize = 8;
@@ -63,6 +63,9 @@ struct Slot {
     /// Set once the child is reaped, so its pid, which the system may hand
     /// out again, is never signalled. Reaping happens only under `runtime`.
     reaped: AtomicBool,
+    /// The runtime client's cancel flag, reachable without `runtime`'s lock,
+    /// which a call in flight holds.
+    cancel: Arc<AtomicBool>,
     runtime: Mutex<Runtime>,
 }
 
@@ -85,7 +88,7 @@ pub struct Runtimes {
     home: PathBuf,
     running: Mutex<HashMap<String, Arc<Slot>>>,
     /// Records from runtimes that stopped or ended, for the next poll.
-    pending: Mutex<Vec<(String, Value)>>,
+    pending: Arc<Mutex<Vec<(String, Value)>>>,
     starts: AtomicU64,
 }
 
@@ -189,7 +192,7 @@ impl Runtimes {
             private,
             home,
             running: Mutex::new(HashMap::new()),
-            pending: Mutex::new(Vec::new()),
+            pending: Arc::new(Mutex::new(Vec::new())),
             starts: AtomicU64::new(0),
         }
     }
@@ -249,6 +252,7 @@ impl Runtimes {
         let slot = Arc::new(Slot {
             pid,
             reaped: AtomicBool::new(false),
+            cancel: runtime.client.canceller(),
             runtime: Mutex::new(runtime),
         });
         let (old, over) = {
@@ -365,6 +369,7 @@ impl Runtimes {
                             .is_some_and(relayable)
                     })
                     .cloned()
+                    .map(without_output_paths)
                     .collect()
             })
             .unwrap_or_default())
@@ -373,6 +378,11 @@ impl Runtimes {
     pub fn call(&self, id: &str, name: &str, arguments: Value) -> Result<Value, String> {
         if !relayable(name) {
             return Err(format!("{name} is not relayed."));
+        }
+        if let Some(argument) = output_path_argument(name, &arguments) {
+            return Err(format!(
+                "{name} with {argument} is not relayed: MonoCode does not let an agent write files through Cua."
+            ));
         }
         let slot = self.slot(id).ok_or("Not running")?;
         let mut runtime = lock(&slot.runtime);
@@ -399,7 +409,7 @@ impl Runtimes {
         }
     }
 
-    fn end_slot(&self, id: &str, slot: &Slot, mouse: &dyn Mouse) -> StopReport {
+    fn end_slot(&self, id: &str, slot: &Arc<Slot>, mouse: &dyn Mouse) -> StopReport {
         stop::stop(
             &mut Ending {
                 id,
@@ -542,8 +552,8 @@ impl Runtime {
 /// after (the order of findings 4.7 and 4.12).
 struct Ending<'a> {
     id: &'a str,
-    slot: &'a Slot,
-    pending: &'a Mutex<Vec<(String, Value)>>,
+    slot: &'a Arc<Slot>,
+    pending: &'a Arc<Mutex<Vec<(String, Value)>>>,
 }
 
 impl Processes for Ending<'_> {
@@ -563,29 +573,59 @@ impl Processes for Ending<'_> {
             None => {
                 // A call holds the runtime. Cua answers one request at a
                 // time, so a `stop_recording` would wait behind the call, and
-                // Cua cannot cancel it (issue #3796). End the process; that
-                // ends the call and frees the lock.
+                // Cua cannot cancel it (issue #3796). Cancel the call on our
+                // side first: its answer needs EOF on Cua's stdout, which
+                // never comes if anything Cua started holds that pipe
+                // (security review X9). Then end the process, so the action
+                // itself stops.
+                self.slot.cancel.store(true, Ordering::SeqCst);
                 self.signal(15);
                 match lock_within(&self.slot.runtime, grace) {
                     Some(runtime) => runtime,
                     None => {
                         self.signal(9);
-                        lock(&self.slot.runtime)
+                        match lock_within(&self.slot.runtime, grace) {
+                            Some(runtime) => runtime,
+                            None => {
+                                // Still held. The mouse release needs no
+                                // runtime, so it goes ahead now; the runtime
+                                // is finished when the call lets go.
+                                let (id, slot, pending) =
+                                    (self.id.to_string(), self.slot.clone(), self.pending.clone());
+                                thread::spawn(move || {
+                                    let mut runtime = lock(&slot.runtime);
+                                    end_runtime(&id, &slot, &mut runtime, &pending, grace);
+                                });
+                                return false;
+                            }
+                        }
                     }
                 }
             }
         };
-        runtime.collect();
-        let records: Vec<(String, Value)> = runtime
-            .queue
-            .drain(..)
-            .map(|record| (self.id.to_string(), record))
-            .collect();
-        lock(self.pending).extend(records);
-        let ended = runtime.finish(grace);
-        self.slot.reaped.store(true, Ordering::SeqCst);
-        ended
+        end_runtime(self.id, self.slot, &mut runtime, self.pending, grace)
     }
+}
+
+/// A last read of the runtime's turns, then the Cua session and process.
+/// Called with `runtime`'s lock held, which is what makes reaping safe.
+fn end_runtime(
+    id: &str,
+    slot: &Slot,
+    runtime: &mut Runtime,
+    pending: &Mutex<Vec<(String, Value)>>,
+    grace: Duration,
+) -> bool {
+    runtime.collect();
+    let records: Vec<(String, Value)> = runtime
+        .queue
+        .drain(..)
+        .map(|record| (id.to_string(), record))
+        .collect();
+    lock(pending).extend(records);
+    let ended = runtime.finish(grace);
+    slot.reaped.store(true, Ordering::SeqCst);
+    ended
 }
 
 impl Ending<'_> {
@@ -610,6 +650,28 @@ fn lock_within<T>(mutex: &Mutex<T>, wait: Duration) -> Option<MutexGuard<'_, T>>
             Err(TryLockError::WouldBlock) => return None,
         }
     }
+}
+
+/// A tool as listed, minus the output-path arguments `call` refuses, so an
+/// agent is not offered them.
+fn without_output_paths(mut tool: Value) -> Value {
+    let name = tool
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    for (owner, argument) in crate::tools::OUTPUT_PATH_ARGUMENTS {
+        if *owner != name {
+            continue;
+        }
+        if let Some(properties) = tool
+            .pointer_mut("/inputSchema/properties")
+            .and_then(Value::as_object_mut)
+        {
+            properties.remove(*argument);
+        }
+    }
+    tool
 }
 
 /// The names of tools whose `annotations.readOnlyHint` is true.
@@ -1013,6 +1075,33 @@ done
         assert_ne!(first.pid, second.pid);
         runtimes.stop_all(&StillMouse);
         assert!(!runtimes.is_running("rt"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Security review X10: `click.debug_image_out` and
+    /// `get_window_state.screenshot_out_file` write a file where the caller
+    /// says, and the recording grant would let them write into the recording
+    /// folder and forge Cua's turns. The helper refuses either argument.
+    #[test]
+    fn a_call_naming_an_output_path_is_refused_and_never_relayed() {
+        let (root, runtimes) = setup("outpath");
+        runtimes.start("rt", MANIFEST, &StillMouse).unwrap();
+        for (tool, argument) in [
+            ("click", "debug_image_out"),
+            ("get_window_state", "screenshot_out_file"),
+        ] {
+            let mut arguments = json!({"pid": 1, "window_id": 2, "x": 1, "y": 1});
+            arguments[argument] = json!("/tmp/rec/turn-00001/action.json");
+            let error = runtimes.call("rt", tool, arguments).unwrap_err();
+            assert!(error.contains(argument), "{tool}: {error}");
+        }
+        assert!(runtimes
+            .call("rt", "click", json!({"pid": 1, "x": 1, "y": 1}))
+            .is_ok());
+        let listed = without_output_paths(json!({"name": "click", "inputSchema": {
+            "properties": {"x": {}, "debug_image_out": {}}}}));
+        assert_eq!(listed["inputSchema"]["properties"], json!({"x": {}}));
+        runtimes.stop_all(&StillMouse);
         let _ = fs::remove_dir_all(&root);
     }
 
