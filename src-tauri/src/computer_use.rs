@@ -210,17 +210,59 @@ pub fn state(app: &AppHandle) -> ComputerUse {
 
 /// Sets the chat's bridge endpoint and token on a harness child, or removes
 /// them when computer use is off for the chat. Nothing else reads them.
-pub fn configure_child(app: &AppHandle, session_id: &str, cmd: &mut Command) {
+///
+/// `args` are the harness's spawn arguments. When they name the chat's
+/// computer-use server, the chat is switched on here first: a chat restored
+/// at reopen can spawn before the window's own switch-on reaches the app,
+/// and its relay would then start with no endpoint (Mac test 4.12). Only
+/// MonoCode's own window builds those arguments.
+pub fn configure_child(app: &AppHandle, session_id: &str, args: &[String], cmd: &mut Command) {
     cmd.env_remove(bridge_cli::ENDPOINT_ENV)
         .env_remove(bridge_cli::TOKEN_ENV);
     let Some(state) = app.try_state::<ComputerUse>() else {
         return;
     };
-    let (Some(endpoint), Some(token)) = (state.endpoint.get(), state.core.token(session_id)) else {
-        return;
-    };
-    cmd.env(bridge_cli::ENDPOINT_ENV, endpoint)
-        .env(bridge_cli::TOKEN_ENV, token);
+    if let Some((endpoint, token)) = state.child_env(session_id, args) {
+        cmd.env(bridge_cli::ENDPOINT_ENV, endpoint)
+            .env(bridge_cli::TOKEN_ENV, token);
+    }
+}
+
+impl ComputerUse {
+    /// The endpoint and token a chat's harness child gets, if any.
+    fn child_env(&self, session_id: &str, args: &[String]) -> Option<(String, String)> {
+        let endpoint = self.endpoint.get()?.clone();
+        if self.core.token(session_id).is_none() && names_server(args) {
+            self.core.set_chat(session_id, true);
+        }
+        let token = self.core.token(session_id)?;
+        Some((endpoint, token))
+    }
+}
+
+/// The MCP server name MonoCode gives the chat's bridge (`offer.ts`).
+const SERVER_NAME: &str = "monocode_computer_use";
+
+/// Whether spawn arguments add the computer-use server: Claude Code's
+/// `--mcp-config <json>` with it under `mcpServers`, or Codex's
+/// `-c mcp_servers.monocode_computer_use.<key>=...`.
+fn names_server(args: &[String]) -> bool {
+    let codex_key = format!("mcp_servers.{SERVER_NAME}.");
+    args.iter().enumerate().any(|(at, arg)| {
+        let next = args.get(at + 1).map(String::as_str);
+        let config = match arg.strip_prefix("--mcp-config=") {
+            Some(value) => Some(value),
+            None if arg == "--mcp-config" => next,
+            None => None,
+        };
+        if let Some(config) = config {
+            return serde_json::from_str::<serde_json::Value>(config)
+                .ok()
+                .and_then(|value| value.get("mcpServers")?.get(SERVER_NAME).cloned())
+                .is_some();
+        }
+        arg == "-c" && next.is_some_and(|value| value.starts_with(&codex_key))
+    })
 }
 
 // --- Menu bar: a stop item while any chat's runtime runs (C4). ---
@@ -411,6 +453,63 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         assert_eq!(section("pub const HELPER_ONLY_TOOLS"), helper_only);
+    }
+
+    fn with_endpoint() -> ComputerUse {
+        let state = ComputerUse::new(None, Box::new(|_| {}));
+        state.endpoint.set("127.0.0.1:5000".into()).unwrap();
+        state
+    }
+
+    fn strings(args: &[&str]) -> Vec<String> {
+        args.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_spawn_that_names_the_server_switches_its_chat_on_before_the_env_is_set() {
+        // 4.12: a chat restored at reopen can spawn before the webview's
+        // switch-on reaches the app.
+        let claude = strings(&[
+            "-p",
+            "--mcp-config",
+            r#"{"mcpServers":{"monocode_computer_use":{"type":"stdio","command":"/A/MonoCode","args":["computer-use-mcp"]}}}"#,
+            "--setting-sources=user",
+        ]);
+        let state = with_endpoint();
+        let (endpoint, token) = state.child_env("c1", &claude).expect("env for c1");
+        assert_eq!(endpoint, "127.0.0.1:5000");
+        assert_eq!(Some(token), state.core.token("c1"));
+        assert!(state.core.is_on("c1"));
+
+        let codex = strings(&[
+            "app-server",
+            "-c",
+            r#"mcp_servers.monocode_computer_use.command="/A/MonoCode""#,
+            "-c",
+            r#"mcp_servers.monocode_computer_use.args=["computer-use-mcp"]"#,
+        ]);
+        assert!(state.child_env("c2", &codex).is_some());
+        assert!(state.core.is_on("c2"));
+    }
+
+    #[test]
+    fn a_spawn_without_the_server_switches_nothing_on() {
+        let state = with_endpoint();
+        for args in [
+            strings(&["-p"]),
+            strings(&["--mcp-config", r#"{"mcpServers":{}}"#]),
+            strings(&[
+                "--mcp-config",
+                r#"{"mcpServers":{"other":{"command":"x"}}}"#,
+            ]),
+            // The name inside some other value is not the server.
+            strings(&["--append-system-prompt", "monocode_computer_use"]),
+            strings(&["-c", "mcp_servers.monocode_computer_use_x.command=\"x\""]),
+            strings(&["-c", "model=\"mcp_servers.monocode_computer_use.\""]),
+        ] {
+            assert!(state.child_env("c1", &args).is_none(), "{args:?}");
+        }
+        assert!(!state.core.is_on("c1"));
     }
 
     #[test]
