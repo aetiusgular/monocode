@@ -19,7 +19,10 @@ tauri-build = { version = "2", features = [] }
 serde_json.workspace = true
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset", "macos-private-api"] }
+# "tracing": Tauri then logs a wrong invoke key through tracing, not eprintln!, and
+# MonoCode installs no subscriber, so the expected key reaches no log (Mac test 0.8).
+# The tracing crates are already in the lock; nothing new is pulled in.
+tauri = { version = "2", features = ["protocol-asset", "macos-private-api", "tracing"] }
 tauri-plugin-opener = "2"
 open = "5.4.1"
 serde.workspace = true

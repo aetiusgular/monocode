@@ -857,6 +857,30 @@ fn scheme_failure() -> tauri::http::Response<Vec<u8>> {
 mod tests {
     use super::should_request_quit;
 
+    /// Tauri 2.11.5 prints the expected invoke key when a page sends a wrong
+    /// one, with `eprintln!` and no debug guard, unless its `tracing` feature
+    /// is on (`tauri/src/webview/mod.rs:1746-1761`). With the feature the
+    /// line goes to `tracing::error!`, and MonoCode installs no subscriber, so
+    /// the key reaches no log (Mac test 0.8; rules section 5, item 1).
+    #[test]
+    fn tauri_never_prints_the_invoke_key() {
+        let manifest = include_str!("../Cargo.toml");
+        let line = manifest
+            .lines()
+            .find(|line| line.starts_with("tauri = "))
+            .expect("tauri dependency");
+        assert!(line.contains("\"tracing\""), "{line}");
+        let sources = [include_str!("lib.rs"), include_str!("main.rs")];
+        for source in sources {
+            for word in ["tracing_subscriber", "set_global_default"] {
+                assert!(
+                    !source.contains(&format!("{word}(")) && !source.contains(&format!("{word}::")),
+                    "a tracing subscriber would print the invoke key again"
+                );
+            }
+        }
+    }
+
     #[test]
     fn explicit_exit_requests_quit() {
         assert!(should_request_quit(Some(0)));
