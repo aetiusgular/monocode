@@ -208,10 +208,12 @@ pub fn state(app: &AppHandle) -> ComputerUse {
 /// them when computer use is off for the chat. Nothing else reads them.
 ///
 /// `args` are the harness's spawn arguments. When they name the chat's
-/// computer-use server, the chat is switched on here first: a chat restored
-/// at reopen can spawn before the window's own switch-on reaches the app,
-/// and its relay would then start with no endpoint (Mac test 4.12). Only
-/// MonoCode's own window builds those arguments.
+/// computer-use server and the chat has no token yet, one is made here: a
+/// chat restored at reopen can spawn before the window's own switch-on
+/// reaches the app, and its relay would then start with no endpoint (Mac
+/// test 4.12). The chat stays off: the arguments come from the webview, and
+/// only `computer_use_set_chat` switches it on (security review X1). Until
+/// then the relay connects and is offered nothing.
 pub fn configure_child(app: &AppHandle, session_id: &str, args: &[String], cmd: &mut Command) {
     cmd.env_remove(bridge_cli::ENDPOINT_ENV)
         .env_remove(bridge_cli::TOKEN_ENV);
@@ -221,17 +223,49 @@ pub fn configure_child(app: &AppHandle, session_id: &str, args: &[String], cmd: 
     if let Some((endpoint, token)) = state.child_env(session_id, args) {
         cmd.env(bridge_cli::ENDPOINT_ENV, endpoint)
             .env(bridge_cli::TOKEN_ENV, token);
+        if names_codex_server(args) && !has_shell_policy(cmd) {
+            // Telemetry adds these when it is on; without it Codex's shell
+            // commands would see the token (security review X2).
+            let config = codex_home(cmd)
+                .and_then(|home| std::fs::read_to_string(home.join("config.toml")).ok());
+            cmd.args(crate::otel_receiver::harness_env::codex_shell_env_args(
+                config.as_deref(),
+            ));
+        }
     }
+}
+
+/// Whether the spawn already carries Codex shell environment flags (the
+/// telemetry's, which include the computer-use pattern). A second
+/// `exclude` array would replace the first.
+fn has_shell_policy(cmd: &Command) -> bool {
+    cmd.get_args().any(|arg| {
+        arg.to_string_lossy()
+            .starts_with("shell_environment_policy.")
+    })
+}
+
+/// Codex's home as the child will see it.
+fn codex_home(cmd: &Command) -> Option<PathBuf> {
+    let set = cmd
+        .get_envs()
+        .find(|(k, _)| *k == "CODEX_HOME")
+        .and_then(|(_, v)| v.map(PathBuf::from));
+    set.or_else(|| std::env::var_os("CODEX_HOME").map(PathBuf::from))
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".codex")))
 }
 
 impl ComputerUse {
     /// The endpoint and token a chat's harness child gets, if any.
     fn child_env(&self, session_id: &str, args: &[String]) -> Option<(String, String)> {
-        let endpoint = self.endpoint.get()?.clone();
-        if self.core.token(session_id).is_none() && names_server(args) {
-            self.core.set_chat(session_id, true);
+        // Only a harness that starts the chat's server needs them. One
+        // restarted without it (switched off) never holds the token the
+        // chat gets back at its next switch-on.
+        if !names_server(args) {
+            return None;
         }
-        let token = self.core.token(session_id)?;
+        let endpoint = self.endpoint.get()?.clone();
+        let token = self.core.mint_token(session_id)?;
         Some((endpoint, token))
     }
 }
@@ -243,7 +277,16 @@ const SERVER_NAME: &str = "monocode_computer_use";
 /// `--mcp-config <json>` with it under `mcpServers`, or Codex's
 /// `-c mcp_servers.monocode_computer_use.<key>=...`.
 fn names_server(args: &[String]) -> bool {
+    names_codex_server(args) || names_claude_server(args)
+}
+
+fn names_codex_server(args: &[String]) -> bool {
     let codex_key = format!("mcp_servers.{SERVER_NAME}.");
+    args.windows(2)
+        .any(|pair| pair[0] == "-c" && pair[1].starts_with(&codex_key))
+}
+
+fn names_claude_server(args: &[String]) -> bool {
     args.iter().enumerate().any(|(at, arg)| {
         let next = args.get(at + 1).map(String::as_str);
         let config = match arg.strip_prefix("--mcp-config=") {
@@ -251,13 +294,12 @@ fn names_server(args: &[String]) -> bool {
             None if arg == "--mcp-config" => next,
             None => None,
         };
-        if let Some(config) = config {
-            return serde_json::from_str::<serde_json::Value>(config)
+        config.is_some_and(|config| {
+            serde_json::from_str::<serde_json::Value>(config)
                 .ok()
                 .and_then(|value| value.get("mcpServers")?.get(SERVER_NAME).cloned())
-                .is_some();
-        }
-        arg == "-c" && next.is_some_and(|value| value.starts_with(&codex_key))
+                .is_some()
+        })
     })
 }
 
@@ -451,8 +493,12 @@ mod tests {
         assert_eq!(section("pub const HELPER_ONLY_TOOLS"), helper_only);
     }
 
+    /// A state on the fake helper, so grants work off the Mac too.
     fn with_endpoint() -> ComputerUse {
-        let state = ComputerUse::new(None, Box::new(|_| {}));
+        let state = ComputerUse {
+            core: core::tests::core_with(core::tests::FakeLauncher::new()).0,
+            endpoint: OnceLock::new(),
+        };
         state.endpoint.set("127.0.0.1:5000".into()).unwrap();
         state
     }
@@ -461,10 +507,26 @@ mod tests {
         args.iter().map(|s| s.to_string()).collect()
     }
 
+    fn rpc(
+        facade: &mut facade::Facade,
+        core: &core::Core,
+        id: i64,
+        method: &str,
+    ) -> serde_json::Value {
+        facade
+            .handle(
+                core,
+                &serde_json::json!({"jsonrpc":"2.0","id":id,"method":method,"params":{}}),
+            )
+            .expect("a reply")
+    }
+
     #[test]
-    fn a_spawn_that_names_the_server_switches_its_chat_on_before_the_env_is_set() {
+    fn a_spawn_naming_the_server_gets_a_token_but_the_chat_stays_off_until_set_chat() {
         // 4.12: a chat restored at reopen can spawn before the webview's
-        // switch-on reaches the app.
+        // switch-on reaches the app, so the spawn gets a token. Security
+        // review X1: the switch itself is only `computer_use_set_chat`; the
+        // spawn arguments come from the webview.
         let claude = strings(&[
             "-p",
             "--mcp-config",
@@ -474,8 +536,32 @@ mod tests {
         let state = with_endpoint();
         let (endpoint, token) = state.child_env("c1", &claude).expect("env for c1");
         assert_eq!(endpoint, "127.0.0.1:5000");
-        assert_eq!(Some(token), state.core.token("c1"));
+        assert_eq!(Some(token.clone()), state.core.token("c1"));
+        assert!(
+            !state.core.is_on("c1"),
+            "a spawn does not switch the chat on"
+        );
+
+        // The relay connects and the facade answers "off".
+        let mut facade = facade::Facade::new("c1");
+        rpc(&mut facade, &state.core, 1, "initialize");
+        assert_eq!(
+            rpc(&mut facade, &state.core, 2, "tools/list")["result"]["tools"],
+            serde_json::json!([])
+        );
+        assert!(state
+            .core
+            .grant("c1", "claude", "com.apple.calculator", None, None)
+            .is_err());
+
+        // The user's own switch-on keeps the spawn's token.
+        state.core.set_chat("c1", true);
+        assert_eq!(state.core.token("c1"), Some(token));
         assert!(state.core.is_on("c1"));
+        assert!(state
+            .core
+            .grant("c1", "claude", "com.apple.calculator", None, None)
+            .is_ok());
 
         let codex = strings(&[
             "app-server",
@@ -485,7 +571,7 @@ mod tests {
             r#"mcp_servers.monocode_computer_use.args=["computer-use-mcp"]"#,
         ]);
         assert!(state.child_env("c2", &codex).is_some());
-        assert!(state.core.is_on("c2"));
+        assert!(!state.core.is_on("c2"));
     }
 
     #[test]
@@ -514,5 +600,40 @@ mod tests {
         state.core.set_chat("c1", true);
         assert!(state.core.token("c1").is_some());
         assert!(state.core.token("c2").is_none());
+    }
+
+    #[test]
+    fn a_harness_restarted_without_the_server_never_gets_the_chats_token() {
+        // X2: switched off, the harness restarts without the server. The
+        // token it would see is the one the chat gets back at switch-on.
+        let state = with_endpoint();
+        state.core.set_chat("c1", true);
+        state.core.set_chat("c1", false);
+        assert!(state.core.token("c1").is_some());
+        assert!(state.child_env("c1", &strings(&["app-server"])).is_none());
+    }
+
+    #[test]
+    fn a_codex_child_with_the_server_keeps_the_token_out_of_its_shell() {
+        let codex = strings(&[
+            "app-server",
+            "-c",
+            r#"mcp_servers.monocode_computer_use.command="/A/MonoCode""#,
+        ]);
+        assert!(names_codex_server(&codex));
+        assert!(!names_codex_server(&strings(&[
+            "--mcp-config",
+            r#"{"mcpServers":{"monocode_computer_use":{"command":"x"}}}"#
+        ])));
+        let mut cmd = Command::new("codex");
+        cmd.env("CODEX_HOME", "/nonexistent-monocode-test");
+        assert!(!has_shell_policy(&cmd));
+        cmd.args(crate::otel_receiver::harness_env::codex_shell_env_args(
+            None,
+        ));
+        assert!(has_shell_policy(&cmd));
+        assert!(cmd
+            .get_args()
+            .any(|a| a.to_string_lossy().contains("MONOCODE_CU_*")));
     }
 }

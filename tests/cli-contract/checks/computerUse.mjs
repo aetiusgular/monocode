@@ -5,16 +5,21 @@
 // reads the chat's token from there, so a harness that drops them would leave
 // computer use unreachable.
 //
-// Kept beside the feature because lane C may not add files under tests/ in
-// this wave; integration may move it to tests/cli-contract/checks/.
+//
+// The cu-shell checks ask the other way (security review X2): does the
+// agent's own shell, the Bash tool or exec_command, see MONOCODE_CU_TOKEN?
+// The fake model asks for one shell call that counts the variable's lines in
+// `env`; the token's value is a dummy and is never printed.
 
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { codexHomeConfig, isolatedEnv, makeTempDirs } from "../lib/codexDriver.mjs";
 import { ClaudeSession } from "../lib/claudeDriver.mjs";
-import { startFakeMessages, textBlock } from "../lib/fakeMessages.mjs";
-import { startFakeResponses, text } from "../lib/fakeResponses.mjs";
+import { CodexClient, userInput } from "../lib/codexDriver.mjs";
+import { startFakeMessages, textBlock, toolUse, isSideRequest as claudeSide } from "../lib/fakeMessages.mjs";
+import { startFakeResponses, text, call, isSideRequest as codexSide } from "../lib/fakeResponses.mjs";
+import { codexShellEnvArgs } from "./otel.mjs";
 
 const ENDPOINT = "MONOCODE_CU_ENDPOINT";
 const TOKEN = "MONOCODE_CU_TOKEN";
@@ -154,7 +159,120 @@ async function claudeEnvCheck({ claudePath }) {
   }
 }
 
+// Prints a marker and how many lines of `env` name the token: 0 or 1.
+const SHELL_COMMAND = `echo cu-shell-check; env | grep -c '^${TOKEN}=' || true`;
+const SHELL_COUNT = /cu-shell-check\s*(?:\\n|\n)+\s*(\d+)/;
+
+/** The number the shell printed, from the tool outputs the model was sent. */
+function shellCount(outputs) {
+  const joined = outputs.join("\n");
+  const match = joined.match(SHELL_COUNT);
+  return { count: match ? Number(match[1]) : null, leaked: joined.includes(FAKE_TOKEN) };
+}
+
+async function claudeShellCheck({ claudePath }) {
+  const dirs = makeTempDirs("cu-shell-claude-");
+  const fake = await startFakeMessages({
+    script: (body) => {
+      if (claudeSide(body)) return [textBlock("Shell check")];
+      const hasResult = JSON.stringify(body.messages ?? []).includes("tool_result");
+      return hasResult ? [textBlock("done")] : [toolUse("Bash", { command: SHELL_COMMAND, description: "Count a variable" })];
+    },
+  });
+  // As MonoCode starts a chat with computer use: the two variables on the
+  // Claude Code process (computer_use.rs `configure_child`).
+  const s = new ClaudeSession({ claudePath, dirs, baseUrl: fake.baseUrl, env: { [ENDPOINT]: FAKE_ENDPOINT, [TOKEN]: FAKE_TOKEN } });
+  try {
+    await s.send("Run the check command.", 120000);
+  } finally {
+    try {
+      await s.close();
+    } catch {}
+    await fake.close?.();
+  }
+  const outputs = (fake.requests ?? []).flatMap((r) =>
+    (r.body?.messages ?? []).flatMap((m) =>
+      (Array.isArray(m.content) ? m.content : [])
+        .filter((c) => c?.type === "tool_result")
+        .map((c) => (typeof c.content === "string" ? c.content : JSON.stringify(c.content))),
+    ),
+  );
+  const { count, leaked } = shellCount(outputs);
+  const seen = leaked || (count ?? 0) > 0;
+  return {
+    status: count === null && !leaked ? "error" : seen ? "fail" : "pass",
+    finding:
+      count === null && !leaked
+        ? "Could not read the Bash command's output."
+        : seen
+          ? `Claude Code's Bash tool sees ${TOKEN} (count ${count}${leaked ? ", value in the output" : ""}). Claude Code passes its whole environment to Bash; MonoCode has no per-variable exclude for it.`
+          : `Claude Code's Bash tool does not see ${TOKEN}.`,
+    seen: { count, leaked },
+  };
+}
+
+/** One Codex turn that runs the shell command; what it printed. */
+async function codexShellRun(codexPath, args) {
+  const dirs = makeTempDirs("cu-shell-codex-");
+  const fake = await startFakeResponses({
+    script: (body) => {
+      if (codexSide(body)) return [text("Shell check")];
+      const hasOutput = (body.input ?? []).some((i) => i?.type === "function_call_output");
+      return hasOutput ? [text("done")] : [call("exec_command", { cmd: SHELL_COMMAND }, "cu1")];
+    },
+  });
+  // The variables go on Codex's process, as MonoCode sets them. The driver
+  // starts Codex with its own environment, so a wrapper adds them.
+  const launcher = path.join(dirs.root, "codex-with-env.sh");
+  const q = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
+  writeFileSync(launcher, `#!/bin/sh\nexport ${ENDPOINT}=${q(FAKE_ENDPOINT)}\nexport ${TOKEN}=${q(FAKE_TOKEN)}\nexec ${q(codexPath)} "$@"\n`, { mode: 0o700 });
+  const client = new CodexClient({ codexPath: launcher, dirs, baseUrl: fake.url ?? fake.baseUrl, args });
+  try {
+    await client.initialize();
+    const started = await client.request("thread/start", { cwd: dirs.work, approvalPolicy: "never", sandbox: "danger-full-access" });
+    await client.runTurn({ threadId: started.thread.id, input: userInput("Run the check command."), approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } }, 120000);
+  } finally {
+    await client.close();
+    await fake.close?.();
+  }
+  const outputs = (fake.requests ?? [])
+    .flatMap((r) => r.body?.input ?? [])
+    .filter((i) => i?.type === "function_call_output")
+    .map((i) => (typeof i.output === "string" ? i.output : JSON.stringify(i.output)));
+  return shellCount(outputs);
+}
+
+async function codexShellCheck({ codexPath }) {
+  // MonoCode's flags: the server's env_vars and the shell excludes
+  // (`codex_shell_env_args`, which now holds MONOCODE_CU_*).
+  const stub = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "lib", "stubMcp.mjs");
+  const serverArgs = [
+    "-c",
+    `mcp_servers.${SERVER}.command=${JSON.stringify(process.execPath)}`,
+    "-c",
+    `mcp_servers.${SERVER}.args=${JSON.stringify([stub])}`,
+    "-c",
+    `mcp_servers.${SERVER}.env_vars=${JSON.stringify([ENDPOINT, TOKEN])}`,
+  ];
+  const withExclude = await codexShellRun(codexPath, [...codexShellEnvArgs(), ...serverArgs]);
+  const without = await codexShellRun(codexPath, serverArgs);
+  const seen = withExclude.leaked || (withExclude.count ?? 0) > 0;
+  return {
+    status: withExclude.count === null && !withExclude.leaked ? "error" : seen ? "fail" : "pass",
+    finding:
+      `With MonoCode's shell excludes, exec_command saw ${TOKEN}: ${withExclude.count === null ? "unknown" : withExclude.count > 0 ? "yes" : "no"}. ` +
+      `Without them: ${without.count === null ? "unknown" : without.count > 0 ? "yes" : "no"}.`,
+    seen: { withExclude, without },
+  };
+}
+
 export const computerUseCodexChecks = [
+  {
+    id: "cu-shell-codex",
+    title: "Computer use: Codex's shell commands do not see the chat's bridge token",
+    flag: "computer-use shell excludes",
+    run: codexShellCheck,
+  },
   {
     id: "cu-env-codex",
     title: "Computer use: the chat's MCP server gets MonoCode's endpoint and token on Codex",
@@ -164,6 +282,12 @@ export const computerUseCodexChecks = [
 ];
 
 export const computerUseClaudeChecks = [
+  {
+    id: "cu-shell-claude",
+    title: "Computer use: Claude Code's Bash tool and the chat's bridge token",
+    flag: "computer-use env",
+    run: claudeShellCheck,
+  },
   {
     id: "cu-env-claude",
     title: "Computer use: the chat's MCP server gets MonoCode's endpoint and token on Claude Code",
