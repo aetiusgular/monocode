@@ -27,6 +27,7 @@ const SELECT =
 
 const SOURCE_LABEL: Record<TraitSource, string> = {
   yours: "set by you",
+  server: "reported by the model server",
   catalog: "from the catalog",
   harness: "known for this harness",
   unknown: "unknown",
