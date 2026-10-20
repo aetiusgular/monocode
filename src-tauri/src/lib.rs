@@ -810,6 +810,7 @@ pub fn run() {
         tauri::RunEvent::Exit => {
             handle.state::<remote::RemoteConnections>().shutdown();
             reap_harness_children(handle);
+            otel_receiver::remove_helpers();
         }
         _ => {}
     });

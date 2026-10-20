@@ -740,6 +740,36 @@ fn helper_for(_app: &tauri::AppHandle, _token: &str) -> Option<std::path::PathBu
     None
 }
 
+/// Removes this run's helper folder. Called once at quit (security review
+/// X12): the scripts print the chats' tokens, so none outlives the app run.
+/// The wipe at first use stays for a run that ended without quitting.
+pub fn remove_helpers() {
+    if let Some(helpers) = HELPERS.get() {
+        let mut helpers = match helpers.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        clear_helpers(&mut helpers);
+    }
+}
+
+/// Removes the folder (a link there is removed, never followed) and forgets
+/// its scripts.
+fn clear_helpers(helpers: &mut Helpers) {
+    if let Some(dir) = helpers.dir.take() {
+        match std::fs::symlink_metadata(&dir) {
+            Ok(meta) if meta.is_dir() => {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+            Ok(_) => {
+                let _ = std::fs::remove_file(&dir);
+            }
+            Err(_) => {}
+        }
+    }
+    helpers.scripts.clear();
+}
+
 /// Empties `dir` (a link there is removed, never followed) and makes it
 /// again, 0700.
 #[cfg(unix)]

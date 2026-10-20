@@ -554,3 +554,34 @@ fn the_headers_helper_is_private_new_and_prints_the_header() {
     assert!(std::fs::symlink_metadata(&dir).unwrap().is_dir());
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn quitting_removes_the_helper_folder_and_never_follows_a_link() {
+    // Security review X12: the scripts print the chats' tokens. They go at
+    // quit, not only at the next start.
+    let root = std::env::temp_dir().join(format!("otel-helper-{}", uuid::Uuid::new_v4()));
+    let dir = root.join("otel-helper");
+    fresh_private_dir(&dir).unwrap();
+    let token = "0123456789abcdef0123456789abcdef";
+    let script = write_helper(&dir, token).unwrap();
+    let mut helpers = Helpers {
+        dir: Some(dir.clone()),
+        scripts: HashMap::from([(hash(token), script)]),
+    };
+    clear_helpers(&mut helpers);
+    assert!(!dir.exists(), "the folder is gone");
+    assert!(helpers.dir.is_none() && helpers.scripts.is_empty());
+    clear_helpers(&mut helpers);
+
+    // A link in the folder's place is removed, its target kept.
+    let elsewhere = root.join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("keep"), "k").unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &dir).unwrap();
+    helpers.dir = Some(dir.clone());
+    clear_helpers(&mut helpers);
+    assert!(std::fs::symlink_metadata(&dir).is_err());
+    assert!(elsewhere.join("keep").exists());
+    std::fs::remove_dir_all(&root).unwrap();
+}
