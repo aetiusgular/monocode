@@ -103,8 +103,8 @@ pub struct CheckInput<'a> {
     pub known_hosts: &'a HashSet<String>,
     /// The time of the check, for "still running".
     pub now_ms: i64,
-    /// The app's data folder (`app_data_dir`), whose `activity` and
-    /// `computer-use` folders are guarded.
+    /// The app's data folder (`app_data_dir`), guarded but for a harness
+    /// home's session state.
     pub data_dir: Option<&'a str>,
 }
 
@@ -168,13 +168,66 @@ fn data_sub(data_dir: Option<&str>, sub: &str) -> Option<String> {
     (!base.is_empty()).then(|| format!("{base}/{sub}").to_ascii_lowercase())
 }
 
-/// The activity log's and computer use's folders in MonoCode's data folder.
-fn guarded_path(path: &str, data_dir: Option<&str>) -> bool {
+/// Session and log state a harness keeps in the homes MonoCode gives it in
+/// the data folder, the same kind `~/.claude` and `~/.codex` hold as noise.
+/// Claude Code's (`CLAUDE_CONFIG_DIR`, harness.rs:1426): `projects`,
+/// `shell-snapshots`, `session-env`, `file-history`, `todos`, `statsig`,
+/// `debug` (Claude Code 2.1.304 strings). Codex's (`CODEX_HOME`,
+/// harness.rs:1168, :1433): `codex_mono_store.rs` STATE_NAMES less
+/// `memories` and `backups`, which are not caches. Settings, config,
+/// credentials and `.claude.json` stay guarded.
+const HARNESS_HOME_NOISE: &[&str] = &[
+    "projects",
+    "shell-snapshots",
+    "session-env",
+    "file-history",
+    "todos",
+    "statsig",
+    "debug",
+    "sessions",
+    "archived_sessions",
+    "session_index.jsonl",
+    "history.jsonl",
+    "log",
+    "logs",
+    "tmp",
+    "shell_snapshots",
+];
+
+/// The only writes in the data folder that are noise: a harness home's
+/// session state, `provider-accounts/<provider>/<id>/<state>` or
+/// `codex-monos/<id>/<state>` (review X6).
+fn data_noise(path: &str, data_dir: Option<&str>) -> bool {
+    let Some(base) = data_sub(data_dir, "") else {
+        return false;
+    };
     let lower = path.to_ascii_lowercase();
-    ["activity", "computer-use"]
+    let Some(rest) = lower.strip_prefix(base.as_str()) else {
+        return false;
+    };
+    let parts: Vec<&str> = rest.split('/').collect();
+    if parts
         .iter()
-        .filter_map(|sub| data_sub(data_dir, sub))
-        .any(|folder| inside(&lower, &folder))
+        .any(|p| p.is_empty() || *p == "." || *p == "..")
+    {
+        return false;
+    }
+    let state = match parts.as_slice() {
+        ["provider-accounts", _, _, state, ..] => state,
+        ["codex-monos", _, state, ..] => state,
+        _ => return false,
+    };
+    HARNESS_HOME_NOISE.contains(state)
+}
+
+/// Everything in MonoCode's data folder but a harness home's session state:
+/// the log, computer use's recordings, the OTel helper script Claude Code
+/// runs, the provider accounts' settings, the database (review X6).
+fn guarded_path(path: &str, data_dir: Option<&str>) -> bool {
+    let Some(data) = data_dir.map(|d| d.trim_end_matches('/').to_ascii_lowercase()) else {
+        return false;
+    };
+    !data.is_empty() && inside(&path.to_ascii_lowercase(), &data) && !data_noise(path, data_dir)
 }
 
 /// Paths a write never flags: scratch space, devices, and the harnesses' own
@@ -190,17 +243,16 @@ pub fn noise_path(path: &str, granted_app: bool, data_dir: Option<&str>) -> bool
     if SYSTEM.iter().any(|prefix| inside(path, prefix)) {
         return true;
     }
-    // The log itself, its install staging and computer use's recordings sit
-    // in MonoCode's data folder. A chat's process writing there is the
-    // tampering the log exists to catch (security review S5). The app's own
-    // writes are never attributed to a chat, so they raise nothing.
+    // MonoCode's data folder holds the log, computer use's recordings, a
+    // script Claude Code runs and the provider accounts. A chat's process
+    // writing there is the tampering the log exists to catch (security
+    // review S5, X6); only a harness home's session state is noise. The
+    // app's own writes are never attributed to a chat, so they raise nothing.
+    if data_noise(path, data_dir) {
+        return true;
+    }
     if guarded_path(path, data_dir) {
         return false;
-    }
-    if let Some(data) = data_dir.map(|d| d.trim_end_matches('/').to_ascii_lowercase()) {
-        if !data.is_empty() && inside(&path.to_ascii_lowercase(), &data) {
-            return true;
-        }
     }
     let Some(home) = home_of(path) else {
         return false;
@@ -394,6 +446,68 @@ pub fn tool_windows(events: &[ActivityEvent]) -> HashMap<String, Vec<ToolWindow>
     out
 }
 
+/// One turn of a chat, from the adapter feed's `turn.start` to its
+/// `turn.end`; `None` is open to now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TurnSpan {
+    start: i64,
+    end: Option<i64>,
+}
+
+/// Turn spans per chat. A start with no end is open to now; an end whose
+/// start fell before the window opens at the window's start; a start while
+/// a turn is open keeps it open. A record marked `reattached` (a turn taken
+/// back after a reload) opens a span too. Only the adapter writes these
+/// (`src/features/harness-telemetry/model/telemetryFeed.ts`, `turn.started`
+/// and `turn.completed`).
+fn turn_spans(events: &[ActivityEvent]) -> HashMap<String, Vec<TurnSpan>> {
+    let mut out: HashMap<String, Vec<TurnSpan>> = HashMap::new();
+    let mut list: Vec<&ActivityEvent> = events
+        .iter()
+        .filter(|e| e.source == ActivitySource::Adapter && e.kind.starts_with("turn."))
+        .collect();
+    list.sort_by_key(|e| e.at);
+    for e in list {
+        let spans = out.entry(e.chat_id.clone()).or_default();
+        let open = spans.last().is_some_and(|s| s.end.is_none());
+        let reattached = e.detail.get("reattached").and_then(Value::as_bool) == Some(true);
+        match e.kind.as_str() {
+            "turn.end" if open => {
+                if let Some(last) = spans.last_mut() {
+                    last.end = Some(e.at);
+                }
+            }
+            "turn.end" => spans.push(TurnSpan {
+                start: i64::MIN,
+                end: Some(e.at),
+            }),
+            _ if open => {}
+            "turn.start" => spans.push(TurnSpan {
+                start: e.at,
+                end: None,
+            }),
+            _ if reattached => spans.push(TurnSpan {
+                start: e.at,
+                end: None,
+            }),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Whether `at` falls in a turn of the chat. A chat with no turn records in
+/// the window counts as in a turn throughout: nothing at the harness-child
+/// tier is hidden on a guess (review X4).
+fn in_turn(spans: &HashMap<String, Vec<TurnSpan>>, chat: &str, at: i64) -> bool {
+    match spans.get(chat) {
+        None => true,
+        Some(list) => list
+            .iter()
+            .any(|s| at >= s.start && s.end.is_none_or(|end| at <= end)),
+    }
+}
+
 /// Where in a chat's process tree an event came from. The collector says
 /// `root` or `child`; the check splits `child` by tool windows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -545,6 +659,27 @@ fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
+/// Docker's own binaries, by where Docker Desktop and Homebrew install
+/// them, never by name alone: a `docker` from any other folder is not the
+/// credential's owner (review X5).
+fn docker_owner(exe: &str) -> bool {
+    // Absolute, with no empty, `.` or `..` part after the leading `/`.
+    let mut parts = exe.split('/');
+    if parts.next() != Some("") || parts.any(|p| p.is_empty() || p == "." || p == "..") {
+        return false;
+    }
+    for dir in ["/usr/local/bin/", "/opt/homebrew/bin/"] {
+        if let Some(name) = exe.strip_prefix(dir) {
+            return name == "docker"
+                || name
+                    .strip_prefix("docker-credential-")
+                    .is_some_and(|rest| !rest.is_empty() && !rest.contains('/'));
+        }
+    }
+    exe.strip_prefix("/Applications/Docker.app/Contents/")
+        .is_some_and(|rest| !rest.is_empty())
+}
+
 /// Files a shell reads at every start; a write to one is never hidden.
 const SHELL_RC: &[&str] = &[
     ".zshrc",
@@ -589,6 +724,10 @@ fn hideable_write_place(path: &str, folders: &[String]) -> bool {
 
 /// The rule that makes a flag expected, or `None`. Only for `root` and
 /// `harness-child` events; never for a tool's (Mac test 3.7, 3.9, 3.11).
+/// A harness child counts only outside every turn: the tier rests on tool
+/// call records from the webview, and a missing or late one (a reload, a
+/// re-attached turn) leaves a tool's processes looking like the harness's
+/// (review X4).
 fn expected_rule(
     event: &ActivityEvent,
     tier: Tier,
@@ -596,8 +735,9 @@ fn expected_rule(
     harness: &str,
     folders: &[String],
     forked_by_root: bool,
+    during_turn: bool,
 ) -> Option<&'static str> {
-    if tier == Tier::Tool {
+    if tier == Tier::Tool || (tier == Tier::HarnessChild && during_turn) {
         return None;
     }
     let exe = str_field(event, "exe").unwrap_or("");
@@ -628,11 +768,7 @@ fn expected_rule(
             // The program that owns a credential reading it (secure-agent's
             // defaults.yaml: `programs: ["docker", "docker-credential-*",
             // "com.docker.*"]` for ~/.docker).
-            let name = basename(exe);
-            let docker_owner = name == "docker"
-                || name.starts_with("docker-credential-")
-                || name.starts_with("com.docker.");
-            if docker_owner
+            if docker_owner(exe)
                 && home
                     .as_deref()
                     .is_some_and(|h| path == format!("{h}/.docker/config.json"))
@@ -673,21 +809,69 @@ pub const DEDUPE_WINDOW_MS: i64 = 15 * 60 * 1000;
 /// At most this many expected rows come back for the toggle.
 pub const MAX_EXPECTED_ROWS: usize = 200;
 
-/// A harness helper's writes are grouped per folder: an MCP server keeps
-/// its own state folder (such as `~/.claude-server-commander/`). The
-/// folder is the first entry under home, or the file's own folder.
-fn group_folder(path: &str) -> String {
-    if let Some(home) = home_of(path) {
-        if let Some(rest) = path.strip_prefix(&format!("{home}/")) {
-            if let Some((first, _)) = rest.split_once('/') {
-                return format!("{home}/{first}");
-            }
-        }
+/// Dot folders at the top of home that hold credentials, keys or code
+/// that runs: never grouped, each write its own row (review X3).
+const NOT_APP_STATE: &[&str] = &[
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".config/gh",
+    ".config/fish",
+    ".config/git",
+    ".docker",
+    ".kube",
+    ".netrc",
+    ".local",
+    ".oh-my-zsh",
+    ".cargo",
+];
+
+/// The folder a harness helper's writes are grouped by, when the path sits
+/// inside a folder that is plainly an app's own state: a dot folder at the
+/// top of home (an MCP server's `~/.claude-server-commander/`), or one
+/// app's folder in `~/.config`. `None` for anything else: a file at the top
+/// of home, anything under `Library/`, a credential folder, a `bin` folder,
+/// a write no rule may hide, a sensitive file. Those always get their own
+/// row (review X3: a LaunchAgent folded into an earlier Preferences row).
+fn group_folder(path: &str) -> Option<String> {
+    let home = home_of(path)?;
+    let rest = path.strip_prefix(&format!("{home}/"))?;
+    let parts: Vec<&str> = rest.split('/').collect();
+    if parts.len() < 2
+        || parts
+            .iter()
+            .any(|p| p.is_empty() || *p == "." || *p == "..")
+        || parts.iter().any(|p| p.eq_ignore_ascii_case("bin"))
+        || never_hidden_write(path)
+        || sensitive_file(path)
+    {
+        return None;
     }
-    match path.rsplit_once('/') {
-        Some((dir, _)) if !dir.is_empty() => dir.to_string(),
-        _ => path.to_string(),
+    let first = parts[0];
+    if !first.starts_with('.') || first.len() < 2 {
+        return None;
     }
+    let lower = rest.to_ascii_lowercase();
+    if NOT_APP_STATE
+        .iter()
+        .any(|rel| lower == *rel || lower.starts_with(&format!("{rel}/")))
+        || SHELL_RC.iter().any(|rc| first.eq_ignore_ascii_case(rc))
+    {
+        return None;
+    }
+    if first == ".config" {
+        // One row per app, and never a file directly in ~/.config.
+        return (parts.len() >= 3).then(|| format!("{home}/.config/{}", parts[1]));
+    }
+    Some(format!("{home}/{first}"))
+}
+
+/// The files the collector logs opens of (`macos/activity-collector/src/
+/// filter.rs:34-48`) that sit outside `Library/` and the folders above,
+/// plus any `.env` file.
+fn sensitive_file(path: &str) -> bool {
+    let name = basename(path);
+    name == ".env" || name.starts_with(".env.") || name.eq_ignore_ascii_case(".netrc")
 }
 
 /// The written path a write flag is about (a copy's or link's destination).
@@ -803,6 +987,7 @@ pub fn run_full(input: &CheckInput) -> CheckOutput {
     let windows = tool_windows(input.events);
     let runtimes = runtime_spans(input.events);
     let tree = Tree::new(input.events, &windows);
+    let turns = turn_spans(input.events);
 
     for event in input.events {
         if event.chat_id.is_empty() {
@@ -980,8 +1165,16 @@ pub fn run_full(input: &CheckInput) -> CheckOutput {
             let forked_by_root = event
                 .pid
                 .is_some_and(|pid| tree.forked_by_root(&event.chat_id, pid, event.at));
-            if let Some(rule) = expected_rule(event, tier, reason, harness, folders, forked_by_root)
-            {
+            let during_turn = in_turn(&turns, &event.chat_id, event.at);
+            if let Some(rule) = expected_rule(
+                event,
+                tier,
+                reason,
+                harness,
+                folders,
+                forked_by_root,
+                during_turn,
+            ) {
                 *suppressed.entry(rule.to_string()).or_default() += 1;
                 hidden.push(Candidate {
                     event,
@@ -994,11 +1187,15 @@ pub fn run_full(input: &CheckInput) -> CheckOutput {
                 });
                 continue;
             }
-            // A harness helper's writes, one row per folder.
-            if tier == Tier::HarnessChild && reason == FlagReason::WriteOutsideFolders {
-                subject = group_folder(&subject);
-            } else {
-                grouped_path = None;
+            // A harness helper's writes to its own state folder are one row
+            // per folder; any other write keeps its own row, and a repeat of
+            // the same path still collapses into it.
+            let group = (tier == Tier::HarnessChild && reason == FlagReason::WriteOutsideFolders)
+                .then(|| group_folder(&subject))
+                .flatten();
+            match group {
+                Some(folder) => subject = folder,
+                None => grouped_path = None,
             }
         } else {
             grouped_path = None;
@@ -1334,7 +1531,8 @@ mod tests {
             &[],
         );
         let ids: Vec<&str> = flags.iter().map(|f| f.event_id.as_str()).collect();
-        assert_eq!(ids, vec!["1", "2", "3"]);
+        // The database is guarded too since review X6.
+        assert_eq!(ids, vec!["1", "2", "3", "4"]);
     }
 
     #[test]
@@ -1926,6 +2124,10 @@ mod tests {
     #[test]
     fn expected_harness_reads_are_not_flags() {
         let events = [
+            // A turn that ended before: what follows is outside every turn
+            // (review X4).
+            turn("t0", 0, "turn.start"),
+            turn("t9", 0, "turn.end"),
             proc_ev(
                 "k1",
                 1,
@@ -2084,6 +2286,10 @@ mod tests {
         // `security` run by a shell the harness started is then not the
         // harness's own sign-in read, and must still flag.
         let events = [
+            // A turn that ended before: what follows is outside every turn
+            // (review X4).
+            turn("t0", 0, "turn.start"),
+            turn("t9", 0, "turn.end"),
             proc_ev(
                 "f1",
                 100,
@@ -2138,6 +2344,10 @@ mod tests {
     #[test]
     fn shell_rc_and_launch_agent_writes_are_never_hidden() {
         let events = [
+            // A turn that ended before: what follows is outside every turn
+            // (review X4).
+            turn("t0", 0, "turn.start"),
+            turn("t9", 0, "turn.end"),
             proc_ev(
                 "rc",
                 1,
@@ -2338,6 +2548,209 @@ mod tests {
             flags[0].summary,
             "/usr/bin/nohup (pid 55) kept running after its tool call ended, reparented to launchd"
         );
+    }
+
+    fn turn(id: &str, at: i64, kind: &str) -> ActivityEvent {
+        ev(id, at, ActivitySource::Adapter, kind, json!({}), None)
+    }
+
+    #[test]
+    fn a_helpers_distinct_writes_outside_app_state_each_get_a_row() {
+        // Review X3: a second write under the same top folder folded into
+        // the first row, so a LaunchAgent after a Preferences write, or
+        // authorized_keys after known_hosts, was never seen on its own.
+        let w = |id: &str, at: i64, path: &str| {
+            proc_ev(
+                id,
+                at,
+                "write",
+                11,
+                json!({"tier": "child", "path": path, "exe": "/usr/local/bin/node"}),
+            )
+        };
+        let flags = check(
+            &[
+                w("p", 1, "/Users/t/Library/Preferences/y.plist"),
+                w("la", 2, "/Users/t/Library/LaunchAgents/x.plist"),
+                w("kh", 3, "/Users/t/.ssh/known_hosts"),
+                w("ak", 4, "/Users/t/.ssh/authorized_keys"),
+                w("ak2", 5, "/Users/t/.ssh/authorized_keys"),
+                w("gh1", 6, "/Users/t/.config/other/a.json"),
+                w("gh2", 7, "/Users/t/.config/gh/hosts.yml"),
+                w("rc1", 8, "/Users/t/.npmrc"),
+                w("rc2", 9, "/Users/t/.zshrc"),
+            ],
+            &[],
+        );
+        let ids: Vec<&str> = flags.iter().map(|f| f.event_id.as_str()).collect();
+        assert_eq!(ids, vec!["p", "la", "kh", "ak", "gh1", "gh2", "rc1", "rc2"]);
+        // The same path still collapses.
+        let ak = flags.iter().find(|f| f.event_id == "ak").unwrap();
+        assert_eq!(ak.count, 2);
+    }
+
+    #[test]
+    fn a_harness_child_read_inside_a_turn_is_shown() {
+        // Review X4: a tool whose call record is missing or late lands in
+        // the harness-child tier. Inside a turn its `security` read must
+        // show; outside every turn the harness's own poll stays hidden.
+        let key = "/Users/t/Library/Keychains/login.keychain-db";
+        let read = |id: &str, at: i64, pid: u32| {
+            [
+                proc_ev(
+                    &format!("f{id}"),
+                    at,
+                    "fork",
+                    10,
+                    json!({"tier": "root", "child": pid, "exe": "/usr/local/bin/claude"}),
+                ),
+                proc_ev(
+                    id,
+                    at + 1,
+                    "open",
+                    pid,
+                    json!({"tier": "child", "exe": "/usr/bin/security", "path": key}),
+                ),
+            ]
+        };
+        let mut events = vec![turn("t1", 100, "turn.start"), turn("t2", 300, "turn.end")];
+        events.extend(read("in", 150, 40));
+        events.extend(read("out", 400 + DEDUPE_WINDOW_MS, 41));
+        events.push(turn("t3", 500 + 2 * DEDUPE_WINDOW_MS, "turn.start"));
+        // An open turn runs to now.
+        events.extend(read("open", 600 + 2 * DEDUPE_WINDOW_MS, 42));
+        events.push(proc_ev(
+            "root",
+            700 + 2 * DEDUPE_WINDOW_MS,
+            "open",
+            10,
+            json!({"tier": "root", "exe": "/usr/local/bin/claude", "path": key}),
+        ));
+        events.sort_by_key(|e| e.at);
+        let hosts = HashSet::new();
+        let out = run_full(&CheckInput {
+            events: &events,
+            approvals: &[],
+            chats: &chats(),
+            known_hosts: &hosts,
+            now_ms: 10 * DEDUPE_WINDOW_MS,
+            data_dir: Some(DATA),
+        });
+        let ids: Vec<&str> = out.flags.iter().map(|f| f.event_id.as_str()).collect();
+        assert_eq!(ids, vec!["in", "open"], "{ids:?}");
+        // The harness itself is unchanged: hidden during a turn too.
+        assert_eq!(out.suppressed.get(RULE_HARNESS_READ), Some(&2));
+
+        // A chat with no turn records: the whole window counts as a turn.
+        let bare: Vec<ActivityEvent> = read("bare", 150, 43).into();
+        let out = check_full(&bare, &[], DATA);
+        assert_eq!(out.flags.len(), 1, "{:?}", out.flags);
+    }
+
+    #[test]
+    fn the_docker_owner_rule_needs_an_installed_docker() {
+        // Review X5: any binary named docker, from any folder, read the
+        // credentials unseen.
+        let read = |id: &str, at: i64, exe: &str| {
+            proc_ev(
+                id,
+                at,
+                "open",
+                12,
+                json!({"tier": "child", "path": "/Users/t/.docker/config.json", "exe": exe}),
+            )
+        };
+        let events = [
+            turn("t1", 1, "turn.start"),
+            turn("t2", 2, "turn.end"),
+            read("a", 10, "/usr/local/bin/docker"),
+            read("b", 11, "/opt/homebrew/bin/docker-credential-osxkeychain"),
+            read(
+                "c",
+                12,
+                "/Applications/Docker.app/Contents/Resources/bin/docker-credential-desktop",
+            ),
+            read("d", 13 + DEDUPE_WINDOW_MS, "/Users/t/bin/docker"),
+            read(
+                "e",
+                14 + 2 * DEDUPE_WINDOW_MS,
+                "/tmp/x/docker-credential-desktop",
+            ),
+            read(
+                "f",
+                15 + 3 * DEDUPE_WINDOW_MS,
+                "/usr/local/bin/docker-credential-",
+            ),
+            read(
+                "g",
+                16 + 4 * DEDUPE_WINDOW_MS,
+                "/Applications/Docker.app/Contents/../../x/docker",
+            ),
+        ];
+        let out = check_full(&events, &[], DATA);
+        let ids: Vec<&str> = out.flags.iter().map(|f| f.event_id.as_str()).collect();
+        assert_eq!(ids, vec!["d", "e", "f", "g"]);
+        assert_eq!(out.suppressed.get(RULE_CREDENTIAL_OWNER), Some(&3));
+    }
+
+    #[test]
+    fn only_harness_state_in_the_data_folder_is_noise() {
+        // Review X6: otel-helper holds a script Claude Code runs, and
+        // provider-accounts holds other accounts' settings; both were noise.
+        let base = DATA;
+        let flags = check(
+            &[
+                es("1", 1, "write", &format!("{base}/otel-helper/h.sh")),
+                es(
+                    "2",
+                    2,
+                    "write",
+                    &format!("{base}/provider-accounts/claude/a/settings.json"),
+                ),
+                es("3", 3, "write", &format!("{base}/monocode.db")),
+                es("4", 4, "write", &format!("{base}/Monocode.db-wal")),
+                es(
+                    "5",
+                    5,
+                    "write",
+                    &format!("{base}/codex-monos/a/config.toml"),
+                ),
+                es(
+                    "6",
+                    6,
+                    "write",
+                    &format!("{base}/codex-monos/a/sessions/2026/r.jsonl"),
+                ),
+                es(
+                    "7",
+                    7,
+                    "write",
+                    &format!("{base}/provider-accounts/claude/a/projects/p/s.jsonl"),
+                ),
+                es(
+                    "8",
+                    8,
+                    "write",
+                    &format!("{base}/provider-accounts/claude/a/.claude.json"),
+                ),
+                es(
+                    "9",
+                    9,
+                    "write",
+                    &format!("{base}/provider-accounts/codex/a/log/codex-tui.log"),
+                ),
+                es(
+                    "10",
+                    10,
+                    "write",
+                    &format!("{base}/codex-monos/a/../a/auth.json"),
+                ),
+            ],
+            &[],
+        );
+        let ids: Vec<&str> = flags.iter().map(|f| f.event_id.as_str()).collect();
+        // A provider account's `.claude.json` holds its MCP servers: shown.
+        assert_eq!(ids, vec!["1", "2", "3", "4", "5", "8", "10"]);
     }
 
     #[test]
