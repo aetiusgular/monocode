@@ -716,18 +716,11 @@ struct Candidate<'e> {
     alone: bool,
 }
 
-/// Collapses candidates on (chat, reason, tier, exe, pid, subject) within
-/// 15 minutes of a row's first event. The pid keeps two processes apart.
+/// Collapses candidates on (chat, reason, tier, exe, subject) within 15
+/// minutes of a row's first event.
 fn dedupe(events: &[ActivityEvent], mut found: Vec<Candidate>) -> Vec<Flag> {
     found.sort_by_key(|c| c.event.at);
-    type Key = (
-        String,
-        FlagReason,
-        Option<Tier>,
-        String,
-        Option<u32>,
-        String,
-    );
+    type Key = (String, FlagReason, Option<Tier>, String, String);
     let mut open: HashMap<Key, usize> = HashMap::new();
     let mut rows: Vec<Flag> = Vec::new();
     let mut paths: Vec<HashSet<String>> = Vec::new();
@@ -738,7 +731,6 @@ fn dedupe(events: &[ActivityEvent], mut found: Vec<Candidate>) -> Vec<Flag> {
             c.reason,
             c.tier,
             exe,
-            c.event.pid,
             c.subject.clone(),
         );
         if let Some(&i) = open.get(&key).filter(|_| !c.alone) {
