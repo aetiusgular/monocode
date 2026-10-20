@@ -38,6 +38,7 @@ Claude Code reads `CLAUDE.md`, `.claude/CLAUDE.md` and `CLAUDE.local.md` from ev
 | `checks/claude.mjs` | The Claude Code checks |
 | `checks/claudeGitAsk.mjs` | The `git-ask` check: Claude Code's read-only git commands in a partial clone with a planted `uploadpack`, with and without MonoCode's `Bash(git:*)` ask rule, in every permission mode (Mac test 10.1) |
 | `checks/otel.mjs` | Harness telemetry: each CLI exports to a stand-in receiver with the chat's token; `otel-claude-helper` sends it through `otelHeadersHelper` in `--settings` with no header variable; `otel-codex` also checks that Codex's shell commands see no header variable |
+| `checks/claudeTurnEnd.mjs` | The `turn-end` check: with session state events on, a stopped turn's late result names its own prompt's uuid and `idle` ends each turn (Mac test 2.8) |
 | `lib/fakeResponses.mjs` | Fake OpenAI Responses API, streaming |
 | `lib/fakeMessages.mjs` | Fake Anthropic Messages API, streaming |
 | `lib/codexDriver.mjs` | Starts `codex app-server` and speaks its JSON-RPC as MonoCode does |

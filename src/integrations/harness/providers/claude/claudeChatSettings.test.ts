@@ -328,7 +328,10 @@ describe("Claude Code launch settings with plugins switched off", () => {
       "paper-desktop@paper": false,
     });
     // Beside the environment every session gets, in the one flag.
-    expect(settings.env).toEqual({ CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" });
+    expect(settings.env).toEqual({
+      CLAUDE_CODE_ENABLE_TODO_TOOLS: "1",
+      CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
+    });
     expect(spawned[0].filter((arg) => arg === "--settings")).toHaveLength(1);
     await finish(turn);
   });

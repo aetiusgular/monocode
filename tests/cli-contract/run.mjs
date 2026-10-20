@@ -19,6 +19,7 @@ import { claudeChecks } from "./checks/claude.mjs";
 import { editAdapterChecks } from "./checks/editAdapter.mjs";
 // [w3-a] imports
 import { otelCodexChecks as otelCodexChecks_w3a, otelClaudeChecks as otelClaudeChecks_w3a } from "./checks/otel.mjs";
+import { claudeTurnEndChecks } from "./checks/claudeTurnEnd.mjs";
 // [w3-b] imports
 // [w3-c] imports
 import { computerUseClaudeChecks as computerUseClaudeChecks_w3c, computerUseCodexChecks as computerUseCodexChecks_w3c } from "./checks/computerUse.mjs";
@@ -98,6 +99,7 @@ async function main() {
     for (const c of claudeChecks) plan.push({ ...c, harness: "claude", bin: v ? bin : null, cliVersion: v, id: v ? `${c.id}@${v.split(" ")[0]}` : c.id, baseId: c.id });
     // [w3-a] claude-plan
     for (const c of otelClaudeChecks_w3a) plan.push({ ...c, harness: "claude", bin: v ? bin : null, cliVersion: v, id: v ? `${c.id}@${v.split(" ")[0]}` : c.id, baseId: c.id });
+    for (const c of claudeTurnEndChecks) plan.push({ ...c, harness: "claude", bin: v ? bin : null, cliVersion: v, id: v ? `${c.id}@${v.split(" ")[0]}` : c.id, baseId: c.id });
     // [w3-b] claude-plan
     // [w3-c] claude-plan
     for (const c of computerUseClaudeChecks_w3c) plan.push({ ...c, harness: "claude", bin: v ? bin : null, cliVersion: v, id: v ? `${c.id}@${v.split(" ")[0]}` : c.id, baseId: c.id });
