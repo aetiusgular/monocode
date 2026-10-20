@@ -55,7 +55,7 @@ describe("the Activity section (B6)", () => {
     const view = (sinceVisit: boolean) =>
       renderToStaticMarkup(
         createElement(ActivityFlagsView, {
-          report: { ...EMPTY_REPORT, collectorReachable: true },
+          report: { ...EMPTY_REPORT, collectorReachable: "yes" },
           sinceVisit,
           loading: false,
           onMarkSeen: noop,
@@ -66,6 +66,49 @@ describe("the Activity section (B6)", () => {
     expect(view(true)).toContain("Nothing flagged since your last visit.");
     expect(view(false)).toContain("Nothing flagged in the last 7 days.");
     expect(view(true)).not.toContain("data-activity-seen");
+  });
+});
+
+describe("the Activity section after the Mac test (2.9, 3.7, 3.11)", () => {
+  const view = (report: FlagsReport) =>
+    renderToStaticMarkup(
+      createElement(ActivityFlagsView, {
+        report,
+        sinceVisit: true,
+        loading: true,
+        onMarkSeen: noop,
+        onShowWeek: noop,
+        onRefresh: noop,
+      }),
+    );
+
+  it("while loading says nothing about the collector", () => {
+    expect(view(EMPTY_REPORT)).not.toContain("not running");
+  });
+
+  it("shows the hidden count with a toggle, and a repeat count", () => {
+    const html = view({
+      ...EMPTY_REPORT,
+      collectorReachable: "yes",
+      suppressed: { harnessRead: 4 },
+      flags: [
+        {
+          id: "sensitivePath:es-1",
+          chatId: "c1",
+          at: 0,
+          lastAt: 5_000,
+          count: 3,
+          reason: "sensitivePath",
+          summary: "Opened /Users/t/.ssh/known_hosts",
+          eventId: "es-1",
+          context: [],
+        },
+      ],
+    });
+    expect(html).toContain("4 expected events hidden");
+    expect(html).toContain("data-activity-show-expected");
+    expect(html).toContain("data-activity-repeat");
+    expect(html).toContain("×3");
   });
 });
 

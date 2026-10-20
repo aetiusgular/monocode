@@ -57,6 +57,11 @@ pub enum RawKind {
     Close,
     Open,
     TccModify,
+    Truncate,
+    Link,
+    Copyfile,
+    Clone,
+    Exchangedata,
 }
 
 impl RawKind {
@@ -72,11 +77,18 @@ impl RawKind {
             RawKind::Close => "close",
             RawKind::Open => "open",
             RawKind::TccModify => "tcc_modify",
+            RawKind::Truncate => "truncate",
+            RawKind::Link => "link",
+            RawKind::Copyfile => "copyfile",
+            RawKind::Clone => "clone",
+            RawKind::Exchangedata => "exchangedata",
         }
     }
 
-    /// All kinds, in the protocol's fixed event-list order.
-    pub const ALL: [RawKind; 9] = [
+    /// All kinds, in the protocol's fixed event-list order. `write` stays
+    /// out: too many events, with no way to select processes (note AA,
+    /// appendix A).
+    pub const ALL: [RawKind; 14] = [
         RawKind::Exec,
         RawKind::Fork,
         RawKind::Exit,
@@ -86,6 +98,11 @@ impl RawKind {
         RawKind::Close,
         RawKind::Open,
         RawKind::TccModify,
+        RawKind::Truncate,
+        RawKind::Link,
+        RawKind::Copyfile,
+        RawKind::Clone,
+        RawKind::Exchangedata,
     ];
 
     fn from_es_name(name: &str) -> Option<RawKind> {
@@ -101,14 +118,23 @@ pub struct RawEvent {
     pub pid: u32,
     /// `process.ppid`, when present.
     pub ppid: Option<u32>,
+    /// `process.original_ppid`: the parent at fork, kept after a reparent
+    /// to launchd (`es_process_t`).
+    pub original_ppid: Option<u32>,
+    /// `process.group_id`: the process group.
+    pub group_id: Option<u32>,
+    /// `process.session_id`: the Unix session of that group.
+    pub session_id: Option<u32>,
     /// The acting process's executable. For `exec` this is the new image
     /// (`event.exec.target.executable.path`), since that is what now runs.
     pub exe: Option<String>,
     /// `exec` arguments (falls back to `[exe]` when eslogger gives none).
     pub argv: Vec<String>,
-    /// The file the event is about.
+    /// The file the event is about (for `link`, `copyfile` and `clone`
+    /// the source; for `exchangedata` the first file).
     pub path: Option<String>,
-    /// `rename` destination.
+    /// The second file: `rename`, `link`, `copyfile` and `clone`
+    /// destination, `exchangedata`'s other file.
     pub dest: Option<String>,
     /// `close`: whether the file was modified.
     pub modified: bool,
@@ -150,8 +176,14 @@ fn destination_path(dest: Option<&Value>) -> Option<String> {
         return Some(p);
     }
     let new_path = dest.get("new_path")?;
-    let dir = file_path(new_path.get("dir"))?;
-    let name = new_path.get("filename")?.as_str()?;
+    join_name(new_path.get("dir"), new_path.get("filename"))
+}
+
+/// `dir.path` joined with one file name, refused when the name is empty or
+/// holds a `/`.
+fn join_name(dir: Option<&Value>, name: Option<&Value>) -> Option<String> {
+    let dir = file_path(dir)?;
+    let name = name?.as_str()?;
     if name.is_empty() || name.contains('/') {
         return None;
     }
@@ -174,11 +206,15 @@ pub fn parse_eslogger_line(line: &str) -> Option<RawEvent> {
     let process = root.get("process")?;
     let pid = get_u32(process.get("audit_token")?.get("pid")?)?;
     let ppid = process.get("ppid").and_then(get_u32);
+    let id_of = |key: &str| process.get(key).and_then(get_u32);
     let time_ms = timefmt::parse_rfc3339_ms(root.get("time")?.as_str()?)?;
     let mut raw = RawEvent {
         kind: Some(name),
         pid,
         ppid,
+        original_ppid: id_of("original_ppid"),
+        group_id: id_of("group_id"),
+        session_id: id_of("session_id"),
         exe: file_path(process.get("executable")),
         time_ms,
         ..RawEvent::default()
@@ -222,6 +258,35 @@ pub fn parse_eslogger_line(line: &str) -> Option<RawEvent> {
         RawKind::TccModify => {
             raw.tcc_service = get_str(body.get("service"));
             raw.tcc_identity = get_str(body.get("identity"));
+        }
+        // Member names from Apple's pages for each `es_event_*_t`:
+        // truncate `target`; link `source`, `target_dir`, `target_filename`;
+        // copyfile `source`, `target_file` (optional), `target_dir`,
+        // `target_name`; clone `source`, `target_dir`, `target_name`;
+        // exchangedata `file1`, `file2`
+        // (https://developer.apple.com/documentation/endpointsecurity/).
+        RawKind::Truncate => raw.path = Some(file_path(body.get("target"))?),
+        RawKind::Link => {
+            raw.path = Some(file_path(body.get("source"))?);
+            raw.dest = Some(join_name(
+                body.get("target_dir"),
+                body.get("target_filename"),
+            )?);
+        }
+        RawKind::Copyfile => {
+            raw.path = Some(file_path(body.get("source"))?);
+            raw.dest = match file_path(body.get("target_file")) {
+                Some(existing) => Some(existing),
+                None => Some(join_name(body.get("target_dir"), body.get("target_name"))?),
+            };
+        }
+        RawKind::Clone => {
+            raw.path = Some(file_path(body.get("source"))?);
+            raw.dest = Some(join_name(body.get("target_dir"), body.get("target_name"))?);
+        }
+        RawKind::Exchangedata => {
+            raw.path = Some(file_path(body.get("file1"))?);
+            raw.dest = Some(file_path(body.get("file2"))?);
         }
     }
     Some(raw)

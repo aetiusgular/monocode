@@ -21,12 +21,59 @@ use serde_json::{json, Value};
 use super::registry::READ_SOCKET;
 use super::types::{ActivityEvent, ActivitySource};
 
-pub const LABEL: &str = "com.monocode.desktop.activity-collector";
-pub const DAEMON_PATH: &str =
-    "/Library/PrivilegedHelperTools/com.monocode.desktop.activity-collector";
-pub const PLIST_PATH: &str = "/Library/LaunchDaemons/com.monocode.desktop.activity-collector.plist";
+/// The signed release's identifier. The daemon's names follow the running
+/// app's identifier (`app.config().identifier`), so a dev build
+/// (`com.monocode.desktop.dev`, decision 1) installs its own label.
+pub const RELEASE_IDENTIFIER: &str = "com.monocode.desktop";
 pub const BINARY_NAME: &str = "monocode-activity-collector";
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
+/// An `events` reply waits while the collector verifies every day file in
+/// the range before it answers (`log.rs` `read_events`).
+const EVENTS_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// The daemon's launchd label and paths, from the app's identifier.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Names {
+    /// The app's identifier, the bundle that may register the daemon.
+    pub app_identifier: String,
+    /// `<identifier>.activity-collector`.
+    pub label: String,
+    pub daemon_path: String,
+    pub plist_path: String,
+}
+
+impl Names {
+    /// Names for an identifier, or `None` for one that could not sit in a
+    /// path or a shell line unquoted.
+    pub fn for_identifier(identifier: &str) -> Option<Names> {
+        let ok = !identifier.is_empty()
+            && identifier.len() <= 200
+            && identifier
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'))
+            && !identifier.starts_with('.')
+            && !identifier.contains("..");
+        if !ok {
+            return None;
+        }
+        let label = format!("{identifier}.activity-collector");
+        Some(Names {
+            app_identifier: identifier.to_string(),
+            daemon_path: format!("/Library/PrivilegedHelperTools/{label}"),
+            plist_path: format!("/Library/LaunchDaemons/{label}.plist"),
+            label,
+        })
+    }
+
+    pub fn release() -> Names {
+        Names::for_identifier(RELEASE_IDENTIFIER).unwrap_or_else(|| unreachable!())
+    }
+
+    /// The running app's names.
+    pub fn current() -> Names {
+        Names::for_identifier(super::identifier()).unwrap_or_else(Names::release)
+    }
+}
 const MAX_REPLY_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_EVENTS: usize = 10_000;
 
@@ -47,6 +94,9 @@ pub struct CollectorStatus {
     /// Why it is not reachable, in a sentence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub problem: Option<String>,
+    /// `eslogger: <its last stderr line>` while eslogger is not running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eslogger_problem: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -56,16 +106,41 @@ pub struct EventsReply {
     pub chain_ok: bool,
     /// The reply ended with its closing line.
     pub complete: bool,
+    /// Why there is no complete reply: `timeout`, `truncated`, `not running`
+    /// or the collector's own error (`refused`). `None` when complete.
+    pub problem: Option<String>,
 }
 
 /// Reads an `events` reply. Lines that are not an `eslogger` event are
 /// skipped, so the collector cannot put another source's record in the log.
 pub fn parse_events_reply(reader: impl BufRead, limit: usize) -> EventsReply {
     let mut reply = EventsReply::default();
-    for line in reader.lines().map_while(Result::ok) {
+    let mut lines = reader.lines();
+    loop {
+        let line = match lines.next() {
+            None => break,
+            Some(Ok(line)) => line,
+            Some(Err(error)) => {
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) {
+                    reply.problem = Some("timeout".into());
+                }
+                break;
+            }
+        };
         let Ok(value) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
+        if value.get("ok").and_then(Value::as_bool) == Some(false) {
+            let error = value
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("error");
+            reply.problem = Some(error.chars().filter(|c| !c.is_control()).take(64).collect());
+            break;
+        }
         if value.get("end").and_then(Value::as_bool) == Some(true) {
             reply.truncated = value
                 .get("truncated")
@@ -90,6 +165,9 @@ pub fn parse_events_reply(reader: impl BufRead, limit: usize) -> EventsReply {
         }
         reply.events.push(super::store::bound_event(event));
     }
+    if !reply.complete && reply.problem.is_none() {
+        reply.problem = Some("truncated".into());
+    }
     reply
 }
 
@@ -105,36 +183,86 @@ pub fn events_request(since: i64, until: i64, chat_id: Option<&str>, limit: usiz
 }
 
 #[cfg(unix)]
-fn ask(request: &str) -> std::io::Result<BufReader<std::io::Take<std::os::unix::net::UnixStream>>> {
+fn ask(
+    request: &str,
+    timeout: Duration,
+) -> std::io::Result<BufReader<std::io::Take<std::os::unix::net::UnixStream>>> {
     use std::os::unix::net::UnixStream;
     let mut stream = UnixStream::connect(READ_SOCKET)?;
-    stream.set_read_timeout(Some(READ_TIMEOUT))?;
+    stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(READ_TIMEOUT))?;
     stream.write_all(request.as_bytes())?;
     stream.write_all(b"\n")?;
     Ok(BufReader::new(stream.take(MAX_REPLY_BYTES)))
 }
 
-/// The collector's events between two times, or an empty reply when it is
-/// not there. Never an error to the caller (case 9).
+/// The collector's events between two times. A reply that never completed
+/// keeps what arrived and says why (Mac test 3.12b). Never an error to the
+/// caller (case 9).
 pub fn fetch_events(since: i64, until: i64, chat_id: Option<&str>, limit: usize) -> EventsReply {
     #[cfg(unix)]
     {
-        match ask(&events_request(since, until, chat_id, limit)) {
+        match ask(
+            &events_request(since, until, chat_id, limit),
+            EVENTS_TIMEOUT,
+        ) {
             Ok(reader) => parse_events_reply(reader, limit.min(MAX_EVENTS)),
-            Err(_) => EventsReply::default(),
+            Err(_) => EventsReply {
+                problem: Some("not running".into()),
+                ..EventsReply::default()
+            },
         }
     }
     #[cfg(not(unix))]
     {
         let _ = (since, until, chat_id, limit);
-        EventsReply::default()
+        EventsReply {
+            problem: Some("not running".into()),
+            ..EventsReply::default()
+        }
+    }
+}
+
+/// eslogger's stopped reason from the collector's status, as
+/// `eslogger: <line>`, or `None` while it runs. The line is the collector's,
+/// capped and printable there; it is cut again here.
+pub fn eslogger_problem(detail: &Value) -> Option<String> {
+    let state = detail.get("eslogger").and_then(Value::as_str)?;
+    if state == "running" {
+        return None;
+    }
+    let line: String = detail
+        .get("esloggerError")
+        .and_then(Value::as_str)
+        .unwrap_or(state)
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(300)
+        .collect();
+    Some(format!("eslogger: {line}"))
+}
+
+/// The collector's status line, or `None`. Short timeout: it is cheap.
+pub fn fetch_status_detail() -> Option<Value> {
+    #[cfg(unix)]
+    {
+        let mut reader = ask("{\"v\":1,\"op\":\"status\"}", READ_TIMEOUT).ok()?;
+        let mut line = String::new();
+        reader.read_line(&mut line).ok()?;
+        serde_json::from_str::<Value>(&line)
+            .ok()
+            .filter(|v| v.get("eslogger").is_some())
+    }
+    #[cfg(not(unix))]
+    {
+        None
     }
 }
 
 pub fn status() -> CollectorStatus {
     let supported = cfg!(target_os = "macos");
-    let installed = Path::new(PLIST_PATH).exists() || bundled_registered();
+    let names = Names::current();
+    let installed = Path::new(&names.plist_path).exists() || bundled_registered();
     let mut status = CollectorStatus {
         supported,
         installed,
@@ -143,12 +271,14 @@ pub fn status() -> CollectorStatus {
     };
     #[cfg(unix)]
     {
-        match ask("{\"v\":1,\"op\":\"status\"}") {
+        match ask("{\"v\":1,\"op\":\"status\"}", READ_TIMEOUT) {
             Ok(mut reader) => {
                 let mut line = String::new();
                 if reader.read_line(&mut line).is_ok() {
                     if let Ok(value) = serde_json::from_str::<Value>(&line) {
                         status.reachable = true;
+                        // Why eslogger is not running, for the page (3.4).
+                        status.eslogger_problem = eslogger_problem(&value);
                         status.detail = Some(value);
                     }
                 }
@@ -186,6 +316,9 @@ pub struct InstallPlan {
     /// Where the plist was written for the terminal route.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub staged_plist: Option<String>,
+    /// The installed daemon, the file to grant Full Disk Access to.
+    #[serde(default)]
+    pub daemon_path: String,
 }
 
 fn xml_escape(text: &str) -> String {
@@ -197,7 +330,7 @@ fn xml_escape(text: &str) -> String {
 
 /// The launchd plist. `dev_peer_path` is the unsigned development app the
 /// daemon may accept; `None` for a signed build.
-pub fn plist(program: &str, dev_peer_path: Option<&str>) -> String {
+pub fn plist(label: &str, program: &str, dev_peer_path: Option<&str>) -> String {
     let mut args = vec![program.to_string(), "run".to_string()];
     if let Some(path) = dev_peer_path {
         args.push("--dev-peer-path".into());
@@ -211,7 +344,7 @@ pub fn plist(program: &str, dev_peer_path: Option<&str>) -> String {
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
 <plist version=\"1.0\">\n<dict>\n\
-\t<key>Label</key>\n\t<string>{LABEL}</string>\n\
+\t<key>Label</key>\n\t<string>{label}</string>\n\
 \t<key>ProgramArguments</key>\n\t<array>\n{args}\t</array>\n\
 \t<key>RunAtLoad</key>\n\t<true/>\n\
 \t<key>KeepAlive</key>\n\t<true/>\n\
@@ -225,15 +358,17 @@ pub fn plist(program: &str, dev_peer_path: Option<&str>) -> String {
 /// bundle, and only MonoCode's own bundle id may register it. The file at
 /// `macos/activity-collector/bundle/` must match this text (tested).
 #[cfg(test)]
-pub fn bundled_plist_text() -> String {
+pub fn bundled_plist_text(names: &Names) -> String {
+    let label = &names.label;
+    let app = &names.app_identifier;
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
 <plist version=\"1.0\">\n<dict>\n\
-\t<key>Label</key>\n\t<string>{LABEL}</string>\n\
+\t<key>Label</key>\n\t<string>{label}</string>\n\
 \t<key>BundleProgram</key>\n\t<string>Contents/MacOS/monocode-activity-collector</string>\n\
 \t<key>ProgramArguments</key>\n\t<array>\n\t\t<string>monocode-activity-collector</string>\n\t\t<string>run</string>\n\t</array>\n\
-\t<key>AssociatedBundleIdentifiers</key>\n\t<array>\n\t\t<string>com.monocode.desktop</string>\n\t</array>\n\
+\t<key>AssociatedBundleIdentifiers</key>\n\t<array>\n\t\t<string>{app}</string>\n\t</array>\n\
 \t<key>RunAtLoad</key>\n\t<true/>\n\
 \t<key>KeepAlive</key>\n\t<true/>\n\
 \t<key>ProcessType</key>\n\t<string>Background</string>\n\
@@ -255,6 +390,7 @@ fn quoted(path: &str) -> String {
 /// SHA-256 checked after it is copied to a root-owned place and before it is
 /// started, so a file swapped in the staging folder never runs as root.
 pub fn terminal_plan(
+    names: &Names,
     built_binary: &str,
     binary_sha256: &str,
     staged_plist: &str,
@@ -274,7 +410,8 @@ pub fn terminal_plan(
     // could swap it after the plan is shown. It is checked by hash too, once
     // it sits in a root-owned place, and nothing starts unless both checks
     // passed (security review S1).
-    let plist_text = plist(DAEMON_PATH, Some(dev_peer_path));
+    let plist_text = plist(&names.label, &names.daemon_path, Some(dev_peer_path));
+    let (label, daemon_path, plist_path) = (&names.label, &names.daemon_path, &names.plist_path);
     let plist_sha256 = text_sha256(&plist_text);
     // Both files are installed root-owned, then one root shell checks both
     // hashes and starts the daemon only if both match, else removes both.
@@ -288,15 +425,15 @@ pub fn terminal_plan(
     let binary_sha256 = binary_sha256.to_ascii_lowercase();
     let commands = vec![
         format!(
-            "/usr/bin/sudo /usr/bin/install -o root -g wheel -m 755 {} {DAEMON_PATH}.new",
+            "/usr/bin/sudo /usr/bin/install -o root -g wheel -m 755 {} {daemon_path}.new",
             quoted(built_binary)
         ),
         format!(
-            "/usr/bin/sudo /usr/bin/install -o root -g wheel -m 644 {} {PLIST_PATH}.new",
+            "/usr/bin/sudo /usr/bin/install -o root -g wheel -m 644 {} {plist_path}.new",
             quoted(staged_plist)
         ),
         format!(
-            "/usr/bin/sudo /bin/sh -c 'B=$(/usr/bin/shasum -a 256 {DAEMON_PATH}.new | /usr/bin/cut -d \" \" -f 1); P=$(/usr/bin/shasum -a 256 {PLIST_PATH}.new | /usr/bin/cut -d \" \" -f 1); if [ \"$B\" = \"{binary_sha256}\" ] && [ \"$P\" = \"{plist_sha256}\" ]; then /bin/mv -f {DAEMON_PATH}.new {DAEMON_PATH} && /bin/mv -f {PLIST_PATH}.new {PLIST_PATH} || {{ echo \"could not move the files into place, not installed\"; exit 1; }}; /bin/launchctl bootout system/{LABEL} 2>/dev/null; /bin/launchctl bootstrap system {PLIST_PATH} || {{ echo \"collector not running, start it with: sudo /bin/launchctl bootstrap system {PLIST_PATH}\"; exit 1; }}; else echo \"hash mismatch, not installed\"; /bin/rm -f {DAEMON_PATH}.new {PLIST_PATH}.new; exit 1; fi'"
+            "/usr/bin/sudo /bin/sh -c 'B=$(/usr/bin/shasum -a 256 {daemon_path}.new | /usr/bin/cut -d \" \" -f 1); P=$(/usr/bin/shasum -a 256 {plist_path}.new | /usr/bin/cut -d \" \" -f 1); if [ \"$B\" = \"{binary_sha256}\" ] && [ \"$P\" = \"{plist_sha256}\" ]; then /bin/mv -f {daemon_path}.new {daemon_path} && /bin/mv -f {plist_path}.new {plist_path} || {{ echo \"could not move the files into place, not installed\"; exit 1; }}; /bin/launchctl bootout system/{label} 2>/dev/null; /bin/launchctl bootstrap system {plist_path} || {{ echo \"collector not running, start it with: sudo /bin/launchctl bootstrap system {plist_path}\"; exit 1; }}; else echo \"hash mismatch, not installed\"; /bin/rm -f {daemon_path}.new {plist_path}.new; exit 1; fi'"
         ),
     ];
     Ok(InstallPlan {
@@ -305,14 +442,22 @@ pub fn terminal_plan(
         plist: plist_text,
         commands,
         staged_plist: Some(staged_plist.to_string()),
+        daemon_path: daemon_path.clone(),
     })
 }
 
-pub fn removal_commands() -> Vec<String> {
+/// Every tool by absolute path, as in the install (Mac test 3.13).
+pub fn removal_commands(names: &Names) -> Vec<String> {
     vec![
-        format!("sudo launchctl bootout system/{LABEL}"),
-        format!("sudo rm -f {PLIST_PATH} {DAEMON_PATH}"),
-        "sudo rm -rf /var/run/monocode-activity".into(),
+        format!(
+            "/usr/bin/sudo /bin/launchctl bootout system/{}",
+            names.label
+        ),
+        format!(
+            "/usr/bin/sudo /bin/rm -f {} {}",
+            names.plist_path, names.daemon_path
+        ),
+        "/usr/bin/sudo /bin/rm -rf /var/run/monocode-activity".into(),
         "# The log stays in /Library/Application Support/MonoCode/activity until you delete it."
             .into(),
     ]
@@ -339,11 +484,11 @@ pub fn explanation(dev_build: bool) -> Vec<String> {
 }
 
 /// Where a signed bundle carries the daemon's plist for `SMAppService`.
-pub fn bundled_plist(exe: &Path) -> Option<PathBuf> {
+pub fn bundled_plist(exe: &Path, names: &Names) -> Option<PathBuf> {
     let contents = exe.parent()?.parent()?;
     let plist = contents
         .join("Library/LaunchDaemons")
-        .join(format!("{LABEL}.plist"));
+        .join(format!("{}.plist", names.label));
     plist.exists().then_some(plist)
 }
 
@@ -399,7 +544,7 @@ mod sm {
 
     fn service() -> Option<Retained<AnyObject>> {
         let class = AnyClass::get(c"SMAppService")?;
-        let name = NSString::from_str(&format!("{}.plist", super::LABEL));
+        let name = NSString::from_str(&format!("{}.plist", super::Names::current().label));
         // SAFETY: a class method that returns an autoreleased SMAppService.
         unsafe { msg_send![class, daemonServiceWithPlistName: &*name] }
     }
@@ -471,6 +616,92 @@ pub fn file_sha256(path: &Path) -> std::io::Result<String> {
 mod tests {
     use super::*;
 
+    const LABEL: &str = "com.monocode.desktop.activity-collector";
+    const DAEMON_PATH: &str =
+        "/Library/PrivilegedHelperTools/com.monocode.desktop.activity-collector";
+    const PLIST_PATH: &str = "/Library/LaunchDaemons/com.monocode.desktop.activity-collector.plist";
+
+    fn plan(binary: &str, hash: &str, staged: &str, peer: &str) -> Result<InstallPlan, String> {
+        terminal_plan(&Names::release(), binary, hash, staged, peer)
+    }
+
+    #[test]
+    fn names_follow_the_app_identifier() {
+        // Decision 1: the dev build installs its own label and files.
+        let release = Names::release();
+        assert_eq!(release.label, LABEL);
+        assert_eq!(release.daemon_path, DAEMON_PATH);
+        assert_eq!(release.plist_path, PLIST_PATH);
+        let dev = Names::for_identifier("com.monocode.desktop.dev").unwrap();
+        assert_eq!(dev.label, "com.monocode.desktop.dev.activity-collector");
+        assert_eq!(
+            dev.plist_path,
+            "/Library/LaunchDaemons/com.monocode.desktop.dev.activity-collector.plist"
+        );
+        let plan =
+            terminal_plan(&dev, "/a/c", &"a".repeat(64), "/s/c.plist", "/m/MonoCode").unwrap();
+        assert!(plan
+            .plist
+            .contains("<string>com.monocode.desktop.dev.activity-collector</string>"));
+        assert!(plan.commands[2].contains("bootstrap system /Library/LaunchDaemons/com.monocode.desktop.dev.activity-collector.plist"));
+        assert_eq!(plan.daemon_path, dev.daemon_path);
+        assert!(bundled_plist_text(&dev).contains("<string>com.monocode.desktop.dev</string>"));
+        for bad in ["", "a b", "a/b", "..x", "a;rm", ".a"] {
+            assert!(Names::for_identifier(bad).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn removal_uses_absolute_tools() {
+        // Mac test 3.13.
+        let commands = removal_commands(&Names::release());
+        assert_eq!(
+            commands[0],
+            format!("/usr/bin/sudo /bin/launchctl bootout system/{LABEL}")
+        );
+        assert_eq!(
+            commands[1],
+            format!("/usr/bin/sudo /bin/rm -f {PLIST_PATH} {DAEMON_PATH}")
+        );
+        for command in commands.iter().filter(|c| !c.starts_with('#')) {
+            assert!(command.starts_with("/usr/bin/sudo /bin/"), "{command}");
+        }
+    }
+
+    #[test]
+    fn an_incomplete_reply_keeps_its_events_and_says_why() {
+        // Mac test 3.12b: a reply cut short was dropped whole.
+        let reply = parse_events_reply(
+            &br#"{"id":"es-1","at":5,"chatId":"c1","harness":"","source":"eslogger","kind":"exec","summary":"","detail":{}}
+{"id":"es-2""#[..],
+            10,
+        );
+        assert!(!reply.complete);
+        assert_eq!(reply.events.len(), 1);
+        assert_eq!(reply.problem.as_deref(), Some("truncated"));
+        let refused = parse_events_reply(&b"{\"ok\":false,\"error\":\"refused\"}\n"[..], 10);
+        assert_eq!(refused.problem.as_deref(), Some("refused"));
+        let done = parse_events_reply(
+            &b"{\"end\":true,\"truncated\":false,\"chainOk\":true}\n"[..],
+            10,
+        );
+        assert_eq!(done.problem, None);
+    }
+
+    #[test]
+    fn esloggers_reason_is_passed_on() {
+        let stopped = json!({"eslogger": "stopped", "esloggerError": "Caller lacks TCC authorization for Full Disk Access"});
+        assert_eq!(
+            eslogger_problem(&stopped).as_deref(),
+            Some("eslogger: Caller lacks TCC authorization for Full Disk Access")
+        );
+        assert_eq!(
+            eslogger_problem(&json!({"eslogger": "missing"})).as_deref(),
+            Some("eslogger: missing")
+        );
+        assert_eq!(eslogger_problem(&json!({"eslogger": "running"})), None);
+    }
+
     #[test]
     fn an_events_reply_keeps_only_collector_events() {
         let text = [
@@ -513,7 +744,7 @@ mod tests {
 
     #[test]
     fn the_bundled_plist_file_matches_and_names_no_dev_path() {
-        let text = bundled_plist_text();
+        let text = bundled_plist_text(&Names::release());
         assert!(text.contains("<key>BundleProgram</key>"));
         assert!(text.contains("<string>com.monocode.desktop</string>"));
         assert!(!text.contains("dev-peer"));
@@ -525,17 +756,17 @@ mod tests {
 
     #[test]
     fn the_plist_escapes_and_names_the_dev_path() {
-        let text = plist("/a/b", Some("/Users/t/My & <App>/monocode"));
+        let text = plist(LABEL, "/a/b", Some("/Users/t/My & <App>/monocode"));
         assert!(text.contains("<string>--dev-peer-path</string>"));
         assert!(text.contains("My &amp; &lt;App&gt;"));
         assert!(text.contains(LABEL));
-        assert!(!plist("/a/b", None).contains("dev-peer"));
+        assert!(!plist(LABEL, "/a/b", None).contains("dev-peer"));
     }
 
     #[test]
     fn the_terminal_plan_checks_the_hash_before_it_starts_anything() {
         let hash = "a".repeat(64);
-        let plan = terminal_plan(
+        let plan = plan(
             "/Users/t/build/collector",
             &hash,
             "/Users/t/stage/c.plist",
@@ -553,7 +784,7 @@ mod tests {
     fn the_staged_plist_is_checked_by_hash_before_anything_starts() {
         // Security review S1 and T6.
         let binary = "b".repeat(64);
-        let plan = terminal_plan(
+        let plan = plan(
             "/Users/t/build/collector",
             &binary,
             "/Users/t/stage/c.plist",
@@ -599,12 +830,12 @@ mod tests {
     #[test]
     fn the_terminal_plan_refuses_paths_it_cannot_quote() {
         let hash = "a".repeat(64);
-        assert!(terminal_plan("/a/it's", &hash, "/b", "/c").is_err());
-        assert!(terminal_plan("relative", &hash, "/b", "/c").is_err());
-        assert!(terminal_plan("/a", &hash, "/b\nrm -rf ~", "/c").is_err());
-        assert!(terminal_plan("/a", "not-a-hash", "/b", "/c").is_err());
+        assert!(plan("/a/it's", &hash, "/b", "/c").is_err());
+        assert!(plan("relative", &hash, "/b", "/c").is_err());
+        assert!(plan("/a", &hash, "/b\nrm -rf ~", "/c").is_err());
+        assert!(plan("/a", "not-a-hash", "/b", "/c").is_err());
         assert!(
-            terminal_plan("/a b/c", &hash, "/b", "/c").is_ok(),
+            plan("/a b/c", &hash, "/b", "/c").is_ok(),
             "spaces are quoted"
         );
     }

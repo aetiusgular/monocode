@@ -103,6 +103,11 @@ pub fn kept_kind(raw: &RawEvent) -> Option<&'static str> {
         RawKind::Open if raw.path.as_deref().is_some_and(is_sensitive_path) => "open",
         RawKind::Open => return None,
         RawKind::TccModify => "tcc",
+        RawKind::Truncate => "truncate",
+        RawKind::Link => "link",
+        RawKind::Copyfile => "copyfile",
+        RawKind::Clone => "clone",
+        RawKind::Exchangedata => "exchangedata",
     })
 }
 
@@ -132,6 +137,25 @@ pub fn build_detail(raw: &RawEvent, attribution: &Attribution) -> Value {
     if let Some(ppid) = raw.ppid {
         map.insert("ppid".to_owned(), Value::from(ppid));
     }
+    // The process's lineage beyond `ppid`, for the check to attribute a
+    // process whose fork was dropped (`es_process_t`).
+    for (key, value) in [
+        ("originalPpid", raw.original_ppid),
+        ("groupId", raw.group_id),
+        ("sessionId", raw.session_id),
+    ] {
+        if let Some(v) = value {
+            map.insert(key.to_owned(), Value::from(v));
+        }
+    }
+    // A fork is logged under the parent (`pid`); the new process is here.
+    if raw.kind == Some(RawKind::Fork) {
+        if let Some(child) = raw.child_pid {
+            map.insert("child".to_owned(), Value::from(child));
+        }
+    }
+    let tier = if attribution.root { "root" } else { "child" };
+    map.insert("tier".to_owned(), Value::from(tier));
     put_str(&mut map, "exe", raw.exe.as_deref());
     put_str(&mut map, "grant", attribution.grant.as_deref());
     // Beyond the protocol's list: the TCC fields the task asks to keep.
@@ -167,10 +191,13 @@ pub fn build_summary(kind: &str, detail: &Value) -> String {
             if let Some(exe) = field(detail, "exe") {
                 push(exe);
             }
+            if let Some(child) = detail.get("child").and_then(Value::as_u64) {
+                push(&format!("child {child}"));
+            }
         }
-        "rename" => {
+        "rename" | "link" | "copyfile" | "clone" | "exchangedata" => {
             push(field(detail, "path").unwrap_or("?"));
-            push("->");
+            push(if kind == "exchangedata" { "<->" } else { "->" });
             push(field(detail, "dest").unwrap_or("?"));
         }
         "tcc" => {
@@ -227,6 +254,7 @@ mod tests {
         Attribution {
             chat_id: "c1".into(),
             grant: grant.map(str::to_owned),
+            root: false,
         }
     }
 

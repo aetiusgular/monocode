@@ -1,10 +1,22 @@
-import { useCallback, useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { PanelSection } from "../../session-panel/ui/PanelSection";
+import {
+  loadSectionCollapsed,
+  subscribeSectionCollapsed,
+} from "../../session-panel/model/sessionPanelState";
 import {
   EMPTY_REPORT,
   eventsAround,
+  expectedNote,
   fetchFlags,
   fetchScreenshot,
+  keepCollectorState,
   KEEP_MS,
   markVisited,
   REASON_LABEL,
@@ -13,6 +25,11 @@ import {
   type ActivityFlag,
   type FlagsReport,
 } from "../model/activityPanel";
+import {
+  harnessGeneration,
+  onActivityChange,
+  RefreshScheduler,
+} from "../model/activityRefresh";
 import type { ActivityEvent } from "../model/activityTypes";
 
 const NOTE = "px-2 pb-1 text-[12px] leading-4.5 text-content/45";
@@ -102,6 +119,14 @@ export function FlagRow({
             {REASON_LABEL[flag.reason] ?? flag.reason}
           </span>
           <span className="font-mono text-content/40">{time(flag.at)}</span>
+          {flag.count && flag.count > 1 ? (
+            <span data-activity-repeat className="font-mono text-content/40">
+              ×{flag.count}, last{" "}
+              {time(flag.lastAt ?? flag.at)
+                .split(", ")
+                .pop()}
+            </span>
+          ) : null}
         </span>
         <span className="break-words text-[12px] leading-4.5 text-content/90">
           {flag.summary}
@@ -147,6 +172,8 @@ export function ActivityFlagsView({
   onRefresh: () => void;
 }) {
   const notes = reportNotes(report);
+  const hidden = expectedNote(report);
+  const [showExpected, setShowExpected] = useState(false);
   return (
     <div data-activity-section className="flex flex-col gap-1.5">
       {notes.map((note) => (
@@ -154,6 +181,29 @@ export function ActivityFlagsView({
           {note}
         </p>
       ))}
+      {hidden ? (
+        <div className="flex items-center gap-1 px-1">
+          <span data-activity-hidden className={NOTE}>
+            {hidden}
+          </span>
+          <button
+            type="button"
+            data-activity-show-expected
+            aria-expanded={showExpected}
+            className={BUTTON}
+            onClick={() => setShowExpected((value) => !value)}
+          >
+            {showExpected ? "Hide" : "Show"}
+          </button>
+        </div>
+      ) : null}
+      {hidden && showExpected && report.expected.length ? (
+        <ul data-activity-expected className="flex flex-col gap-1 opacity-70">
+          {report.expected.map((flag) => (
+            <FlagRow key={flag.id} flag={flag} events={report.events} />
+          ))}
+        </ul>
+      ) : null}
       {report.flags.length ? (
         <ul className="flex flex-col gap-1">
           {report.flags.map((flag) => (
@@ -205,12 +255,24 @@ export function ActivityFlagsView({
 
 /**
  * The session panel's Activity section: what this chat's agent did that no
- * approval covered, since your last visit. Detection only.
+ * approval covered, since your last visit. Detection only. While it is
+ * open it reads again on each tool call's end, 11 s after the last one, and
+ * every 15 s; a harness restart reloads it (Mac test 3.8, 3.12b).
  */
 export function ActivitySection({ sessionId }: { sessionId: string }) {
   const [report, setReport] = useState<FlagsReport>(EMPTY_REPORT);
   const [loading, setLoading] = useState(true);
   const [sinceVisit, setSinceVisit] = useState(true);
+  const sinceVisitRef = useRef(true);
+  sinceVisitRef.current = sinceVisit;
+  // Bumped when this chat's harness starts again (a mode switch restarts
+  // it with a new pid), so the section reloads (Mac test 3.12b).
+  const [restarts, setRestarts] = useState(0);
+  const collapsed = useSyncExternalStore(
+    subscribeSectionCollapsed,
+    () => loadSectionCollapsed("activity"),
+    () => false,
+  );
 
   const load = useCallback(
     async (fromVisit: boolean) => {
@@ -226,7 +288,22 @@ export function ActivitySection({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     setSinceVisit(true);
     void load(true);
-  }, [load]);
+  }, [load, restarts]);
+
+  useEffect(() => {
+    if (collapsed) return undefined;
+    const scheduler = new RefreshScheduler(() => load(sinceVisitRef.current));
+    scheduler.start();
+    const off = onActivityChange((chatId, what) => {
+      if (chatId !== sessionId) return;
+      if (what === "restart") setRestarts(harnessGeneration(sessionId));
+      else scheduler.callEnded();
+    });
+    return () => {
+      off();
+      scheduler.stop();
+    };
+  }, [sessionId, collapsed, load]);
 
   return (
     <PanelSection
@@ -250,7 +327,7 @@ export function ActivitySection({ sessionId }: { sessionId: string }) {
         onMarkSeen={() => {
           markVisited(sessionId);
           setSinceVisit(true);
-          setReport(EMPTY_REPORT);
+          setReport((last) => keepCollectorState(last));
           setLoading(false);
         }}
         onShowWeek={() => {

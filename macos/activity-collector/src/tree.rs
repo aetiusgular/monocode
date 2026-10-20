@@ -37,6 +37,8 @@ pub struct Attribution {
     pub chat_id: String,
     /// The bundle id, when the process is followed because of a grant.
     pub grant: Option<String>,
+    /// The acting pid is a registered root, not a descendant.
+    pub root: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -139,6 +141,7 @@ impl Tracker {
         let attribution = Attribution {
             chat_id: chat_id.to_owned(),
             grant: None,
+            root: true,
         };
         self.insert(pid, attribution, true);
         Ok(())
@@ -197,6 +200,7 @@ impl Tracker {
             exe.starts_with(prefix).then(|| Attribution {
                 chat_id: g.chat_id.clone(),
                 grant: Some(g.bundle_id.clone()),
+                root: false,
             })
         })
     }
@@ -204,7 +208,10 @@ impl Tracker {
     /// Updates the tracker with one event and says whom it belongs to, or
     /// `None` when it is not followed.
     pub fn observe(&mut self, ev: &RawEvent) -> Option<Attribution> {
-        let mut attribution = self.tracked.get(&ev.pid).map(|e| e.attribution.clone());
+        let mut attribution = self.tracked.get(&ev.pid).map(|e| Attribution {
+            root: e.root,
+            ..e.attribution.clone()
+        });
         if attribution.is_none() {
             if let Some(exe) = ev.exe.as_deref() {
                 if let Some(found) = self.grant_for_exe(exe) {
@@ -220,7 +227,11 @@ impl Tracker {
             RawKind::Fork => {
                 if let Some(child) = ev.child_pid {
                     if child != ev.pid {
-                        self.insert(child, attribution.clone(), false);
+                        let inherited = Attribution {
+                            root: false,
+                            ..attribution.clone()
+                        };
+                        self.insert(child, inherited, false);
                     }
                 }
             }

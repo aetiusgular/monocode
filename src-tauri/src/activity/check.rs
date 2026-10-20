@@ -15,8 +15,16 @@
 //! - `sensitivePath`: a sensitive file opened (the collector keeps only
 //!   those opens).
 //! - `newHost`: a host never seen before and not approved.
+//! - `recordingOff`: computer use's recording did not start.
+//!
+//! Collector events carry a tier (`root` or `child`); a child is a tool's
+//! when it started inside a tool call or descends from one, else the
+//! harness's own. Known harness behaviour of `root` and harness children
+//! (keychain reads, a credential's owner reading it, shell init files) is
+//! counted as expected, never a tool's. Repeats are one row with a count.
+//! The collector's log stays complete: all of this happens here.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -51,6 +59,8 @@ pub enum FlagReason {
     LeftRunning,
     SensitivePath,
     NewHost,
+    /// Computer use's recording did not start (`cua.recording`, `on` false).
+    RecordingOff,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -69,6 +79,20 @@ pub struct Flag {
     /// A screenshot path from computer use's record near the action.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screenshot: Option<String>,
+    /// Events this row stands for (the same kind, process and file within
+    /// 15 minutes).
+    #[serde(default = "one")]
+    pub count: u32,
+    /// The last of them; `at` is the first.
+    #[serde(default)]
+    pub last_at: i64,
+    /// Where in the chat's process tree it came from (collector events).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<Tier>,
+}
+
+fn one() -> u32 {
+    1
 }
 
 pub struct CheckInput<'a> {
@@ -79,6 +103,9 @@ pub struct CheckInput<'a> {
     pub known_hosts: &'a HashSet<String>,
     /// The time of the check, for "still running".
     pub now_ms: i64,
+    /// The app's data folder (`app_data_dir`), whose `activity` and
+    /// `computer-use` folders are guarded.
+    pub data_dir: Option<&'a str>,
 }
 
 fn str_field<'a>(event: &'a ActivityEvent, key: &str) -> Option<&'a str> {
@@ -132,27 +159,27 @@ fn home_of(path: &str) -> Option<String> {
     ((root == "Users" || root == "home") && !name.is_empty()).then(|| format!("/{root}/{name}"))
 }
 
-/// Paths a write never flags: scratch space, devices, and the harnesses' own
-/// state (Fenceline's filter for Claude Code's `~/.claude`).
-/// The activity log's and computer use's folders in MonoCode's data folder.
-/// Compared without case: APFS is case-insensitive, so `Activity/` is the
-/// same folder (security review T2).
-fn guarded_path(path: &str) -> bool {
-    let Some(home) = home_of(path) else {
-        return false;
-    };
-    const GUARDED: &[&str] = &["activity", "computer-use"];
-    let lower = path.to_ascii_lowercase();
-    GUARDED.iter().any(|sub| {
-        inside(
-            &lower,
-            &format!("{home}/Library/Application Support/com.monocode.desktop/{sub}")
-                .to_ascii_lowercase(),
-        )
-    })
+/// The app's data folder, compared without case: APFS is case-insensitive,
+/// so `Activity/` is the same folder (security review T2). It comes from
+/// the running app (`app_data_dir`), so a dev build guards its own
+/// `com.monocode.desktop.dev` folder (decision 1).
+fn data_sub(data_dir: Option<&str>, sub: &str) -> Option<String> {
+    let base = data_dir?.trim_end_matches('/');
+    (!base.is_empty()).then(|| format!("{base}/{sub}").to_ascii_lowercase())
 }
 
-pub fn noise_path(path: &str, granted_app: bool) -> bool {
+/// The activity log's and computer use's folders in MonoCode's data folder.
+fn guarded_path(path: &str, data_dir: Option<&str>) -> bool {
+    let lower = path.to_ascii_lowercase();
+    ["activity", "computer-use"]
+        .iter()
+        .filter_map(|sub| data_sub(data_dir, sub))
+        .any(|folder| inside(&lower, &folder))
+}
+
+/// Paths a write never flags: scratch space, devices, and the harnesses' own
+/// state (Fenceline's filter for Claude Code's `~/.claude`).
+pub fn noise_path(path: &str, granted_app: bool, data_dir: Option<&str>) -> bool {
     const SYSTEM: &[&str] = &[
         "/tmp",
         "/private/tmp",
@@ -163,16 +190,21 @@ pub fn noise_path(path: &str, granted_app: bool) -> bool {
     if SYSTEM.iter().any(|prefix| inside(path, prefix)) {
         return true;
     }
-    let Some(home) = home_of(path) else {
-        return false;
-    };
     // The log itself, its install staging and computer use's recordings sit
     // in MonoCode's data folder. A chat's process writing there is the
     // tampering the log exists to catch (security review S5). The app's own
     // writes are never attributed to a chat, so they raise nothing.
-    if guarded_path(path) {
+    if guarded_path(path, data_dir) {
         return false;
     }
+    if let Some(data) = data_dir.map(|d| d.trim_end_matches('/').to_ascii_lowercase()) {
+        if !data.is_empty() && inside(&path.to_ascii_lowercase(), &data) {
+            return true;
+        }
+    }
+    let Some(home) = home_of(path) else {
+        return false;
+    };
     const HARNESS: &[&str] = &[
         ".claude",
         ".codex",
@@ -181,7 +213,6 @@ pub fn noise_path(path: &str, granted_app: bool) -> bool {
         ".cargo/registry",
         "Library/Caches",
         "Library/Logs",
-        "Library/Application Support/com.monocode.desktop",
     ];
     if HARNESS
         .iter()
@@ -236,20 +267,13 @@ pub fn event_host(event: &ActivityEvent) -> Option<&str> {
     })
 }
 
-/// Whether a path is inside computer use's recording folder under its home,
-/// with no `..` (review U6).
-fn in_recordings(path: &str) -> bool {
-    let Some(home) = home_of(path) else {
+/// Whether a path is inside computer use's recording folder, with no `..`
+/// (review U6).
+fn in_recordings(path: &str, data_dir: Option<&str>) -> bool {
+    let Some(folder) = data_sub(data_dir, "computer-use/recordings") else {
         return false;
     };
-    !path.split('/').any(|part| part == "..")
-        && inside(
-            &path.to_ascii_lowercase(),
-            &format!(
-                "{home}/Library/Application Support/com.monocode.desktop/computer-use/recordings"
-            )
-            .to_ascii_lowercase(),
-        )
+    !path.split('/').any(|part| part == "..") && inside(&path.to_ascii_lowercase(), &folder)
 }
 
 /// One computer-use runtime: its pid and the time span it ran.
@@ -306,63 +330,497 @@ fn runtime_spans(events: &[ActivityEvent]) -> HashMap<String, Vec<RuntimeSpan>> 
     spans
 }
 
-/// Tool call windows per chat: call id to (start, end).
-fn tool_windows(events: &[ActivityEvent]) -> HashMap<(String, String), (i64, i64)> {
-    let mut windows: HashMap<(String, String), (i64, i64)> = HashMap::new();
+/// One tool call: from its record's `at` to `detail.endedAt`. A call with
+/// no end is still running and open-ended (Mac test 3.8: the old windows
+/// had zero width).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ToolWindow {
+    pub start: i64,
+    pub end: Option<i64>,
+    /// `detail.background`: work the agent left running on purpose.
+    pub background: bool,
+}
+
+impl ToolWindow {
+    fn holds(&self, at: i64) -> bool {
+        at >= self.start && self.end.is_none_or(|end| at <= end)
+    }
+}
+
+fn int_field(event: &ActivityEvent, key: &str) -> Option<i64> {
+    event.detail.get(key).and_then(Value::as_i64)
+}
+
+fn pid_field(event: &ActivityEvent, key: &str) -> Option<u32> {
+    event
+        .detail
+        .get(key)
+        .and_then(Value::as_u64)
+        .and_then(|n| u32::try_from(n).ok())
+}
+
+/// Tool call windows per chat, from the adapter's and OTel's `tool.*`
+/// records joined by call id.
+pub fn tool_windows(events: &[ActivityEvent]) -> HashMap<String, Vec<ToolWindow>> {
+    let mut calls: HashMap<(String, String), ToolWindow> = HashMap::new();
     for event in events {
-        if !matches!(event.source, ActivitySource::Adapter | ActivitySource::Otel) {
-            continue;
-        }
-        if !event.kind.starts_with("tool.") {
+        if !matches!(event.source, ActivitySource::Adapter | ActivitySource::Otel)
+            || !event.kind.starts_with("tool.")
+        {
             continue;
         }
         let Some(call) = str_field(event, "callId") else {
             continue;
         };
-        let window = windows
+        let ended = int_field(event, "endedAt");
+        let background = event.detail.get("background").and_then(Value::as_bool) == Some(true);
+        let window = calls
             .entry((event.chat_id.clone(), call.to_string()))
-            .or_insert((event.at, event.at));
-        window.0 = window.0.min(event.at);
-        window.1 = window.1.max(event.at);
+            .or_insert(ToolWindow {
+                start: event.at,
+                end: None,
+                background: false,
+            });
+        window.start = window.start.min(event.at);
+        if let Some(end) = ended {
+            window.end = Some(window.end.map_or(end, |e| e.max(end)));
+        }
+        window.background |= background;
     }
-    windows
+    let mut out: HashMap<String, Vec<ToolWindow>> = HashMap::new();
+    for ((chat, _), window) in calls {
+        out.entry(chat).or_default().push(window);
+    }
+    out
 }
 
-/// Runs the check. Flags come back oldest first.
-pub fn run(input: &CheckInput) -> Vec<Flag> {
-    let empty_folders: Vec<String> = Vec::new();
-    let mut flags: Vec<Flag> = Vec::new();
-    let mut flagged_hosts: HashSet<(String, String)> = HashSet::new();
+/// Where in a chat's process tree an event came from. The collector says
+/// `root` or `child`; the check splits `child` by tool windows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Tier {
+    /// The registered harness process itself.
+    Root,
+    /// A descendant started outside every tool call: the harness's own
+    /// helpers, MCP servers, its shell snapshot.
+    HarnessChild,
+    /// Started inside a tool call, or a descendant of such a process. Never
+    /// suppressed.
+    Tool,
+}
 
-    // Exits, by pid, for "left running".
-    let mut exits: HashMap<u32, i64> = HashMap::new();
-    for event in input.events {
-        if event.source == ActivitySource::Eslogger && event.kind == "exit" {
-            if let Some(pid) = event.pid {
-                exits
-                    .entry(pid)
-                    .and_modify(|t| *t = (*t).max(event.at))
-                    .or_insert(event.at);
+/// The fork that made each child, per chat: (time, parent pid, parent's
+/// collector tier).
+type Forks = HashMap<(String, u32), Vec<(i64, u32, bool)>>;
+
+struct Tree<'a> {
+    forks: Forks,
+    first_seen: HashMap<(String, u32), i64>,
+    /// Lineage fields seen per pid: ppid, originalPpid, groupId.
+    lineage: HashMap<(String, u32), Vec<u32>>,
+    windows: &'a HashMap<String, Vec<ToolWindow>>,
+}
+
+impl<'a> Tree<'a> {
+    fn new(events: &[ActivityEvent], windows: &'a HashMap<String, Vec<ToolWindow>>) -> Tree<'a> {
+        let mut forks: Forks = HashMap::new();
+        let mut first_seen: HashMap<(String, u32), i64> = HashMap::new();
+        let mut lineage: HashMap<(String, u32), Vec<u32>> = HashMap::new();
+        for e in events
+            .iter()
+            .filter(|e| e.source == ActivitySource::Eslogger)
+        {
+            let Some(pid) = e.pid else { continue };
+            let key = (e.chat_id.clone(), pid);
+            first_seen
+                .entry(key.clone())
+                .and_modify(|t| *t = (*t).min(e.at))
+                .or_insert(e.at);
+            for field in ["ppid", "originalPpid", "groupId"] {
+                if let Some(other) = pid_field(e, field) {
+                    let list = lineage.entry(key.clone()).or_default();
+                    if other > 1 && other != pid && !list.contains(&other) && list.len() < 8 {
+                        list.push(other);
+                    }
+                }
+            }
+            if e.kind == "fork" {
+                if let Some(child) = pid_field(e, "child") {
+                    let root = str_field(e, "tier") == Some("root");
+                    forks
+                        .entry((e.chat_id.clone(), child))
+                        .or_default()
+                        .push((e.at, pid, root));
+                }
+            }
+        }
+        Tree {
+            forks,
+            first_seen,
+            lineage,
+            windows,
+        }
+    }
+
+    fn in_window(&self, chat: &str, at: i64) -> bool {
+        self.windows
+            .get(chat)
+            .is_some_and(|list| list.iter().any(|w| w.holds(at)))
+    }
+
+    /// The fork that made `pid`, the latest at or before `at`.
+    fn fork_of(&self, chat: &str, pid: u32, at: i64) -> Option<(i64, u32, bool)> {
+        self.forks
+            .get(&(chat.to_string(), pid))?
+            .iter()
+            .copied()
+            .filter(|(t, _, _)| *t <= at)
+            .max_by_key(|(t, _, _)| *t)
+    }
+
+    /// Whether a non-root process belongs to a tool call: started inside a
+    /// window, or a descendant of one. A process whose fork was not seen is
+    /// placed by its lineage (`ppid`, `originalPpid`, `groupId`), then by
+    /// when it was first seen.
+    fn is_tool(&self, chat: &str, pid: u32, at: i64, depth: u32) -> bool {
+        if depth > 64 {
+            return false;
+        }
+        if let Some((started, parent, parent_root)) = self.fork_of(chat, pid, at) {
+            if self.in_window(chat, started) {
+                return true;
+            }
+            return !parent_root && self.is_tool(chat, parent, started, depth + 1);
+        }
+        let key = (chat.to_string(), pid);
+        if let Some(parents) = self.lineage.get(&key) {
+            if parents.iter().any(|&p| {
+                self.first_seen.contains_key(&(chat.to_string(), p))
+                    && self.is_tool(chat, p, at, depth + 1)
+            }) {
+                return true;
+            }
+        }
+        self.first_seen
+            .get(&key)
+            .is_some_and(|&first| self.in_window(chat, first))
+    }
+
+    fn tier(&self, event: &ActivityEvent) -> Tier {
+        match (str_field(event, "tier"), event.pid) {
+            (Some("root"), _) => Tier::Root,
+            (Some("child"), Some(pid)) => {
+                if self.is_tool(&event.chat_id, pid, event.at, 0) {
+                    Tier::Tool
+                } else {
+                    Tier::HarnessChild
+                }
+            }
+            // An event from an older collector carries no tier: treated as
+            // a tool's, so nothing about it is hidden.
+            _ => Tier::Tool,
+        }
+    }
+}
+
+/// Why an event that would flag is expected instead. Counted per rule.
+pub const RULE_HARNESS_READ: &str = "harnessRead";
+pub const RULE_CREDENTIAL_OWNER: &str = "credentialOwner";
+pub const RULE_SHELL_INIT: &str = "shellInit";
+
+fn basename(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// Files a shell reads at every start; a write to one is never hidden.
+const SHELL_RC: &[&str] = &[
+    ".zshrc",
+    ".zshenv",
+    ".zprofile",
+    ".zlogin",
+    ".zlogout",
+    ".bashrc",
+    ".bash_profile",
+    ".bash_login",
+    ".bash_logout",
+    ".profile",
+];
+
+/// A write no rule may hide: a shell rc file, or a LaunchAgents or
+/// LaunchDaemons folder (persistence).
+fn never_hidden_write(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    if lower
+        .split('/')
+        .any(|part| part == "launchagents" || part == "launchdaemons")
+    {
+        return true;
+    }
+    home_of(path).is_some_and(|home| SHELL_RC.iter().any(|rc| path == format!("{home}/{rc}")))
+}
+
+/// A write a rule may hide only inside the home's own config (a dot entry
+/// at the top of home) or the chat's folders.
+fn hideable_write_place(path: &str, folders: &[String]) -> bool {
+    if folders.iter().any(|f| inside(path, f)) {
+        return true;
+    }
+    let Some(home) = home_of(path) else {
+        return false;
+    };
+    path.strip_prefix(&format!("{home}/"))
+        .and_then(|rest| rest.split('/').next())
+        .is_some_and(|first| first.starts_with('.') && first.len() > 1)
+        && !path.split('/').any(|p| p == "..")
+}
+
+/// The rule that makes a flag expected, or `None`. Only for `root` and
+/// `harness-child` events; never for a tool's (Mac test 3.7, 3.9, 3.11).
+fn expected_rule(
+    event: &ActivityEvent,
+    tier: Tier,
+    reason: FlagReason,
+    harness: &str,
+    folders: &[String],
+) -> Option<&'static str> {
+    if tier == Tier::Tool {
+        return None;
+    }
+    let exe = str_field(event, "exe").unwrap_or("");
+    let path = str_field(event, "path")?;
+    let home = home_of(path);
+    match reason {
+        FlagReason::SensitivePath => {
+            // Claude Code keeps its login in the Keychain
+            // (https://code.claude.com/docs/en/iam) and reads both files at
+            // start and every 32 s; itself or through /usr/bin/security.
+            let claude_keychain = harness == "claude"
+                && (path == "/Library/Keychains/System.keychain"
+                    || home.as_deref().is_some_and(|h| {
+                        path == format!("{h}/Library/Keychains/login.keychain-db")
+                    }))
+                && (tier == Tier::Root || exe == "/usr/bin/security");
+            let codex_auth = harness == "codex"
+                && tier == Tier::Root
+                && home
+                    .as_deref()
+                    .is_some_and(|h| path == format!("{h}/.codex/auth.json"));
+            if claude_keychain || codex_auth {
+                return Some(RULE_HARNESS_READ);
+            }
+            // The program that owns a credential reading it (secure-agent's
+            // defaults.yaml: `programs: ["docker", "docker-credential-*",
+            // "com.docker.*"]` for ~/.docker).
+            let name = basename(exe);
+            let docker_owner = name == "docker"
+                || name.starts_with("docker-credential-")
+                || name.starts_with("com.docker.");
+            if docker_owner
+                && home
+                    .as_deref()
+                    .is_some_and(|h| path == format!("{h}/.docker/config.json"))
+            {
+                return Some(RULE_CREDENTIAL_OWNER);
+            }
+            None
+        }
+        FlagReason::WriteOutsideFolders => {
+            // compinit rewrites ~/.zcompdump* and the shell appends its
+            // history (https://zsh.sourceforge.io/Doc/Release/Completion-System.html).
+            if exe != "/bin/zsh" && exe != "/bin/bash" {
+                return None;
+            }
+            let home = home?;
+            let shell_file = |p: &str| {
+                let Some(rest) = p.strip_prefix(&format!("{home}/")) else {
+                    return false;
+                };
+                !rest.contains('/') && (rest.starts_with(".zcompdump") || rest == ".zsh_history")
+            };
+            let paths: Vec<&str> = [str_field(event, "path"), str_field(event, "dest")]
+                .into_iter()
+                .flatten()
+                .collect();
+            let all = paths.iter().all(|p| {
+                shell_file(p) && !never_hidden_write(p) && hideable_write_place(p, folders)
+            });
+            all.then_some(RULE_SHELL_INIT)
+        }
+        _ => None,
+    }
+}
+
+/// Flags of one kind, for one process, on one file, within this long, are
+/// one row with a count.
+pub const DEDUPE_WINDOW_MS: i64 = 15 * 60 * 1000;
+/// At most this many expected rows come back for the toggle.
+pub const MAX_EXPECTED_ROWS: usize = 200;
+
+/// A harness helper's writes are grouped per folder: an MCP server keeps
+/// its own state folder (such as `~/.claude-server-commander/`). The
+/// folder is the first entry under home, or the file's own folder.
+fn group_folder(path: &str) -> String {
+    if let Some(home) = home_of(path) {
+        if let Some(rest) = path.strip_prefix(&format!("{home}/")) {
+            if let Some((first, _)) = rest.split_once('/') {
+                return format!("{home}/{first}");
             }
         }
     }
+    match path.rsplit_once('/') {
+        Some((dir, _)) if !dir.is_empty() => dir.to_string(),
+        _ => path.to_string(),
+    }
+}
+
+/// The written path a write flag is about (a copy's or link's destination).
+fn written_paths(event: &ActivityEvent) -> Vec<&str> {
+    let path = str_field(event, "path");
+    let dest = str_field(event, "dest");
+    match event.kind.as_str() {
+        // The source of a link, copy or clone is read, not written.
+        "link" | "copyfile" | "clone" => dest.into_iter().collect(),
+        _ => [path, dest].into_iter().flatten().collect(),
+    }
+}
+
+fn one_line(text: &str, max: usize) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(max)
+        .collect()
+}
+
+/// What the check returns: the flags, the expected events it hid, and how
+/// many each rule hid.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckOutput {
+    pub flags: Vec<Flag>,
+    /// Hidden rows, deduped like flags, for the panel's toggle.
+    pub expected: Vec<Flag>,
+    /// Events hidden per rule.
+    pub suppressed: BTreeMap<String, u64>,
+}
+
+struct Candidate<'e> {
+    event: &'e ActivityEvent,
+    reason: FlagReason,
+    summary: String,
+    tier: Option<Tier>,
+    /// The path or folder the row is about, for grouping.
+    subject: String,
+    grouped_path: Option<String>,
+    /// Never merged with another: a write to the log or the recordings
+    /// (each tampering attempt is its own row).
+    alone: bool,
+}
+
+/// Collapses candidates on (chat, reason, tier, exe, subject) within 15
+/// minutes of a row's first event.
+fn dedupe(events: &[ActivityEvent], mut found: Vec<Candidate>) -> Vec<Flag> {
+    found.sort_by_key(|c| c.event.at);
+    type Key = (String, FlagReason, Option<Tier>, String, String);
+    let mut open: HashMap<Key, usize> = HashMap::new();
+    let mut rows: Vec<Flag> = Vec::new();
+    let mut paths: Vec<HashSet<String>> = Vec::new();
+    for c in found {
+        let exe = str_field(c.event, "exe").unwrap_or("").to_string();
+        let key: Key = (
+            c.event.chat_id.clone(),
+            c.reason,
+            c.tier,
+            exe,
+            c.subject.clone(),
+        );
+        if let Some(&i) = open.get(&key).filter(|_| !c.alone) {
+            let row = &mut rows[i];
+            if c.event.at - row.at <= DEDUPE_WINDOW_MS {
+                row.count = row.count.saturating_add(1);
+                row.last_at = c.event.at;
+                if let Some(p) = c.grouped_path {
+                    if paths[i].len() < 1000 {
+                        paths[i].insert(p);
+                    }
+                    if paths[i].len() > 1 {
+                        row.summary = format!(
+                            "Changed {} files in {}, outside this chat's folders",
+                            paths[i].len(),
+                            c.subject
+                        );
+                    }
+                }
+                continue;
+            }
+        }
+        if !c.alone {
+            open.insert(key, rows.len());
+        }
+        paths.push(c.grouped_path.into_iter().collect());
+        rows.push(Flag {
+            id: format!("{}:{}", reason_key(c.reason), c.event.id),
+            chat_id: c.event.chat_id.clone(),
+            at: c.event.at,
+            reason: c.reason,
+            summary: c.summary,
+            event_id: c.event.id.clone(),
+            context: context_ids(events, c.event),
+            screenshot: screenshot_near(events, c.event),
+            count: 1,
+            last_at: c.event.at,
+            tier: c.tier,
+        });
+    }
+    rows
+}
+
+/// Runs the check. Flags come back oldest first, with what it hid.
+pub fn run_full(input: &CheckInput) -> CheckOutput {
+    let empty_folders: Vec<String> = Vec::new();
+    let mut found: Vec<Candidate> = Vec::new();
+    let mut hidden: Vec<Candidate> = Vec::new();
+    let mut suppressed: BTreeMap<String, u64> = BTreeMap::new();
+    let mut flagged_hosts: HashSet<(String, String)> = HashSet::new();
+    let data_dir = input.data_dir;
+
     let windows = tool_windows(input.events);
     let runtimes = runtime_spans(input.events);
+    let tree = Tree::new(input.events, &windows);
 
     for event in input.events {
         if event.chat_id.is_empty() {
             continue;
         }
-        let folders = input
-            .chats
-            .get(&event.chat_id)
-            .map(|chat| &chat.folders)
-            .unwrap_or(&empty_folders);
-        let mut found: Option<(FlagReason, String)> = None;
+        let chat = input.chats.get(&event.chat_id);
+        let folders = chat.map(|chat| &chat.folders).unwrap_or(&empty_folders);
+        let harness = chat
+            .map(|c| c.harness.as_str())
+            .filter(|h| !h.is_empty())
+            .unwrap_or(event.harness.as_str());
+        let mut flag: Option<(FlagReason, String, String, Option<String>)> = None;
+        let mut alone = false;
+
+        // Computer use's recording did not start (its runtime writes this).
+        if event.source == ActivitySource::Cua
+            && event.kind == "cua.recording"
+            && event.detail.get("on").and_then(Value::as_bool) == Some(false)
+        {
+            let error = str_field(event, "error").unwrap_or("no reason given");
+            flag = Some((
+                FlagReason::RecordingOff,
+                format!(
+                    "Computer use recording did not start: {}",
+                    one_line(error, 300)
+                ),
+                String::new(),
+                None,
+            ));
+        }
 
         // An app no grant covered.
         let bundle = str_field(event, "bundleId").or_else(|| str_field(event, "grant"));
-        if matches!(event.source, ActivitySource::Cua | ActivitySource::Eslogger) {
+        if flag.is_none() && matches!(event.source, ActivitySource::Cua | ActivitySource::Eslogger)
+        {
             if let Some(bundle) = bundle {
                 let covered = covering(
                     input.approvals,
@@ -372,24 +830,33 @@ pub fn run(input: &CheckInput) -> Vec<Flag> {
                     |t| t == bundle,
                 );
                 if covered.is_none() {
-                    found = Some((
+                    flag = Some((
                         FlagReason::AppNotGranted,
                         format!("Acted in {bundle} with no grant for this chat"),
+                        bundle.to_string(),
+                        None,
                     ));
                 }
             }
         }
 
         // Writes outside the chat's folders.
-        if found.is_none()
+        if flag.is_none()
             && event.source == ActivitySource::Eslogger
             && matches!(
                 event.kind.as_str(),
-                "create" | "write" | "rename" | "unlink"
+                "create"
+                    | "write"
+                    | "rename"
+                    | "unlink"
+                    | "truncate"
+                    | "link"
+                    | "copyfile"
+                    | "clone"
+                    | "exchangedata"
             )
         {
             let granted_app = str_field(event, "grant").is_some();
-            let paths = [str_field(event, "path"), str_field(event, "dest")];
             let own_runtime = event.pid.is_some_and(|pid| {
                 runtimes.get(&event.chat_id).is_some_and(|spans| {
                     spans.iter().any(|span| {
@@ -399,16 +866,17 @@ pub fn run(input: &CheckInput) -> Vec<Flag> {
                     })
                 })
             });
-            for path in paths.into_iter().flatten() {
+            for path in written_paths(event) {
                 // The chat's own runtime writing its recording (T1).
-                if own_runtime && in_recordings(path) {
+                if own_runtime && in_recordings(path, data_dir) {
                     continue;
                 }
                 // The log's and the recordings' folders are flagged even when
                 // a chat's folder holds them, such as a chat on ~ (review U9).
-                let guarded = guarded_path(path);
+                let guarded = guarded_path(path, data_dir);
                 if !guarded
-                    && (noise_path(path, granted_app) || folders.iter().any(|f| inside(path, f)))
+                    && (noise_path(path, granted_app, data_dir)
+                        || folders.iter().any(|f| inside(path, f)))
                 {
                     continue;
                 }
@@ -424,15 +892,22 @@ pub fn run(input: &CheckInput) -> Vec<Flag> {
                     )
                     .is_some();
                 if !approved {
+                    alone = guarded;
                     let verb = match event.kind.as_str() {
                         "create" => "Created",
                         "write" => "Wrote",
                         "rename" => "Moved",
+                        "truncate" => "Truncated",
+                        "link" => "Linked",
+                        "copyfile" | "clone" => "Copied to",
+                        "exchangedata" => "Swapped",
                         _ => "Deleted",
                     };
-                    found = Some((
+                    flag = Some((
                         FlagReason::WriteOutsideFolders,
                         format!("{verb} {path}, outside this chat's folders"),
+                        path.to_string(),
+                        Some(path.to_string()),
                     ));
                     break;
                 }
@@ -440,16 +915,21 @@ pub fn run(input: &CheckInput) -> Vec<Flag> {
         }
 
         // Sensitive opens.
-        if found.is_none() && event.source == ActivitySource::Eslogger && event.kind == "open" {
+        if flag.is_none() && event.source == ActivitySource::Eslogger && event.kind == "open" {
             if let Some(path) = str_field(event, "path") {
                 if !expected_sensitive(path, folders) {
-                    found = Some((FlagReason::SensitivePath, format!("Opened {path}")));
+                    flag = Some((
+                        FlagReason::SensitivePath,
+                        format!("Opened {path}"),
+                        path.to_string(),
+                        None,
+                    ));
                 }
             }
         }
 
         // New hosts.
-        if found.is_none() {
+        if flag.is_none() {
             if let Some(host) = event_host(event) {
                 let lower = host.to_ascii_lowercase();
                 let approved = covering(
@@ -465,60 +945,179 @@ pub fn run(input: &CheckInput) -> Vec<Flag> {
                     && !flagged_hosts.contains(&key)
                 {
                     flagged_hosts.insert(key);
-                    found = Some((
+                    flag = Some((
                         FlagReason::NewHost,
                         format!("Reached {lower}, a host not seen before"),
+                        lower,
+                        None,
                     ));
                 }
             }
         }
 
-        // Processes a tool call left running.
-        if found.is_none()
-            && event.source == ActivitySource::Eslogger
-            && matches!(event.kind.as_str(), "fork" | "exec")
-        {
-            if let Some(pid) = event.pid {
-                let started_in = windows.iter().find(|((chat, _), (start, end))| {
-                    *chat == event.chat_id && event.at >= *start && event.at <= *end
+        let Some((reason, summary, mut subject, mut grouped_path)) = flag else {
+            continue;
+        };
+        let tier = (event.source == ActivitySource::Eslogger).then(|| tree.tier(event));
+        if let Some(tier) = tier {
+            if let Some(rule) = expected_rule(event, tier, reason, harness, folders) {
+                *suppressed.entry(rule.to_string()).or_default() += 1;
+                hidden.push(Candidate {
+                    event,
+                    reason,
+                    summary,
+                    tier: Some(tier),
+                    subject,
+                    grouped_path: None,
+                    alone: false,
                 });
-                if let Some((_, (_, end))) = started_in {
-                    let deadline = end.saturating_add(LEFT_RUNNING_GRACE_MS);
-                    let exited_in_time = exits.get(&pid).is_some_and(|t| *t <= deadline);
-                    let call_over = input.now_ms > deadline;
-                    let is_exec_of_a_fork = event.kind == "exec"
-                        && input.events.iter().any(|e| {
-                            e.pid == Some(pid)
-                                && e.kind == "fork"
-                                && e.at <= event.at
-                                && e.chat_id == event.chat_id
-                        });
-                    if call_over && !exited_in_time && !is_exec_of_a_fork {
-                        let what = str_field(event, "exe").unwrap_or("a process");
-                        found = Some((
-                            FlagReason::LeftRunning,
-                            format!("{what} (pid {pid}) kept running after its tool call ended"),
-                        ));
-                    }
-                }
+                continue;
+            }
+            // A harness helper's writes, one row per folder.
+            if tier == Tier::HarnessChild && reason == FlagReason::WriteOutsideFolders {
+                subject = group_folder(&subject);
+            } else {
+                grouped_path = None;
+            }
+        } else {
+            grouped_path = None;
+        }
+        found.push(Candidate {
+            event,
+            reason,
+            summary,
+            tier,
+            subject,
+            grouped_path,
+            alone,
+        });
+    }
+
+    found.extend(left_running(input, &windows, &tree));
+    let flags = dedupe(input.events, found);
+    let mut expected = dedupe(input.events, hidden);
+    expected.truncate(MAX_EXPECTED_ROWS);
+    CheckOutput {
+        flags,
+        expected,
+        suppressed,
+    }
+}
+
+/// Processes a tool call started that were still running 10 s after it
+/// ended (Fenceline: `cmd &` and `nohup` slip past monitors). Keyed on the
+/// forked child (`detail.child`); a process whose fork was dropped is
+/// placed by its lineage and first sighting. A call with no end is not
+/// judged; a call marked `background` is exempt.
+fn left_running<'e>(
+    input: &CheckInput<'e>,
+    windows: &HashMap<String, Vec<ToolWindow>>,
+    tree: &Tree,
+) -> Vec<Candidate<'e>> {
+    let mut exits: HashMap<u32, Vec<i64>> = HashMap::new();
+    let mut by_pid: HashMap<(String, u32), Vec<&'e ActivityEvent>> = HashMap::new();
+    for e in input
+        .events
+        .iter()
+        .filter(|e| e.source == ActivitySource::Eslogger)
+    {
+        let Some(pid) = e.pid else { continue };
+        if e.kind == "exit" {
+            exits.entry(pid).or_default().push(e.at);
+        }
+        by_pid.entry((e.chat_id.clone(), pid)).or_default().push(e);
+    }
+    // (chat, child pid) -> (start time, the event to flag).
+    let mut started: HashMap<(String, u32), (i64, &'e ActivityEvent)> = HashMap::new();
+    for e in input
+        .events
+        .iter()
+        .filter(|e| e.source == ActivitySource::Eslogger)
+    {
+        if e.chat_id.is_empty() {
+            continue;
+        }
+        if e.kind == "fork" {
+            if let Some(child) = pid_field(e, "child") {
+                started
+                    .entry((e.chat_id.clone(), child))
+                    .or_insert((e.at, e));
             }
         }
-
-        if let Some((reason, summary)) = found {
-            flags.push(Flag {
-                id: format!("{}:{}", reason_key(reason), event.id),
-                chat_id: event.chat_id.clone(),
-                at: event.at,
-                reason,
-                summary,
-                event_id: event.id.clone(),
-                context: context_ids(input.events, event),
-                screenshot: screenshot_near(input.events, event),
-            });
+    }
+    // A child whose fork was dropped: first seen by its exec, tied to this
+    // chat's tree by `ppid`, `originalPpid` or `groupId`.
+    for ((chat, pid), list) in &by_pid {
+        let key = (chat.clone(), *pid);
+        if chat.is_empty() || started.contains_key(&key) || tree.forks.contains_key(&key) {
+            continue;
+        }
+        let Some(first) = list.iter().min_by_key(|e| e.at) else {
+            continue;
+        };
+        if str_field(first, "tier") != Some("child") || first.kind != "exec" {
+            continue;
+        }
+        let linked = tree.lineage.get(&key).is_some_and(|parents| {
+            parents
+                .iter()
+                .any(|p| tree.first_seen.contains_key(&(chat.clone(), *p)))
+        });
+        if linked {
+            started.insert(key, (first.at, *first));
         }
     }
-    flags.sort_by_key(|flag| flag.at);
-    flags
+    let mut out = Vec::new();
+    for ((chat, child), (at, event)) in started {
+        let Some(list) = windows.get(&chat) else {
+            continue;
+        };
+        let holding: Vec<&ToolWindow> = list.iter().filter(|w| w.holds(at)).collect();
+        // Not in a call, a call still running, or work left on purpose.
+        if holding.is_empty() || holding.iter().any(|w| w.end.is_none() || w.background) {
+            continue;
+        }
+        let end = holding.iter().filter_map(|w| w.end).max().unwrap_or(at);
+        let deadline = end.saturating_add(LEFT_RUNNING_GRACE_MS);
+        if input.now_ms <= deadline {
+            continue;
+        }
+        let exited = exits
+            .get(&child)
+            .is_some_and(|times| times.iter().any(|&t| t >= at && t <= deadline));
+        if exited {
+            continue;
+        }
+        let own = by_pid.get(&(chat.clone(), child));
+        let what = own
+            .and_then(|list| {
+                list.iter()
+                    .filter(|e| e.kind == "exec" && e.at <= deadline)
+                    .max_by_key(|e| e.at)
+                    .and_then(|e| str_field(e, "exe"))
+            })
+            .unwrap_or("A process");
+        let reparented =
+            own.is_some_and(|list| list.iter().any(|e| pid_field(e, "ppid") == Some(1)));
+        let summary = format!(
+            "{what} (pid {child}) kept running after its tool call ended{}",
+            if reparented {
+                ", reparented to launchd"
+            } else {
+                ""
+            }
+        );
+        out.push(Candidate {
+            event,
+            reason: FlagReason::LeftRunning,
+            summary,
+            tier: Some(Tier::Tool),
+            subject: child.to_string(),
+            grouped_path: None,
+            alone: false,
+        });
+    }
+    out
 }
 
 pub fn reason_key(reason: FlagReason) -> &'static str {
@@ -528,6 +1127,7 @@ pub fn reason_key(reason: FlagReason) -> &'static str {
         FlagReason::LeftRunning => "leftRunning",
         FlagReason::SensitivePath => "sensitivePath",
         FlagReason::NewHost => "newHost",
+        FlagReason::RecordingOff => "recordingOff",
     }
 }
 
@@ -609,16 +1209,27 @@ mod tests {
         )])
     }
 
-    fn check(events: &[ActivityEvent], approvals: &[ApprovalRecord]) -> Vec<Flag> {
+    const DATA: &str = "/Users/t/Library/Application Support/com.monocode.desktop";
+
+    fn check_full(
+        events: &[ActivityEvent],
+        approvals: &[ApprovalRecord],
+        data_dir: &str,
+    ) -> CheckOutput {
         let chats = chats();
         let hosts = HashSet::from(["github.com".to_string()]);
-        run(&CheckInput {
+        run_full(&CheckInput {
             events,
             approvals,
             chats: &chats,
             known_hosts: &hosts,
             now_ms: 1_000_000,
+            data_dir: Some(data_dir),
         })
+    }
+
+    fn check(events: &[ActivityEvent], approvals: &[ApprovalRecord]) -> Vec<Flag> {
+        check_full(events, approvals, DATA).flags
     }
 
     fn es(id: &str, at: i64, kind: &str, path: &str) -> ActivityEvent {
@@ -1127,49 +1738,46 @@ mod tests {
 
     #[test]
     fn a_process_left_running_after_its_tool_call_flags() {
-        let call = |id: &str, at: i64| {
-            ev(
-                id,
-                at,
-                ActivitySource::Adapter,
-                "tool.started",
-                json!({"callId": "t1"}),
-                None,
-            )
-        };
-        let mut daemon = ev(
+        // Changed for Mac test 3.8: a call is one `tool.call` record whose
+        // end is `detail.endedAt`, and a fork names the new process in
+        // `detail.child` (the old test used two records and fork pids).
+        let call = ev(
+            "t",
+            100,
+            ActivitySource::Adapter,
+            "tool.call",
+            json!({"callId": "t1", "endedAt": 200}),
+            None,
+        );
+        let daemon = ev(
             "p1",
             110,
             ActivitySource::Eslogger,
             "fork",
-            json!({}),
-            Some(77),
+            json!({"child": 77, "tier": "child", "exe": "/bin/sh"}),
+            Some(10),
         );
-        daemon.detail["exe"] = json!("/bin/sh");
-        let mut done = ev(
+        let done = ev(
             "p2",
             120,
             ActivitySource::Eslogger,
             "fork",
-            json!({}),
-            Some(78),
+            json!({"child": 78, "tier": "child", "exe": "/bin/sh"}),
+            Some(10),
         );
-        done.detail["exe"] = json!("/usr/bin/git");
         let exit = ev(
             "p3",
             150,
             ActivitySource::Eslogger,
             "exit",
-            json!({}),
+            json!({"tier": "child"}),
             Some(78),
         );
-        let flags = check(
-            &[call("t-start", 100), daemon, done, exit, call("t-end", 200)],
-            &[],
-        );
+        let flags = check(&[call, daemon, done, exit], &[]);
         assert_eq!(flags.len(), 1, "{flags:?}");
         assert_eq!(flags[0].reason, FlagReason::LeftRunning);
         assert_eq!(flags[0].event_id, "p1");
+        assert!(flags[0].summary.contains("pid 77"), "{}", flags[0].summary);
     }
 
     #[test]
@@ -1194,13 +1802,15 @@ mod tests {
                 Some(5),
             ),
         ];
-        let flags = run(&CheckInput {
+        let flags = run_full(&CheckInput {
             events: &events,
             approvals: &[],
             chats: &chats,
             known_hosts: &hosts,
             now_ms: 105 + LEFT_RUNNING_GRACE_MS,
-        });
+            data_dir: Some(DATA),
+        })
+        .flags;
         assert!(flags.is_empty());
     }
 
@@ -1252,6 +1862,403 @@ mod tests {
         let mut event = es("1", 1, "unlink", "/etc/hosts");
         event.chat_id = String::new();
         assert!(check(&[event], &[]).is_empty());
+    }
+
+    // Wave 3 Mac test findings 3.7, 3.8, 3.9, 3.11 and decision 1.
+
+    fn call(id: &str, at: i64, call: &str, ended: Option<i64>) -> ActivityEvent {
+        let mut detail = json!({ "callId": call });
+        if let Some(end) = ended {
+            detail["endedAt"] = json!(end);
+        }
+        ev(id, at, ActivitySource::Adapter, "tool.call", detail, None)
+    }
+
+    fn proc_ev(id: &str, at: i64, kind: &str, pid: u32, detail: Value) -> ActivityEvent {
+        ev(id, at, ActivitySource::Eslogger, kind, detail, Some(pid))
+    }
+
+    #[test]
+    fn a_child_left_running_inside_a_call_window_flags() {
+        let events = [
+            call("t", 100, "t1", Some(200)),
+            proc_ev(
+                "f",
+                150,
+                "fork",
+                10,
+                json!({"tier": "root", "child": 77, "exe": "/usr/local/bin/claude"}),
+            ),
+            proc_ev(
+                "e",
+                151,
+                "exec",
+                77,
+                json!({"tier": "child", "ppid": 10, "exe": "/bin/sleep"}),
+            ),
+        ];
+        let flags = check(&events, &[]);
+        let ids: Vec<&str> = flags.iter().map(|f| f.event_id.as_str()).collect();
+        assert_eq!(ids, vec!["f"]);
+    }
+
+    #[test]
+    fn expected_harness_reads_are_not_flags() {
+        let events = [
+            proc_ev(
+                "k1",
+                1,
+                "open",
+                10,
+                json!({"tier": "root", "path": "/Users/t/Library/Keychains/login.keychain-db", "exe": "/usr/local/bin/claude"}),
+            ),
+            proc_ev(
+                "k2",
+                2,
+                "open",
+                10,
+                json!({"tier": "root", "path": "/Library/Keychains/System.keychain", "exe": "/usr/local/bin/claude"}),
+            ),
+            proc_ev(
+                "z",
+                3,
+                "write",
+                11,
+                json!({"tier": "child", "path": "/Users/t/.zcompdump-mac-5.9", "exe": "/bin/zsh"}),
+            ),
+            proc_ev(
+                "d",
+                4,
+                "open",
+                12,
+                json!({"tier": "child", "path": "/Users/t/.docker/config.json", "exe": "/usr/local/bin/docker-credential-desktop"}),
+            ),
+        ];
+        assert_eq!(check(&events, &[]), vec![]);
+    }
+
+    #[test]
+    fn repeated_flags_collapse_into_one_row() {
+        let events = [
+            proc_ev(
+                "a",
+                1,
+                "open",
+                11,
+                json!({"tier": "child", "path": "/Users/t/.ssh/known_hosts", "exe": "/bin/cat"}),
+            ),
+            proc_ev(
+                "b",
+                2,
+                "open",
+                11,
+                json!({"tier": "child", "path": "/Users/t/.ssh/known_hosts", "exe": "/bin/cat"}),
+            ),
+            proc_ev(
+                "c",
+                3,
+                "open",
+                11,
+                json!({"tier": "child", "path": "/Users/t/.ssh/known_hosts", "exe": "/bin/cat"}),
+            ),
+        ];
+        assert_eq!(check(&events, &[]).len(), 1);
+    }
+
+    #[test]
+    fn an_mcp_servers_state_folder_is_one_row() {
+        let events = [
+            proc_ev(
+                "a",
+                1,
+                "write",
+                11,
+                json!({"tier": "child", "path": "/Users/t/.claude-server-commander/config.json", "exe": "/usr/local/bin/node"}),
+            ),
+            proc_ev(
+                "b",
+                2,
+                "create",
+                11,
+                json!({"tier": "child", "path": "/Users/t/.claude-server-commander/logs/x.log", "exe": "/usr/local/bin/node"}),
+            ),
+        ];
+        assert_eq!(check(&events, &[]).len(), 1);
+    }
+
+    #[test]
+    fn a_recording_that_did_not_start_flags() {
+        let events = [ev(
+            "r",
+            1,
+            ActivitySource::Cua,
+            "cua.recording",
+            json!({"on": false, "error": "bounded_resource_outside_manifest"}),
+            None,
+        )];
+        assert_eq!(check(&events, &[]).len(), 1);
+    }
+
+    #[test]
+    fn the_dev_data_folder_is_guarded() {
+        let approvals = [approval(
+            ApprovalSubject::Folder,
+            "/Users/t",
+            ApprovalScope::Chat,
+            0,
+            None,
+        )];
+        let dev = "/Users/t/Library/Application Support/com.monocode.desktop.dev";
+        let events = [es("1", 5, "write", &format!("{dev}/activity/app-x.jsonl"))];
+        assert_eq!(check_full(&events, &approvals, dev).flags.len(), 1);
+    }
+
+    #[test]
+    fn a_tool_tier_event_is_never_hidden() {
+        // A Bash call reading the keychain through `security`, or a shell
+        // in a tool call rewriting compinit's dump, stays a flag.
+        let events = [
+            call("t", 100, "t1", Some(500)),
+            proc_ev(
+                "f",
+                110,
+                "fork",
+                10,
+                json!({"tier": "root", "child": 30, "exe": "/usr/local/bin/claude"}),
+            ),
+            proc_ev(
+                "x",
+                111,
+                "exec",
+                30,
+                json!({"tier": "child", "exe": "/usr/bin/security"}),
+            ),
+            proc_ev(
+                "k",
+                112,
+                "open",
+                30,
+                json!({"tier": "child", "exe": "/usr/bin/security", "path": "/Users/t/Library/Keychains/login.keychain-db"}),
+            ),
+            proc_ev(
+                "z",
+                113,
+                "write",
+                30,
+                json!({"tier": "child", "exe": "/bin/zsh", "path": "/Users/t/.zcompdump"}),
+            ),
+            proc_ev("e", 120, "exit", 30, json!({"tier": "child"})),
+        ];
+        let out = check_full(&events, &[], DATA);
+        let ids: Vec<&str> = out.flags.iter().map(|f| f.event_id.as_str()).collect();
+        assert_eq!(ids, vec!["k", "z"]);
+        assert!(out.flags.iter().all(|f| f.tier == Some(Tier::Tool)));
+        assert!(out.suppressed.is_empty());
+    }
+
+    #[test]
+    fn shell_rc_and_launch_agent_writes_are_never_hidden() {
+        let events = [
+            proc_ev(
+                "rc",
+                1,
+                "write",
+                11,
+                json!({"tier": "child", "exe": "/bin/zsh", "path": "/Users/t/.zshrc"}),
+            ),
+            proc_ev(
+                "la",
+                2,
+                "create",
+                11,
+                json!({"tier": "child", "exe": "/bin/zsh", "path": "/Users/t/Library/LaunchAgents/x.plist"}),
+            ),
+            proc_ev(
+                "dump",
+                3,
+                "write",
+                11,
+                json!({"tier": "child", "exe": "/bin/zsh", "path": "/Users/t/.zcompdump-host-5.9"}),
+            ),
+            proc_ev(
+                "hist",
+                4,
+                "write",
+                11,
+                json!({"tier": "child", "exe": "/bin/bash", "path": "/Users/t/.zsh_history"}),
+            ),
+            proc_ev(
+                "other",
+                5,
+                "write",
+                11,
+                json!({"tier": "child", "exe": "/usr/bin/python3", "path": "/Users/t/.zcompdump"}),
+            ),
+        ];
+        let out = check_full(&events, &[], DATA);
+        let ids: Vec<&str> = out.flags.iter().map(|f| f.event_id.as_str()).collect();
+        assert_eq!(ids, vec!["rc", "la", "other"]);
+        assert_eq!(out.suppressed.get(RULE_SHELL_INIT), Some(&2));
+        assert_eq!(out.expected.len(), 2);
+    }
+
+    #[test]
+    fn expected_reads_are_per_harness_and_per_reader() {
+        // A Codex chat reading Claude's keychain files is not expected,
+        // nor is a random helper reading Docker's credentials.
+        let mut codex = chats();
+        codex.get_mut("c1").unwrap().harness = "codex".into();
+        let events = [
+            proc_ev(
+                "k",
+                1,
+                "open",
+                10,
+                json!({"tier": "root", "path": "/Library/Keychains/System.keychain", "exe": "/usr/local/bin/codex"}),
+            ),
+            proc_ev(
+                "a",
+                2,
+                "open",
+                10,
+                json!({"tier": "root", "path": "/Users/t/.codex/auth.json", "exe": "/usr/local/bin/codex"}),
+            ),
+            proc_ev(
+                "d",
+                3,
+                "open",
+                12,
+                json!({"tier": "child", "path": "/Users/t/.docker/config.json", "exe": "/usr/bin/curl"}),
+            ),
+            proc_ev(
+                "s",
+                4,
+                "open",
+                12,
+                json!({"tier": "child", "path": "/Users/t/Library/Keychains/login.keychain-db", "exe": "/usr/bin/security"}),
+            ),
+        ];
+        let hosts = HashSet::new();
+        let out = run_full(&CheckInput {
+            events: &events,
+            approvals: &[],
+            chats: &codex,
+            known_hosts: &hosts,
+            now_ms: 1_000_000,
+            data_dir: Some(DATA),
+        });
+        let ids: Vec<&str> = out.flags.iter().map(|f| f.event_id.as_str()).collect();
+        assert_eq!(ids, vec!["k", "d", "s"]);
+        assert_eq!(out.suppressed.get(RULE_HARNESS_READ), Some(&1));
+    }
+
+    #[test]
+    fn repeats_count_and_keep_their_first_and_last_times() {
+        let open = |id: &str, at: i64| {
+            proc_ev(
+                id,
+                at,
+                "open",
+                11,
+                json!({"tier": "child", "path": "/Users/t/.ssh/known_hosts", "exe": "/bin/cat"}),
+            )
+        };
+        let late = DEDUPE_WINDOW_MS + 10;
+        let flags = check(
+            &[open("a", 1), open("b", 5), open("c", 9), open("d", late)],
+            &[],
+        );
+        assert_eq!(flags.len(), 2);
+        assert_eq!((flags[0].count, flags[0].at, flags[0].last_at), (3, 1, 9));
+        assert_eq!((flags[1].count, flags[1].at), (1, late));
+    }
+
+    #[test]
+    fn a_harness_helpers_folder_row_counts_its_files() {
+        let flags = check(
+            &[
+                proc_ev(
+                    "a",
+                    1,
+                    "write",
+                    11,
+                    json!({"tier": "child", "path": "/Users/t/.claude-server-commander/config.json", "exe": "/usr/local/bin/node"}),
+                ),
+                proc_ev(
+                    "b",
+                    2,
+                    "create",
+                    11,
+                    json!({"tier": "child", "path": "/Users/t/.claude-server-commander/logs/x.log", "exe": "/usr/local/bin/node"}),
+                ),
+                proc_ev(
+                    "c",
+                    3,
+                    "write",
+                    11,
+                    json!({"tier": "child", "path": "/Users/t/.claude-server-commander/config.json", "exe": "/usr/local/bin/node"}),
+                ),
+            ],
+            &[],
+        );
+        assert_eq!(flags.len(), 1);
+        assert_eq!(flags[0].count, 3);
+        assert_eq!(
+            flags[0].summary,
+            "Changed 2 files in /Users/t/.claude-server-commander, outside this chat's folders"
+        );
+        assert_eq!(flags[0].tier, Some(Tier::HarnessChild));
+    }
+
+    #[test]
+    fn a_running_or_background_call_never_yields_left_running() {
+        let child = |id: &str, at: i64, pid: u32| {
+            proc_ev(id, at, "fork", 10, json!({"tier": "root", "child": pid}))
+        };
+        let mut bg = call("b", 300, "t2", Some(400));
+        bg.detail["background"] = json!(true);
+        let flags = check(
+            &[
+                call("r", 100, "t1", None),
+                child("f1", 150, 41),
+                bg,
+                child("f2", 350, 42),
+            ],
+            &[],
+        );
+        assert!(flags.is_empty(), "{flags:?}");
+    }
+
+    #[test]
+    fn a_process_whose_fork_was_dropped_is_placed_by_its_lineage() {
+        // The fork of 55 never reached the log; its exec names its parent
+        // through originalPpid and groupId, and launchd adopted it.
+        let events = [
+            call("t", 100, "t1", Some(200)),
+            proc_ev("f", 110, "fork", 10, json!({"tier": "root", "child": 30})),
+            proc_ev(
+                "x",
+                111,
+                "exec",
+                30,
+                json!({"tier": "child", "ppid": 10, "exe": "/bin/zsh"}),
+            ),
+            proc_ev(
+                "e",
+                150,
+                "exec",
+                55,
+                json!({"tier": "child", "ppid": 1, "originalPpid": 30, "groupId": 30, "exe": "/usr/bin/nohup"}),
+            ),
+            proc_ev("z", 160, "exit", 30, json!({"tier": "child"})),
+        ];
+        let flags = check(&events, &[]);
+        assert_eq!(flags.len(), 1, "{flags:?}");
+        assert_eq!(flags[0].event_id, "e");
+        assert_eq!(
+            flags[0].summary,
+            "/usr/bin/nohup (pid 55) kept running after its tool call ended, reparented to launchd"
+        );
     }
 
     #[test]

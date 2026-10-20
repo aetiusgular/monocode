@@ -30,15 +30,35 @@ pub use types::{ActivityEvent, ApprovalRecord, ProcessKind};
 static LOG: OnceLock<store::ActivityLog> = OnceLock::new();
 static CHATS: OnceLock<Mutex<HashMap<String, check::ChatContext>>> = OnceLock::new();
 static SCREENSHOT_FLOOR: AtomicU64 = AtomicU64::new(retention::DEFAULT_SCREENSHOT_FLOOR_BYTES);
+/// The app's data folder and identifier, read once in `init`. The dev build
+/// has its own (`com.monocode.desktop.dev`, decision 1), so nothing here
+/// hard-codes the release one.
+static DATA_DIR: OnceLock<String> = OnceLock::new();
+static IDENTIFIER: OnceLock<String> = OnceLock::new();
 
 /// Starts the log in the app's data folder. Called once from `setup`. A
 /// failure leaves the log off; the app runs on.
 pub fn init(app: &AppHandle) {
+    let _ = IDENTIFIER.set(app.config().identifier.clone());
     let Ok(base) = app.path().app_data_dir() else {
         eprintln!("activity log: no data folder, log off");
         return;
     };
+    let _ = DATA_DIR.set(base.to_string_lossy().into_owned());
     let _ = LOG.set(store::ActivityLog::start(base.join("activity")));
+}
+
+/// The app's data folder, once `init` ran.
+pub(crate) fn data_dir() -> Option<&'static str> {
+    DATA_DIR.get().map(String::as_str)
+}
+
+/// The app's identifier, or the release one before `init`.
+pub(crate) fn identifier() -> &'static str {
+    IDENTIFIER
+        .get()
+        .map(String::as_str)
+        .unwrap_or(collector::RELEASE_IDENTIFIER)
 }
 
 pub(crate) fn log() -> Option<&'static store::ActivityLog> {

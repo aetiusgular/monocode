@@ -95,8 +95,9 @@ export function InstallPlanView({
             <pre className={CODE}>{plan.plist}</pre>
           </details>
           <p className={NOTE}>
-            Then grant Full Disk Access to
-            /Library/PrivilegedHelperTools/com.monocode.desktop.activity-collector
+            Then grant Full Disk Access to{" "}
+            {plan.daemonPath ||
+              "the collector in /Library/PrivilegedHelperTools"}{" "}
             in System Settings, Privacy &amp; Security.
           </p>
         </>

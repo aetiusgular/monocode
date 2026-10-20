@@ -14,6 +14,7 @@ import {
   type ApprovalsRecorder,
 } from "../model/approvalsRecord";
 import { installActivityTap } from "../model/activityTap";
+import { noteActivityEvent } from "../model/activityRefresh";
 import { applyFloor } from "../model/collectorSettings";
 
 type BridgeSession = Pick<
@@ -91,6 +92,8 @@ export function ActivityBridge({
 
   useEffect(() => {
     const remove = installActivityTap((sessionId, event) => {
+      // The Activity section reads again on call ends and restarts.
+      noteActivityEvent(sessionId, event);
       approvalsRecorder.noteHarnessEvent(sessionId, event);
       if (event.type === "approval.resolved")
         approvalsRecorder.noteSiteRules(readSiteRules());

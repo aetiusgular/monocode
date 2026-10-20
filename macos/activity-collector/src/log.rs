@@ -5,6 +5,7 @@
 //! The first line of a day takes the previous day's last hash, or 64 zeros.
 //! Days are UTC. Files are `es-YYYY-MM-DD.jsonl`, rolled to `.jsonl.gz`.
 
+use std::collections::VecDeque;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -237,7 +238,9 @@ pub struct ReadResult {
 }
 
 /// Reads logged events with `since <= at <= until` for `chat_id` (all chats
-/// when empty), oldest first, at most `limit`. Every file whose day falls
+/// when empty), oldest first, at most `limit`. Past the limit the NEWEST
+/// are kept and `truncated` is set: the panel needs what just happened
+/// (Mac test 3.12b). Every file whose day falls
 /// in the range is verified in full, and consecutive files must link;
 /// `chain_ok` says whether all of that held.
 pub fn read_events(
@@ -257,6 +260,7 @@ pub fn read_events(
     // A day with both forms (a compress cut short) is read once, plain.
     files.dedup_by_key(|f| f.day);
     let mut prev_last: Option<String> = None;
+    let mut kept: VecDeque<ActivityEvent> = VecDeque::new();
     for file in files {
         // A late event lands in the next day's file, so read one day past.
         if file.day > last_day.saturating_add(1) {
@@ -282,18 +286,22 @@ pub fn read_events(
             prev_last = verify(reader).ok().and_then(|r| r.last_hash);
             continue;
         }
-        let events = &mut result.events;
+        let events = &mut kept;
         let truncated = &mut result.truncated;
         let report = verify_with(reader, |line| {
             let ev = &line.event;
             if ev.at < since || ev.at > until || (!chat_id.is_empty() && ev.chat_id != chat_id) {
                 return;
             }
-            if events.len() < limit {
-                events.push(ev.clone());
-            } else {
+            if limit == 0 {
+                *truncated = true;
+                return;
+            }
+            if events.len() >= limit {
+                events.pop_front();
                 *truncated = true;
             }
+            events.push_back(ev.clone());
         })?;
         if !report.ok {
             result.chain_ok = false;
@@ -305,6 +313,7 @@ pub fn read_events(
         }
         prev_last = report.last_hash;
     }
+    result.events = kept.into();
     Ok(result)
 }
 
@@ -565,6 +574,9 @@ pub(crate) mod tests {
         let c1 = read_events(&dir, 0, i64::MAX / 2, "c1", 2).unwrap();
         assert_eq!(c1.events.len(), 2);
         assert!(c1.truncated);
+        // Past the limit the newest are kept, oldest first (Mac test 3.12b).
+        let ids: Vec<&str> = c1.events.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["es-2024-10-05-2", "es-2024-10-05-3"]);
         let window = read_events(&dir, DAY0 + 6, DAY0 + 6, "", 100).unwrap();
         assert_eq!(window.events.len(), 1);
         assert_eq!(window.events[0].chat_id, "c2");

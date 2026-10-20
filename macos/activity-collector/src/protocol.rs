@@ -230,6 +230,10 @@ pub enum EsloggerState {
 pub struct Status {
     pub version: String,
     pub eslogger: EsloggerState,
+    /// eslogger's last stderr line while it is not running, capped and
+    /// printable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eslogger_error: Option<String>,
     pub events: Vec<String>,
     pub missing_events: Vec<String>,
     pub tracked: u64,
@@ -435,6 +439,7 @@ mod tests {
         let status = Status {
             version: "0.0.0".into(),
             eslogger: EsloggerState::Running,
+            eslogger_error: None,
             events: vec!["exec".into()],
             missing_events: vec!["tcc_modify".into()],
             tracked: 1,
