@@ -818,13 +818,18 @@ fn write_dev_bundle_icons(app: &Path, app_name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Must match `CFBundleIdentifier` in the generated dev bundle plist and tauri.conf.json.
+/// The dev bundle's name and identifier come from the build's merged config
+/// (`build.rs`): "MonoCode Dev" and `com.monocode.desktop.dev` under
+/// `tauri dev --config src-tauri/tauri.dev.conf.json`. macOS relaunches an app
+/// by its bundle identifier and keeps one privacy entry per identifier, so a
+/// dev build that shared the release id reopened the installed app on "Quit &
+/// Reopen" (Mac test 4.4; research note AA, appendix A).
 #[cfg(debug_assertions)]
-const DEV_BUNDLE_DEFAULT_NAME: &str = "MonoCode";
+const DEV_BUNDLE_DEFAULT_NAME: &str = crate::PRODUCT_NAME;
 #[cfg(debug_assertions)]
 const DEV_BUNDLE_NAME_ENV: &str = "MONOCODE_DEV_APP_NAME";
 #[cfg(debug_assertions)]
-const DEV_BUNDLE_ID: &str = "com.monocode.desktop";
+const DEV_BUNDLE_ID: &str = crate::APP_IDENTIFIER;
 #[cfg(debug_assertions)]
 const DEV_ICNS: &[u8] = include_bytes!("../icons/icon.icns");
 #[cfg(debug_assertions)]
@@ -875,6 +880,7 @@ fn escape_plist_text(value: &str) -> String {
 #[cfg(debug_assertions)]
 fn dev_bundle_plist(app_name: &str) -> Vec<u8> {
     let app_name = escape_plist_text(app_name);
+    let bundle_id = escape_plist_text(DEV_BUNDLE_ID);
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -891,7 +897,7 @@ fn dev_bundle_plist(app_name: &str) -> Vec<u8> {
 	<key>CFBundleIconName</key>
 	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.monocode.desktop</string>
+	<string>{bundle_id}</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
@@ -991,6 +997,15 @@ mod tests {
         let plist = String::from_utf8(dev_bundle_plist("MonoCode Dev")).unwrap();
         assert!(plist.contains("<string>MonoCode Dev</string>"));
         assert!(!plist.contains("<string>MonoCode</string>"));
+    }
+
+    #[test]
+    fn dev_bundle_plist_names_the_build_identifier() {
+        let plist = String::from_utf8(dev_bundle_plist("MonoCode Dev")).unwrap();
+        assert!(plist.contains(&format!(
+            "<key>CFBundleIdentifier</key>\n\t<string>{}</string>",
+            crate::APP_IDENTIFIER
+        )));
     }
 
     #[test]

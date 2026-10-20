@@ -2,6 +2,8 @@ use tauri::Manager;
 
 mod account_identity;
 mod activity;
+#[cfg(test)]
+mod app_identity;
 mod artifacts;
 mod automations;
 mod azure_devops;
@@ -306,6 +308,7 @@ pub fn run() {
         // [w3-b] manage
         // [w3-c] manage
         .setup(|app| {
+            warn_if_identity_differs(&app.config().identifier);
             harness::reap_orphaned_harness_processes();
             session_store::init(app.handle())?;
             control::init(app.handle())?;
@@ -815,6 +818,23 @@ fn reap_harness_children(handle: &tauri::AppHandle) {
     }
     if let Some(host) = handle.try_state::<pty::PtyHost>() {
         host.kill_all();
+    }
+}
+
+/// The identifier `build.rs` merged from `tauri.conf.json` and the CLI's
+/// `--config` values. The dev build's is `com.monocode.desktop.dev`.
+pub const APP_IDENTIFIER: &str = env!("MONOCODE_APP_IDENTIFIER");
+/// The product name merged the same way: "MonoCode Dev" in the dev build.
+pub const PRODUCT_NAME: &str = env!("MONOCODE_PRODUCT_NAME");
+
+/// Code that runs before Tauri (the macOS dev bundle) uses `APP_IDENTIFIER`;
+/// Tauri itself, and so the data folder, uses its own merge. Say so if the
+/// two ever disagree, since the dev bundle would then relaunch as the wrong app.
+fn warn_if_identity_differs(tauri_identifier: &str) {
+    if tauri_identifier != APP_IDENTIFIER {
+        eprintln!(
+            "monocode: build identifier {APP_IDENTIFIER} differs from Tauri's {tauri_identifier}"
+        );
     }
 }
 
