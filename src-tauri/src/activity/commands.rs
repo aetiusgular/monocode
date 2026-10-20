@@ -93,26 +93,48 @@ pub fn activity_set_chat(context: ChatContext) {
     }
 }
 
+/// Whether the collector answered this read. `Unknown` when nobody asked
+/// (not macOS), so the panel never says "not running" for a collector it
+/// did not try (Mac test 2.9, 3.11).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Reachable {
+    #[default]
+    Unknown,
+    Yes,
+    No,
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FlagsReport {
     pub flags: Vec<Flag>,
-    /// The events the flags name, by id, for "the events around it".
+    /// The events the flags and the expected rows name, by id.
     pub events: Vec<ActivityEvent>,
     /// The app's own log verified.
     pub chain_ok: bool,
     /// The collector's log verified; `None` when it was not read.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub collector_chain_ok: Option<bool>,
-    pub collector_reachable: bool,
+    pub collector_reachable: Reachable,
+    /// Why the collector's reply is missing or partial: `timeout`,
+    /// `truncated`, `not running`, `refused`, or `eslogger: <line>`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collector_reason: Option<String>,
     pub truncated: bool,
     /// Records the app dropped because its queue was full.
     pub dropped: u64,
+    /// Expected events the check hid, as rows, for the panel's toggle.
+    pub expected: Vec<Flag>,
+    /// How many events each rule hid.
+    pub suppressed: std::collections::BTreeMap<String, u64>,
 }
 
 /// Runs the check over one time range, for one chat or every chat.
+#[allow(clippy::too_many_arguments)]
 pub fn flags_report(
     dir: &Path,
+    data_dir: Option<&str>,
     chat_id: Option<&str>,
     since: i64,
     until: i64,
@@ -133,9 +155,19 @@ pub fn flags_report(
         ..FlagsReport::default()
     };
     if let Some(reply) = collector_events {
-        report.collector_reachable = true;
-        report.collector_chain_ok = Some(reply.chain_ok && reply.complete);
-        report.truncated |= reply.truncated;
+        // A reply that never completed still counts for what it holds; the
+        // panel says why it is partial (Mac test 3.12b).
+        let answered = reply.complete || !reply.events.is_empty();
+        report.collector_reachable = if answered {
+            Reachable::Yes
+        } else {
+            Reachable::No
+        };
+        report.collector_reason = reply.problem.clone();
+        if reply.complete {
+            report.collector_chain_ok = Some(reply.chain_ok);
+        }
+        report.truncated |= reply.truncated || !reply.complete;
         for mut event in reply.events {
             if let Some(chat) = chats.get(&event.chat_id) {
                 event.harness = chat.harness.clone();
@@ -144,15 +176,18 @@ pub fn flags_report(
         }
     }
     events.sort_by_key(|event| event.at);
-    let flags = check::run(&check::CheckInput {
+    let output = check::run_full(&check::CheckInput {
         events: &events,
         approvals: &back.approvals,
         chats,
         known_hosts: &known_hosts,
         now_ms,
+        data_dir,
     });
-    let wanted: HashSet<&str> = flags
+    let wanted: HashSet<&str> = output
+        .flags
         .iter()
+        .chain(&output.expected)
         .flat_map(|f| f.context.iter().map(String::as_str))
         .collect();
     report.events = events
@@ -160,7 +195,9 @@ pub fn flags_report(
         .filter(|e| wanted.contains(e.id.as_str()))
         .cloned()
         .collect();
-    report.flags = flags;
+    report.flags = output.flags;
+    report.expected = output.expected;
+    report.suppressed = output.suppressed;
     report
 }
 
@@ -179,15 +216,30 @@ pub async fn activity_flags(
         let until = until.unwrap_or_else(now);
         let chats = super::chats().lock().map(|c| c.clone()).unwrap_or_default();
         let collector_events = if cfg!(target_os = "macos") {
-            let reply =
+            let started = std::time::Instant::now();
+            let mut reply =
                 collector::fetch_events(since, until, chat_id.as_deref(), collector::MAX_EVENTS);
-            reply.complete.then_some(reply)
+            if reply.complete || !reply.events.is_empty() {
+                // It answered; still say when eslogger itself is down.
+                if let Some(problem) = collector::fetch_status_detail()
+                    .as_ref()
+                    .and_then(collector::eslogger_problem)
+                {
+                    reply.problem.get_or_insert(problem);
+                }
+            }
+            let took = started.elapsed();
+            if took > std::time::Duration::from_secs(2) {
+                eprintln!("activity: collector read took {} ms", took.as_millis());
+            }
+            Some(reply)
         } else {
             None
         };
         let _guard = super::log().map(|l| l.read_lock.lock());
         let mut report = flags_report(
             &dir,
+            super::data_dir(),
             chat_id.as_deref(),
             since,
             until,
@@ -209,21 +261,61 @@ pub async fn activity_collector_status() -> CollectorStatus {
         .unwrap_or_default()
 }
 
-/// The collector binary a development build installs: next to the app, or
-/// where `cargo build --release` in `macos/activity-collector` puts it.
-fn built_collector(exe: &Path) -> Option<PathBuf> {
-    let dir = exe.parent()?;
-    let mut candidates = vec![dir.join(collector::BINARY_NAME)];
-    // src-tauri/target/<profile>/monocode -> the repository root.
-    if let Some(root) = dir.parent().and_then(Path::parent).and_then(Path::parent) {
-        candidates.push(
-            root.join("macos/activity-collector/target/release")
-                .join(collector::BINARY_NAME),
-        );
+/// Where `cargo build --release` in `macos/activity-collector` puts the
+/// binary, fixed at compile time from this crate's own folder. The
+/// repository is a Cargo workspace, so the app's executable no longer sits
+/// a fixed number of folders below it (Mac test 3.4).
+const SOURCE_TREE_COLLECTOR: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../macos/activity-collector/target/release/monocode-activity-collector"
+);
+
+fn regular_file(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file())
+}
+
+/// The collector binary a development build installs, in order:
+/// `MONOCODE_COLLECTOR_BIN` (debug builds only, an absolute path to a
+/// regular file), the source tree's release build (debug builds only), then
+/// beside the executable. The install still checks its hash.
+fn built_collector_from(
+    exe: &Path,
+    env_bin: Option<&str>,
+    source_tree: Option<&Path>,
+) -> Option<PathBuf> {
+    if let Some(bin) = env_bin.map(Path::new) {
+        if bin.is_absolute() && regular_file(bin) {
+            return Some(bin.to_path_buf());
+        }
     }
-    candidates
-        .into_iter()
-        .find(|path| std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file()))
+    if let Some(path) = source_tree.filter(|p| regular_file(p)) {
+        return Some(path.to_path_buf());
+    }
+    let mut candidates = vec![exe.parent()?.join(collector::BINARY_NAME)];
+    // Old layouts: <repo>/target/<profile>/x, <repo>/src-tauri/target/<profile>/x
+    // and <repo>/target/<profile>/MonoCode.app/Contents/MacOS/x.
+    for up in [3usize, 4, 6] {
+        if let Some(root) = exe.ancestors().nth(up) {
+            candidates.push(
+                root.join("macos/activity-collector/target/release")
+                    .join(collector::BINARY_NAME),
+            );
+        }
+    }
+    candidates.into_iter().find(|path| regular_file(path))
+}
+
+fn built_collector(exe: &Path) -> Option<PathBuf> {
+    if cfg!(debug_assertions) {
+        let env_bin = std::env::var("MONOCODE_COLLECTOR_BIN").ok();
+        built_collector_from(
+            exe,
+            env_bin.as_deref(),
+            Some(Path::new(SOURCE_TREE_COLLECTOR)),
+        )
+    } else {
+        built_collector_from(exe, None, None)
+    }
 }
 
 /// What the install will do. Writes nothing outside the app's data folder.
@@ -233,13 +325,15 @@ pub async fn activity_collector_install_plan(app: AppHandle) -> Result<InstallPl
         return Err("The collector runs only on macOS.".into());
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    if collector::bundled_plist(&exe).is_some() {
+    let names = collector::Names::current();
+    if collector::bundled_plist(&exe, &names).is_some() {
         return Ok(InstallPlan {
             route: "smAppService".into(),
             explanation: collector::explanation(false),
             plist: String::new(),
             commands: Vec::new(),
             staged_plist: None,
+            daemon_path: names.daemon_path.clone(),
         });
     }
     let built = built_collector(&exe).ok_or_else(|| {
@@ -249,9 +343,10 @@ pub async fn activity_collector_install_plan(app: AppHandle) -> Result<InstallPl
     let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let stage = data.join("activity").join("install");
     std::fs::create_dir_all(&stage).map_err(|e| e.to_string())?;
-    let staged = stage.join(format!("{}.plist", collector::LABEL));
+    let staged = stage.join(format!("{}.plist", names.label));
     let exe_text = exe.to_string_lossy().to_string();
     let plan = collector::terminal_plan(
+        &names,
         &built.to_string_lossy(),
         &hash,
         &staged.to_string_lossy(),
@@ -273,13 +368,14 @@ pub async fn activity_collector_register() -> Result<String, String> {
 #[tauri::command]
 pub async fn activity_collector_unregister() -> Result<Vec<String>, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    if collector::bundled_plist(&exe).is_some() {
+    let names = collector::Names::current();
+    if collector::bundled_plist(&exe, &names).is_some() {
         tauri::async_runtime::spawn_blocking(collector::unregister_bundled)
             .await
             .map_err(|e| e.to_string())??;
         return Ok(Vec::new());
     }
-    Ok(collector::removal_commands())
+    Ok(collector::removal_commands(&names))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -340,6 +436,8 @@ mod tests {
     use crate::activity::store::ChainWriter;
     use crate::activity::types::{ActivitySource, ApprovalScope, ApprovalSubject};
     use serde_json::json;
+
+    const DATA: &str = "/Users/t/Library/Application Support/com.monocode.desktop";
 
     fn temp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("activity-cmd-{name}-{}", std::process::id()));
@@ -430,9 +528,11 @@ mod tests {
             truncated: false,
             chain_ok: true,
             complete: true,
+            problem: None,
         };
         let report = flags_report(
             &dir,
+            Some(DATA),
             Some("c1"),
             day,
             day + 1_000,
@@ -491,9 +591,11 @@ mod tests {
             truncated: false,
             chain_ok: true,
             complete: true,
+            problem: None,
         };
         let report = flags_report(
             &dir,
+            Some(DATA),
             Some("c1"),
             day,
             day + 1_000,
@@ -536,9 +638,9 @@ mod tests {
     #[test]
     fn a_report_without_a_collector_still_runs() {
         let dir = temp("nocollector");
-        let report = flags_report(&dir, None, 0, 10, &HashMap::new(), None, 20);
+        let report = flags_report(&dir, Some(DATA), None, 0, 10, &HashMap::new(), None, 20);
         assert!(report.flags.is_empty());
-        assert!(!report.collector_reachable);
+        assert_eq!(report.collector_reachable, Reachable::Unknown);
         assert_eq!(report.collector_chain_ok, None);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -578,17 +680,128 @@ mod tests {
     }
 
     #[test]
-    fn the_built_collector_is_found_beside_the_repository() {
-        let root = temp("built");
-        let exe = root.join("src-tauri/target/debug/monocode");
+    fn the_built_collector_is_found_from_a_workspace_app_bundle() {
+        // Mac test 3.4: a Cargo workspace builds to <repo>/target, and on
+        // macOS the dev executable sits inside MonoCode.app.
+        let root = temp("built-ws");
+        let exe = root.join("target/debug/MonoCode.app/Contents/MacOS/MonoCode");
         std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
-        assert!(built_collector(&exe).is_none());
         let bin = root
             .join("macos/activity-collector/target/release")
             .join(collector::BINARY_NAME);
         std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
         std::fs::write(&bin, b"x").unwrap();
-        assert_eq!(built_collector(&exe), Some(bin));
+        assert_eq!(built_collector_from(&exe, None, None), Some(bin));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_env_override_and_the_source_tree_come_first() {
+        let root = temp("built-order");
+        let exe = root.join("x/MonoCode");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        let env_bin = root.join("env-collector");
+        let tree_bin = root.join("tree-collector");
+        std::fs::write(&env_bin, b"x").unwrap();
+        std::fs::write(&tree_bin, b"x").unwrap();
+        std::fs::write(root.join("x").join(collector::BINARY_NAME), b"x").unwrap();
+        let env = env_bin.to_string_lossy().to_string();
+        assert_eq!(
+            built_collector_from(&exe, Some(&env), Some(&tree_bin)),
+            Some(env_bin.clone())
+        );
+        // A relative or missing override is ignored.
+        assert_eq!(
+            built_collector_from(&exe, Some("rel/c"), Some(&tree_bin)),
+            Some(tree_bin.clone())
+        );
+        assert_eq!(
+            built_collector_from(&exe, None, None),
+            Some(root.join("x").join(collector::BINARY_NAME))
+        );
+        // A directory is not a binary.
+        let dir = root.join("adir");
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir_text = dir.to_string_lossy().to_string();
+        assert_eq!(
+            built_collector_from(&exe, Some(&dir_text), Some(&tree_bin)),
+            Some(tree_bin)
+        );
+        assert!(SOURCE_TREE_COLLECTOR
+            .ends_with("/../macos/activity-collector/target/release/monocode-activity-collector"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_incomplete_collector_reply_still_reaches_the_check() {
+        // Mac test 3.12b: the reply was dropped whole when its end line
+        // did not arrive in time.
+        let dir = temp("partial");
+        let event = ActivityEvent {
+            id: "es-9".into(),
+            at: 10,
+            chat_id: "c1".into(),
+            harness: String::new(),
+            source: ActivitySource::Eslogger,
+            kind: "open".into(),
+            summary: String::new(),
+            detail: json!({ "path": "/Users/t/.ssh/id_ed25519", "tier": "child" }),
+            pid: Some(4),
+            approval_id: None,
+        };
+        let reply = collector::EventsReply {
+            events: vec![event],
+            truncated: false,
+            chain_ok: false,
+            complete: false,
+            problem: Some("timeout".into()),
+        };
+        let report = flags_report(
+            &dir,
+            Some(DATA),
+            Some("c1"),
+            0,
+            100,
+            &HashMap::new(),
+            Some(reply),
+            200,
+        );
+        assert_eq!(report.flags.len(), 1);
+        assert_eq!(report.collector_reachable, Reachable::Yes);
+        assert_eq!(report.collector_reason.as_deref(), Some("timeout"));
+        assert!(report.truncated);
+        assert_eq!(report.collector_chain_ok, None);
+        let gone = collector::EventsReply {
+            problem: Some("not running".into()),
+            ..collector::EventsReply::default()
+        };
+        let report = flags_report(
+            &dir,
+            Some(DATA),
+            Some("c1"),
+            0,
+            100,
+            &HashMap::new(),
+            Some(gone),
+            200,
+        );
+        assert_eq!(report.collector_reachable, Reachable::No);
+        assert_eq!(report.collector_reason.as_deref(), Some("not running"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_built_collector_is_found_beside_the_repository() {
+        let root = temp("built");
+        let exe = root.join("src-tauri/target/debug/monocode");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        assert!(built_collector_from(&exe, None, None).is_none());
+        let bin = root
+            .join("macos/activity-collector/target/release")
+            .join(collector::BINARY_NAME);
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(&bin, b"x").unwrap();
+        assert_eq!(built_collector_from(&exe, None, None), Some(bin));
         let _ = std::fs::remove_dir_all(&root);
     }
 }
