@@ -90,6 +90,99 @@ pub fn model_setup_detect() -> Vec<DetectedServer> {
     found
 }
 
+/// How long one `/api/show` call may take. Reading a model's metadata does
+/// not load it, so this stays short.
+const SHOW_TIMEOUT: Duration = Duration::from_secs(3);
+/// `/api/show` carries the model's license and template too.
+const MAX_SHOW_BODY: u64 = 2 * 1024 * 1024;
+
+/// Ollama's `POST /api/show` for a base URL as the Models page stores it
+/// (`http://127.0.0.1:11434/v1`). Loopback only: `127.0.0.1`, `::1` or
+/// `localhost`, so nothing here reaches past this machine.
+pub(crate) fn ollama_show_url(base_url: &str) -> Result<url::Url, String> {
+    let mut url = valid_base_url(base_url).ok_or("Invalid base URL")?;
+    if url.scheme() != "http" {
+        return Err("Ollama is asked over plain http on this machine only.".into());
+    }
+    let loopback = match url.host() {
+        Some(url::Host::Ipv4(ip)) => ip == std::net::Ipv4Addr::LOCALHOST,
+        Some(url::Host::Ipv6(ip)) => ip == std::net::Ipv6Addr::LOCALHOST,
+        Some(url::Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
+        None => false,
+    };
+    if !loopback {
+        return Err("Ollama is asked on this machine only.".into());
+    }
+    let path = url.path().trim_end_matches('/');
+    let path = path.strip_suffix("/v1").unwrap_or(path).to_string();
+    url.set_path(&format!("{path}/api/show"));
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url)
+}
+
+/// The `capabilities` list from an `/api/show` reply, e.g.
+/// `["completion", "vision"]`. Values are Ollama's own names
+/// (`types/model/capability.go`); anything odd is left out.
+pub(crate) fn parse_capabilities(body: &str) -> Result<Vec<String>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(body).map_err(|_| "Ollama sent a malformed reply.".to_string())?;
+    let list = value
+        .get("capabilities")
+        .and_then(|list| list.as_array())
+        .ok_or("Ollama did not say what the model can do.")?;
+    Ok(list
+        .iter()
+        .filter_map(|item| item.as_str())
+        .filter(|name| {
+            !name.is_empty()
+                && name.len() <= 32
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        })
+        .take(32)
+        .map(str::to_string)
+        .collect())
+}
+
+/// What Ollama says a local model can do. The window's content policy keeps
+/// it from calling Ollama itself, so the app does, on loopback only.
+#[tauri::command(async)]
+pub fn model_setup_ollama_capabilities(
+    base_url: String,
+    model: String,
+) -> Result<Vec<String>, String> {
+    ollama_capabilities(&base_url, &model)
+}
+
+pub(crate) fn ollama_capabilities(base_url: &str, model: &str) -> Result<Vec<String>, String> {
+    if !valid_model(model) {
+        return Err("Invalid model name".into());
+    }
+    let url = ollama_show_url(base_url)?;
+    let agent = ureq::AgentBuilder::new()
+        .timeout(SHOW_TIMEOUT)
+        .redirects(0)
+        .try_proxy_from_env(false)
+        .build();
+    let response = agent
+        .post(url.as_str())
+        .set("Content-Type", "application/json")
+        .send_string(&serde_json::json!({ "model": model }).to_string())
+        .map_err(|error| match error {
+            ureq::Error::Status(code, _) => format!("Ollama answered {code}."),
+            ureq::Error::Transport(_) => "Ollama did not answer.".to_string(),
+        })?;
+    let mut body = String::new();
+    response
+        .into_reader()
+        .take(MAX_SHOW_BODY)
+        .read_to_string(&mut body)
+        .map_err(|_| "Ollama's reply could not be read.".to_string())?;
+    parse_capabilities(&body)
+}
+
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexHomeSpec {
@@ -437,6 +530,119 @@ pub fn approval_paths_within(roots: Vec<String>, paths: Vec<String>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_show_url_is_loopback_only_and_drops_v1() {
+        for (base, want) in [
+            (
+                "http://127.0.0.1:11434/v1",
+                "http://127.0.0.1:11434/api/show",
+            ),
+            (
+                "http://127.0.0.1:11434/v1/",
+                "http://127.0.0.1:11434/api/show",
+            ),
+            ("http://localhost:11434", "http://localhost:11434/api/show"),
+            ("http://[::1]:11434/v1", "http://[::1]:11434/api/show"),
+            (
+                "http://LOCALHOST:9000/ollama/v1?x=1#f",
+                "http://localhost:9000/ollama/api/show",
+            ),
+        ] {
+            assert_eq!(ollama_show_url(base).unwrap().as_str(), want, "{base}");
+        }
+        for bad in [
+            "http://10.0.0.2:11434/v1",
+            "http://example.com/v1",
+            "http://localhost.example.com:11434/v1",
+            "http://127.0.0.2:11434/v1",
+            "http://user:pw@127.0.0.1:11434/v1",
+            "file:///etc/passwd",
+            "ftp://127.0.0.1/v1",
+            "",
+        ] {
+            assert!(ollama_show_url(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn capabilities_come_from_the_show_reply() {
+        assert_eq!(
+            parse_capabilities(r#"{"modelfile":"x","capabilities":["completion","vision"]}"#)
+                .unwrap(),
+            vec!["completion", "vision"]
+        );
+        assert_eq!(
+            parse_capabilities(r#"{"capabilities":[]}"#).unwrap(),
+            Vec::<String>::new()
+        );
+        assert!(
+            parse_capabilities(r#"{"modelfile":"x"}"#).is_err(),
+            "an older Ollama"
+        );
+        assert!(parse_capabilities("not json").is_err());
+        let odd =
+            parse_capabilities(r#"{"capabilities":["vision",7,"a b","x\u0000",""]}"#).unwrap();
+        assert_eq!(odd, vec!["vision"]);
+    }
+
+    /// One HTTP exchange on loopback; returns the request it read.
+    fn serve_once(reply: &'static str) -> (String, std::sync::mpsc::Receiver<String>) {
+        use std::io::{BufRead, BufReader};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!(
+            "http://127.0.0.1:{}/v1",
+            listener.local_addr().unwrap().port()
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut head = String::new();
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = v.trim().parse().unwrap();
+                }
+                head.push_str(&line);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            head.push_str(&String::from_utf8(body).unwrap());
+            let _ = tx.send(head);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                reply.len(),
+                reply
+            );
+        });
+        (base, rx)
+    }
+
+    #[test]
+    fn asks_ollama_for_one_models_capabilities() {
+        let (base, request) = serve_once(r#"{"capabilities":["completion","tools","vision"]}"#);
+        let found = ollama_capabilities(&base, "qwen2.5vl:7b").unwrap();
+        assert_eq!(found, vec!["completion", "tools", "vision"]);
+        let request = request.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(request.starts_with("POST /api/show HTTP/1.1"), "{request}");
+        assert!(
+            request.ends_with(r#"{"model":"qwen2.5vl:7b"}"#),
+            "{request}"
+        );
+    }
+
+    #[test]
+    fn a_bad_model_name_or_a_far_host_is_never_asked() {
+        assert!(ollama_capabilities("http://127.0.0.1:1/v1", "a b").is_err());
+        assert!(ollama_capabilities("http://192.0.2.1:11434/v1", "llava").is_err());
+    }
 
     fn spec() -> CodexHomeSpec {
         CodexHomeSpec {

@@ -715,6 +715,7 @@ pub fn run() {
             git_guard::git_repo_names_commands,
             window_transfer::clear_window_transfer,
             model_setup::model_setup_detect,
+            model_setup::model_setup_ollama_capabilities,
             model_setup::model_setup_write_codex_home,
             model_setup::approval_paths_within,
             edit_adapter_commands::edit_adapter_open,
