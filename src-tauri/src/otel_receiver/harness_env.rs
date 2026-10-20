@@ -139,6 +139,61 @@ pub fn codex_env(token: &str) -> Vec<(String, String)> {
     ]
 }
 
+/// The token's variables. Codex's shell tools inherit its whole environment
+/// by default (`codex-rs/config/src/shell_environment_policy.rs:135-136`), so
+/// every command the agent ran would see the token without these excludes.
+pub const CODEX_TOKEN_VARS: &[&str] = &[
+    "OTEL_EXPORTER_OTLP_HEADERS",
+    "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+    "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+];
+
+/// Codex's `-c` flags that keep the token out of its shell commands, written
+/// so the user's own shell environment filters survive. A `-c` layer is
+/// merged over `config.toml`: a legacy `exclude` array there replaces a lower
+/// one whole and drops a lower `filters` table, and a `filters` table drops
+/// lower `exclude`/`include_only` arrays (`config/src/merge.rs:160-185`). So
+/// a user with `filters` gets ours as `filters` keys (merged by key), and
+/// anyone else gets one `exclude` array holding theirs and ours. Patterns are
+/// case-insensitive globs (`shell_environment_policy.rs:157-160`).
+pub fn codex_shell_env_args(config_toml: Option<&str>) -> Vec<String> {
+    let policy = config_toml
+        .and_then(|text| toml::from_str::<toml::Table>(text).ok())
+        .and_then(|t| t.get("shell_environment_policy").cloned());
+    let policy = policy.as_ref().and_then(toml::Value::as_table);
+    if policy.is_some_and(|p| p.contains_key("filters")) {
+        return CODEX_TOKEN_VARS
+            .iter()
+            .flat_map(|name| {
+                [
+                    "-c".to_string(),
+                    format!("shell_environment_policy.filters.{name}=\"exclude\""),
+                ]
+            })
+            .collect();
+    }
+    let mut exclude: Vec<String> = policy
+        .and_then(|p| p.get("exclude"))
+        .and_then(toml::Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    for name in CODEX_TOKEN_VARS {
+        if !exclude.iter().any(|e| e.eq_ignore_ascii_case(name)) {
+            exclude.push((*name).to_string());
+        }
+    }
+    let list = toml::Value::Array(exclude.into_iter().map(toml::Value::String).collect());
+    vec![
+        "-c".to_string(),
+        format!("shell_environment_policy.exclude={list}"),
+    ]
+}
+
 /// A TOML basic string. The endpoint is MonoCode's own loopback URL, but it
 /// is quoted properly all the same.
 fn toml_string(s: &str) -> String {
@@ -246,5 +301,46 @@ mod tests {
             "[otel]\ntrace_exporter = \"statsig\"\n"
         )));
         assert!(has_own_codex_otel(Some("this is [not toml")));
+    }
+
+    #[test]
+    fn codex_shell_commands_never_see_the_token() {
+        // No policy of the user's: one exclude array with the four names.
+        let args = codex_shell_env_args(None);
+        assert_eq!(
+            args,
+            s(&[
+                "-c",
+                "shell_environment_policy.exclude=[\"OTEL_EXPORTER_OTLP_HEADERS\", \"OTEL_EXPORTER_OTLP_LOGS_HEADERS\", \"OTEL_EXPORTER_OTLP_METRICS_HEADERS\", \"OTEL_EXPORTER_OTLP_TRACES_HEADERS\"]",
+            ])
+        );
+        let (_, value) = args[1].split_once('=').unwrap();
+        let parsed: toml::Table = toml::from_str(&format!("v = {value}")).unwrap();
+        assert_eq!(parsed["v"].as_array().unwrap().len(), 4);
+
+        // The user's own exclude array is kept: ours replaces it whole.
+        let args = codex_shell_env_args(Some(
+            "[shell_environment_policy]\nexclude = [\"AWS_*\", \"otel_exporter_otlp_headers\"]\n",
+        ));
+        let (_, value) = args[1].split_once('=').unwrap();
+        let parsed: toml::Table = toml::from_str(&format!("v = {value}")).unwrap();
+        let list: Vec<&str> = parsed["v"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(list[0], "AWS_*");
+        assert_eq!(list.len(), 5);
+
+        // The user's `filters` table: ours as its keys, never an array that
+        // would drop it.
+        let args = codex_shell_env_args(Some(
+            "[shell_environment_policy.filters]\n\"AWS_*\" = \"exclude\"\n",
+        ));
+        assert_eq!(args.len(), 8);
+        assert!(args.iter().skip(1).step_by(2).all(|a| a
+            .starts_with("shell_environment_policy.filters.OTEL_EXPORTER_OTLP_")
+            && a.ends_with("=\"exclude\"")));
     }
 }

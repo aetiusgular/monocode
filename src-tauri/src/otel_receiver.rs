@@ -655,10 +655,11 @@ pub fn apply_to_child(
     if harness_env::has_own_env_telemetry(&|name| child_var(cmd, name)) {
         return;
     }
+    let mut codex_config = None;
     if harness == "codex" {
-        let config =
+        codex_config =
             codex_home(cmd).and_then(|home| std::fs::read_to_string(home.join("config.toml")).ok());
-        if harness_env::has_own_codex_otel(config.as_deref()) {
+        if harness_env::has_own_codex_otel(codex_config.as_deref()) {
             return;
         }
     }
@@ -677,6 +678,7 @@ pub fn apply_to_child(
         }
     } else {
         cmd.args(harness_env::codex_args(&endpoint, log_prompts));
+        cmd.args(harness_env::codex_shell_env_args(codex_config.as_deref()));
         for (k, v) in harness_env::codex_env(&token) {
             cmd.env(k, v);
         }
