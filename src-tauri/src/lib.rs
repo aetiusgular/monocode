@@ -2,6 +2,8 @@ use tauri::Manager;
 
 mod account_identity;
 mod activity;
+#[cfg(test)]
+mod app_identity;
 mod artifacts;
 mod automations;
 mod azure_devops;
@@ -306,6 +308,7 @@ pub fn run() {
         // [w3-b] manage
         // [w3-c] manage
         .setup(|app| {
+            warn_if_identity_differs(&app.config().identifier);
             harness::reap_orphaned_harness_processes();
             session_store::init(app.handle())?;
             control::init(app.handle())?;
@@ -818,6 +821,23 @@ fn reap_harness_children(handle: &tauri::AppHandle) {
     }
 }
 
+/// The identifier `build.rs` merged from `tauri.conf.json` and the CLI's
+/// `--config` values. The dev build's is `com.monocode.desktop.dev`.
+pub const APP_IDENTIFIER: &str = env!("MONOCODE_APP_IDENTIFIER");
+/// The product name merged the same way: "MonoCode Dev" in the dev build.
+pub const PRODUCT_NAME: &str = env!("MONOCODE_PRODUCT_NAME");
+
+/// Code that runs before Tauri (the macOS dev bundle) uses `APP_IDENTIFIER`;
+/// Tauri itself, and so the data folder, uses its own merge. Say so if the
+/// two ever disagree, since the dev bundle would then relaunch as the wrong app.
+fn warn_if_identity_differs(tauri_identifier: &str) {
+    if tauri_identifier != APP_IDENTIFIER {
+        eprintln!(
+            "monocode: build identifier {APP_IDENTIFIER} differs from Tauri's {tauri_identifier}"
+        );
+    }
+}
+
 #[cfg(all(debug_assertions, target_os = "macos"))]
 pub fn ensure_macos_dev_bundle() {
     macos::ensure_dev_bundle();
@@ -836,6 +856,30 @@ fn scheme_failure() -> tauri::http::Response<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::should_request_quit;
+
+    /// Tauri 2.11.5 prints the expected invoke key when a page sends a wrong
+    /// one, with `eprintln!` and no debug guard, unless its `tracing` feature
+    /// is on (`tauri/src/webview/mod.rs:1746-1761`). With the feature the
+    /// line goes to `tracing::error!`, and MonoCode installs no subscriber, so
+    /// the key reaches no log (Mac test 0.8; rules section 5, item 1).
+    #[test]
+    fn tauri_never_prints_the_invoke_key() {
+        let manifest = include_str!("../Cargo.toml");
+        let line = manifest
+            .lines()
+            .find(|line| line.starts_with("tauri = "))
+            .expect("tauri dependency");
+        assert!(line.contains("\"tracing\""), "{line}");
+        let sources = [include_str!("lib.rs"), include_str!("main.rs")];
+        for source in sources {
+            for word in ["tracing_subscriber", "set_global_default"] {
+                assert!(
+                    !source.contains(&format!("{word}(")) && !source.contains(&format!("{word}::")),
+                    "a tracing subscriber would print the invoke key again"
+                );
+            }
+        }
+    }
 
     #[test]
     fn explicit_exit_requests_quit() {
