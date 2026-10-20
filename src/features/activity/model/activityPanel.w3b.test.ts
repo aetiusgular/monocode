@@ -86,11 +86,14 @@ describe("the panel's model (B6)", () => {
   });
 
   it("says when the log does not verify or the collector is missing", () => {
-    expect(reportNotes({ ...EMPTY_REPORT, collectorReachable: true })).toEqual(
+    expect(reportNotes({ ...EMPTY_REPORT, collectorReachable: "yes" })).toEqual(
       [],
     );
+    // Changed for Mac test 2.9: "not running" needs a collector that was
+    // asked and did not answer, not the empty report.
     const notes = reportNotes({
       ...EMPTY_REPORT,
+      collectorReachable: "no",
       chainOk: false,
       collectorChainOk: false,
       truncated: true,

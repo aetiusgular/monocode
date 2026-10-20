@@ -12,6 +12,8 @@ export type CollectorStatus = {
   registered: number;
   detail?: Record<string, unknown>;
   problem?: string;
+  /** `eslogger: <its last stderr line>` while eslogger is not running. */
+  esloggerProblem?: string;
 };
 
 export type InstallPlan = {
@@ -20,6 +22,8 @@ export type InstallPlan = {
   plist: string;
   commands: string[];
   stagedPlist?: string;
+  /** The installed daemon, the file to grant Full Disk Access to. */
+  daemonPath?: string;
 };
 
 export const NO_STATUS: CollectorStatus = {
@@ -114,9 +118,14 @@ export function statusLine(status: CollectorStatus): string {
   if (!status.supported) return "The collector runs only on macOS.";
   if (status.reachable) {
     const eslogger = status.detail?.eslogger;
-    return eslogger === "running"
-      ? "Running. Recording what MonoCode's processes do."
-      : `Running, but eslogger is ${typeof eslogger === "string" ? eslogger : "not running"}.`;
+    if (eslogger === "running")
+      return "Running. Recording what MonoCode's processes do.";
+    // eslogger's own reason, such as "Caller lacks TCC authorization for
+    // Full Disk Access" (Mac test 3.4).
+    const error = status.detail?.esloggerError;
+    if (typeof error === "string" && error.trim())
+      return `Running, but eslogger stopped: ${error.trim().slice(0, 300)}`;
+    return `Running, but eslogger is ${typeof eslogger === "string" ? eslogger : "not running"}.`;
   }
   if (status.installed)
     return status.problem ?? "Installed, but not answering.";
