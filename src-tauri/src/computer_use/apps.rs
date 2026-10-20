@@ -13,6 +13,9 @@ const NEVER: &[&str] = &[
     // MonoCode, its dev build and anything it ships, the helper included.
     "com.monocode.",
     "com.monocode.desktop",
+    "com.monocode.desktop.dev",
+    "com.monocode.computer-use-helper",
+    "com.monocode.computer-use-helper.dev",
     // Cua's own app. MonoCode embeds the driver in its helper instead, and
     // the standalone app's grants are what note W warns against.
     "com.trycua.",
@@ -205,6 +208,23 @@ mod tests {
             assert_eq!(parse_bundle_id(never), Err(AppRefusal::Never), "{never}");
         }
         assert!(parse_bundle_id("com.monocodex.app").is_ok());
+    }
+
+    #[test]
+    fn the_dev_builds_are_named_on_the_never_list() {
+        // Decision 1: the dev build has its own ids. Named outright, so a
+        // narrower prefix later cannot let them through.
+        for dev in [
+            "com.monocode.desktop.dev",
+            "com.monocode.computer-use-helper.dev",
+        ] {
+            assert!(NEVER.contains(&dev), "{dev} listed");
+            assert_eq!(parse_bundle_id(dev), Err(AppRefusal::Never), "{dev}");
+            assert_eq!(
+                parse_bundle_id(&dev.to_ascii_uppercase()),
+                Err(AppRefusal::Never)
+            );
+        }
     }
 
     #[test]
