@@ -355,7 +355,8 @@ fn connection_cap_answers_503() {
 #[test]
 fn a_trickled_head_is_cut_at_its_deadline() {
     // The deadline is re-armed per read, so a byte every second does not
-    // extend it. Takes the full head deadline (10 seconds).
+    // extend it. Takes the full head deadline (10 seconds). The reply is
+    // read to its end: a first read alone can hold part of it (Mac 0.5).
     let f = fixture(true);
     let mut stream = TcpStream::connect(("127.0.0.1", f.receiver.port())).unwrap();
     stream
@@ -372,8 +373,13 @@ fn a_trickled_head_is_cut_at_its_deadline() {
             Ok(0) => break,
             Ok(n) => {
                 reply.extend_from_slice(&buf[..n]);
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                reply.extend(read_reply(&mut stream));
                 break;
             }
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => break,
             Err(_) => {}
         }
         if started.elapsed() > Duration::from_secs(20) {
@@ -381,7 +387,20 @@ fn a_trickled_head_is_cut_at_its_deadline() {
         }
     }
     assert!(started.elapsed() < HEAD_DEADLINE + Duration::from_secs(3));
-    assert!(String::from_utf8_lossy(&reply).contains(" 408 ") || reply.is_empty());
+    assert!(
+        reply.starts_with(b"HTTP/1.1 408 ") || reply.is_empty(),
+        "reply: {:?}",
+        String::from_utf8_lossy(&reply)
+    );
+}
+
+#[test]
+fn a_read_timeout_is_408_by_its_kind() {
+    use std::io::{Error, ErrorKind};
+    assert_eq!(read_failure(&Error::from(ErrorKind::WouldBlock)), 408);
+    assert_eq!(read_failure(&Error::from(ErrorKind::TimedOut)), 408);
+    assert_eq!(read_failure(&Error::from(ErrorKind::UnexpectedEof)), 400);
+    assert_eq!(read_failure(&Error::from(ErrorKind::ConnectionReset)), 400);
 }
 
 #[test]
@@ -402,4 +421,88 @@ fn configure_caps_and_filters_chat_ids() {
     assert!(s.chats.contains("ok"));
     assert!(!s.chats.contains(&long));
     assert!(!s.chats.contains(""));
+}
+
+/// Records each call a writer gets, so a test can count them.
+#[derive(Default)]
+struct Recorder {
+    writes: Vec<Vec<u8>>,
+}
+
+impl Write for Recorder {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.writes.push(buf.to_vec());
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn the_whole_reply_goes_out_in_one_write() {
+    // In pieces, macOS loopback can hand a client only `HTTP/1.1 ` before
+    // the socket closes (Mac test 0.5).
+    for (status, kind) in [
+        (408, None),
+        (200, Some(BodyKind::Json)),
+        (200, Some(BodyKind::Protobuf)),
+    ] {
+        let mut out = Recorder::default();
+        respond(&mut out, status, kind).unwrap();
+        assert_eq!(
+            out.writes.len(),
+            1,
+            "{status}: {:?}",
+            out.writes
+                .iter()
+                .map(|w| String::from_utf8_lossy(w).into_owned())
+                .collect::<Vec<_>>()
+        );
+        assert!(out.writes[0].starts_with(format!("HTTP/1.1 {status} ").as_bytes()));
+    }
+}
+
+/// Reads a reply to its end. A reset after the reply counts as the end.
+fn read_reply(stream: &mut TcpStream) -> Vec<u8> {
+    let mut reply = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => reply.extend_from_slice(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    reply
+}
+
+#[test]
+fn an_error_reply_survives_unread_input() {
+    // A head past the cap is refused with input still unread. Closing at
+    // once then resets the connection, which can cost the client the reply
+    // (RFC 9112 section 9.6); the receiver closes its write side first and
+    // drains.
+    let f = fixture(true);
+    let mut stream = TcpStream::connect(("127.0.0.1", f.receiver.port())).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let mut req = format!(
+        "POST /v1/logs HTTP/1.1\r\nhost: 127.0.0.1:{}\r\n",
+        f.receiver.port()
+    )
+    .into_bytes();
+    req.extend(std::iter::repeat_n(b'a', MAX_HEAD_BYTES + 4096));
+    let _ = stream.write_all(&req);
+    // The client is still sending when the reply comes.
+    std::thread::sleep(Duration::from_millis(200));
+    let _ = stream.write_all(&[b'b'; 2048]);
+    let reply = read_reply(&mut stream);
+    assert!(
+        reply.starts_with(b"HTTP/1.1 413 "),
+        "reply: {:?}",
+        String::from_utf8_lossy(&reply)
+    );
 }

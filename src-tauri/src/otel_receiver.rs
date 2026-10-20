@@ -212,6 +212,8 @@ impl Receiver {
                 self.open.fetch_sub(1, Ordering::SeqCst);
                 let mut stream = stream;
                 let _ = respond(&mut stream, 503, None);
+                // On the accept thread: drain only what is already here.
+                close_without_waiting(&stream);
                 continue;
             }
             let slot = OpenSlot(self.clone());
@@ -240,6 +242,9 @@ impl Receiver {
                         }
                     };
                     let _ = respond(&mut stream, code, kind);
+                    if code != 200 {
+                        close_gently(&stream);
+                    }
                 });
         }
     }
@@ -360,19 +365,65 @@ fn token_from(head: &Head) -> Option<String> {
         .filter(|t| !t.is_empty())
 }
 
-fn respond(stream: &mut TcpStream, status: u16, kind: Option<BodyKind>) -> std::io::Result<()> {
+/// The whole reply in one buffer and one `write_all`: written in pieces,
+/// a close right after can leave the client holding only the first of them
+/// (Mac test 0.5).
+fn respond<W: Write>(stream: &mut W, status: u16, kind: Option<BodyKind>) -> std::io::Result<()> {
     let (content_type, body): (&str, &[u8]) = match kind {
         Some(BodyKind::Protobuf) => ("application/x-protobuf", b""),
         _ => ("application/json", b"{}"),
     };
-    write!(
-        stream,
+    let mut reply = format!(
         "HTTP/1.1 {status} {}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
         reason(status),
         body.len()
-    )?;
-    stream.write_all(body)?;
+    )
+    .into_bytes();
+    reply.extend_from_slice(body);
+    stream.write_all(&reply)?;
     stream.flush()
+}
+
+const LINGER_DEADLINE: Duration = Duration::from_secs(1);
+const LINGER_BYTES: usize = 8 * 1024;
+
+/// `close_gently` for the accept thread, which must not wait: whatever
+/// input has already arrived is read, then the socket goes.
+fn close_without_waiting(stream: &TcpStream) {
+    if stream.shutdown(std::net::Shutdown::Write).is_err() || stream.set_nonblocking(true).is_err()
+    {
+        return;
+    }
+    let mut buf = [0u8; 1024];
+    let mut drained = 0;
+    let mut stream = stream;
+    while drained < LINGER_BYTES {
+        match stream.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => drained += n,
+        }
+    }
+}
+
+/// After an error reply, with the request maybe not all read: close the
+/// write side, then read what the client still sends, for a short while,
+/// until it closes. Closing at once with input unread resets the connection,
+/// and the reset can cost the client the reply (RFC 9112 section 9.6).
+/// `set_linger` is not stable, so this is done by hand.
+fn close_gently(stream: &TcpStream) {
+    if stream.shutdown(std::net::Shutdown::Write).is_err() {
+        return;
+    }
+    let deadline = Instant::now() + LINGER_DEADLINE;
+    let mut drained = 0;
+    let mut buf = [0u8; 1024];
+    let mut reader = Armed::new(stream, deadline);
+    while drained < LINGER_BYTES {
+        match reader.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => drained += n,
+        }
+    }
 }
 
 fn reason(status: u16) -> &'static str {
@@ -424,9 +475,6 @@ impl<'a> Armed<'a> {
             deadline: std::cell::Cell::new(deadline),
         }
     }
-    fn expired(&self) -> bool {
-        Instant::now() >= self.deadline.get()
-    }
 }
 
 impl Read for Armed<'_> {
@@ -446,11 +494,15 @@ impl Read for Armed<'_> {
 
 type Reader<'a> = BufReader<Armed<'a>>;
 
-fn read_failure(reader: &Reader) -> u16 {
-    if reader.get_ref().expired() {
-        408
-    } else {
-        400
+/// 408 when the read timed out, by the error's kind: a socket timeout is
+/// `WouldBlock` or `TimedOut`, and `Armed` answers `TimedOut` itself when no
+/// time is left. Re-reading the clock here could call a timeout that fired
+/// a moment early a bad request. Anything else is a bad request.
+fn read_failure(error: &std::io::Error) -> u16 {
+    use std::io::ErrorKind;
+    match error.kind() {
+        ErrorKind::WouldBlock | ErrorKind::TimedOut => 408,
+        _ => 400,
     }
 }
 
@@ -463,7 +515,7 @@ fn read_head(reader: &mut Reader) -> Result<Head, u16> {
             .by_ref()
             .take(room)
             .read_until(b'\n', &mut line)
-            .map_err(|_| read_failure(reader))?;
+            .map_err(|e| read_failure(&e))?;
         if n == 0 {
             return Err(400);
         }
@@ -504,7 +556,7 @@ fn read_body(reader: &mut Reader, head: &Head, deadline: Instant) -> Result<Vec<
                 .by_ref()
                 .take(256)
                 .read_line(&mut size_line)
-                .map_err(|_| read_failure(reader))?;
+                .map_err(|e| read_failure(&e))?;
             let size = usize::from_str_radix(size_line.trim().split(';').next().unwrap_or(""), 16)
                 .map_err(|_| 400u16)?;
             let total = body.len().checked_add(size).ok_or(413u16)?;
@@ -514,7 +566,7 @@ fn read_body(reader: &mut Reader, head: &Head, deadline: Instant) -> Result<Vec<
             let mut chunk = vec![0; size.checked_add(2).ok_or(413u16)?];
             reader
                 .read_exact(&mut chunk)
-                .map_err(|_| read_failure(reader))?;
+                .map_err(|e| read_failure(&e))?;
             if size == 0 {
                 break;
             }
@@ -533,7 +585,7 @@ fn read_body(reader: &mut Reader, head: &Head, deadline: Instant) -> Result<Vec<
             .by_ref()
             .take(length as u64)
             .read_to_end(&mut body)
-            .map_err(|_| read_failure(reader))?;
+            .map_err(|e| read_failure(&e))?;
         if body.len() < length {
             return Err(400);
         }
