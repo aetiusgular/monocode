@@ -359,6 +359,23 @@ export type SendTurnInput = HarnessSessionInput & {
 
 export type CompactContextInput = HarnessSessionInput;
 
+/**
+ * Takes back a chat whose provider process kept running while the page
+ * reloaded, its turn still in flight (Mac test 2.8).
+ */
+export type AttachSessionInput = HarnessSessionInput & {
+  providerSessionId: string;
+  /** The in-flight turn's prompt boundary, from its saved user message. */
+  providerTurnId?: string;
+  /** Tool calls the saved transcript still shows running, by call id. */
+  openTools: {
+    callId: string;
+    kind?: string;
+    title?: string;
+    command?: string;
+  }[];
+};
+
 export type SteerTurnInput = {
   sessionId: string;
   cwd: string;

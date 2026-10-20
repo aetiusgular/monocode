@@ -83,9 +83,17 @@ function listen<T>(
 
 type LinePayload = { sessionId: string; line: string };
 // The desktop batches a frame's stdout lines and SSE events into one event;
-// the remote host still sends them one at a time.
-type LinesPayload = LinePayload | { sessionId: string; lines: string[] };
-type ExitPayload = { sessionId: string; code: number | null; pid?: number };
+// the remote host still sends them one at a time. `seq` numbers the first
+// line; the rest follow it one by one. The remote host sends none.
+type LinesPayload =
+  LinePayload | { sessionId: string; lines: string[]; seq?: number };
+type ExitPayload = {
+  sessionId: string;
+  code: number | null;
+  pid?: number;
+  seq?: number;
+};
+type BufferedLine = { line: string; seq?: number };
 type SsePayload =
   { sessionId: string; data: string } | { sessionId: string; events: string[] };
 type SseEndPayload = { sessionId: string; error?: string | null };
@@ -97,7 +105,7 @@ type SseEndHandler = (error?: string) => void;
 
 const lineHandlers = new Map<string, LineHandler>();
 const exitHandlers = new Map<string, ExitHandler>();
-const lineBuffer = new Map<string, string[]>();
+const lineBuffer = new Map<string, BufferedLine[]>();
 const stderrHandlers = new Map<string, LineHandler>();
 const sseHandlers = new Map<string, SseHandler>();
 const sseEndHandlers = new Map<string, SseEndHandler>();
@@ -112,6 +120,16 @@ const pendingExit = new Map<
   string,
   Array<{ code: number | null; pid: number }>
 >();
+/**
+ * The newest sequence number this window handed on, or buffered, per session.
+ * A replay after a reload and the live events overlap; anything at or below
+ * it was seen already (Mac test 2.8).
+ */
+const seenSeq = new Map<string, number>();
+/** A re-attached child's exit that came before anything watched it. */
+const replayedExit = new Map<string, number | null>();
+/** An exit that came while a reload's children were still being taken back. */
+const unwatchedExit = new Map<string, { code: number | null; pid: number }>();
 
 /** True when this exit belongs to the child we currently have spawned. */
 export function isCurrentChildExit(
@@ -129,15 +147,16 @@ let bridgeAttempt: symbol | null = null;
 let users = 0;
 let teardownTimer: ReturnType<typeof setTimeout> | undefined;
 
-function pushBounded(
-  map: Map<string, string[]>,
+function pushBounded<T>(
+  map: Map<string, T[]>,
   sessionId: string,
-  item: string,
+  item: T,
+  max = MAX_BUFFERED,
 ) {
   const queued = map.get(sessionId) ?? [];
   queued.push(item);
-  if (queued.length > MAX_BUFFERED) {
-    queued.splice(0, queued.length - MAX_BUFFERED);
+  if (queued.length > max) {
+    queued.splice(0, queued.length - max);
   }
   map.set(sessionId, queued);
 }
@@ -163,14 +182,14 @@ function ensureBridge() {
         const { payload } = event;
         const { sessionId } = payload;
         const lines = "lines" in payload ? payload.lines : [payload.line];
-        for (const line of lines) {
-          // A handler may detach mid-batch; later lines follow the old path.
-          const handler = lineHandlers.get(sessionId);
-          if (handler) handler(line);
-          else if (ownedChildren.has(sessionId)) {
-            pushBounded(lineBuffer, sessionId, line);
-          }
-        }
+        const first = "seq" in payload ? payload.seq : undefined;
+        lines.forEach((line, offset) =>
+          deliverLine(
+            sessionId,
+            line,
+            first == null ? undefined : first + offset,
+          ),
+        );
       }),
     ),
     register(
@@ -181,8 +200,17 @@ function ensureBridge() {
     ),
     register(
       listen<ExitPayload>("harness-exit", (event) => {
-        const { sessionId, code, pid } = event.payload;
+        const { sessionId, code, pid, seq } = event.payload;
+        if (!isNewSeq(sessionId, seq)) return;
         const handler = exitHandlers.get(sessionId);
+        if (!handler && pid != null && ownedChildren.has(sessionId)) {
+          // A child being taken back after a reload: nothing watches it yet.
+          if (reattached.has(sessionId)) {
+            if (pid === livePid.get(sessionId))
+              replayedExit.set(sessionId, code);
+          } else unwatchedExit.set(sessionId, { code, pid });
+          return;
+        }
         if (!handler || pid == null || pid <= 0) return;
         const currentPid = livePid.get(sessionId);
         if (isCurrentChildExit(currentPid, pid)) {
@@ -245,7 +273,187 @@ function teardownBridge() {
   ownedSse.clear();
   livePid.clear();
   pendingExit.clear();
+  seenSeq.clear();
+  replayedExit.clear();
+  unwatchedExit.clear();
+  reattached.clear();
   void pending?.then((fns) => fns.forEach((fn) => fn())).catch(() => undefined);
+}
+
+/** False for a numbered item this window already handed on. */
+function isNewSeq(sessionId: string, seq: number | undefined): boolean {
+  if (seq == null) return true;
+  if (seq <= (seenSeq.get(sessionId) ?? 0)) return false;
+  seenSeq.set(sessionId, seq);
+  return true;
+}
+
+function deliverLine(sessionId: string, line: string, seq?: number) {
+  if (!isNewSeq(sessionId, seq)) return;
+  // A handler may detach mid-batch; later lines follow the old path.
+  const handler = lineHandlers.get(sessionId);
+  if (handler) handler(line);
+  else if (ownedChildren.has(sessionId)) {
+    // A replay holds up to Rust's bound (`REPLAY_MAX_LINES`); keep all of it.
+    pushBounded(
+      lineBuffer,
+      sessionId,
+      { line, seq },
+      reattached.has(sessionId) ? REPLAY_MAX_LINES : MAX_BUFFERED,
+    );
+  }
+}
+
+/** Rust keeps this many lines per session for a replay. */
+const REPLAY_MAX_LINES = 4000;
+
+/**
+ * Where a reload leaves this window's children: Rust keeps them running and
+ * keeps their output (`harness_replay`); the page forgets them. Survives a
+ * reload in the same webview, not a quit.
+ */
+const RELOAD_KEY = "monocode.harnessReloadChildren";
+
+export type ReloadChild = { sessionId: string; pid: number; lastSeq: number };
+
+/**
+ * Before the page unloads: note these sessions' live children, so the page
+ * that loads next can take them back. Synchronous, so it lands in time.
+ */
+export function saveChildrenForReload(sessionIds: Iterable<string>): void {
+  const rows: ReloadChild[] = [];
+  for (const sessionId of sessionIds) {
+    const pid = livePid.get(sessionId);
+    if (pid == null || pid <= 0) continue;
+    // Lines still buffered never reached an adapter: replay them too.
+    const buffered = lineBuffer.get(sessionId)?.find((entry) => entry.seq);
+    const lastSeq = buffered?.seq
+      ? buffered.seq - 1
+      : (seenSeq.get(sessionId) ?? 0);
+    rows.push({ sessionId, pid, lastSeq });
+  }
+  try {
+    if (rows.length) sessionStorage.setItem(RELOAD_KEY, JSON.stringify(rows));
+    else sessionStorage.removeItem(RELOAD_KEY);
+  } catch {
+    // No storage: the chats fall back to Continue.
+  }
+}
+
+function takeSavedChildren(): ReloadChild[] {
+  try {
+    const raw = sessionStorage.getItem(RELOAD_KEY);
+    sessionStorage.removeItem(RELOAD_KEY);
+    const rows: unknown = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(rows)) return [];
+    return rows.filter(
+      (row): row is ReloadChild =>
+        !!row &&
+        typeof row.sessionId === "string" &&
+        typeof row.pid === "number" &&
+        row.pid > 0 &&
+        typeof row.lastSeq === "number",
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** Sessions whose child this page took back after a reload. */
+const reattached = new Set<string>();
+let reattaching: Promise<Set<string>> | null = null;
+
+type LiveSessionRow = {
+  sessionId: string;
+  pid: number;
+  lastSeq: number;
+  exited: boolean;
+};
+type ReplayResult = {
+  entries: { seq: number; line: string }[];
+  exit?: { code: number | null; pid: number; seq: number } | null;
+  firstSeq: number;
+  lastSeq: number;
+  truncated: boolean;
+};
+
+async function reattachSavedChildren(): Promise<Set<string>> {
+  const saved = takeSavedChildren();
+  const taken = new Set<string>();
+  if (saved.length === 0 || backend) return taken;
+  // Own them first: live lines that arrive before the replay are buffered.
+  for (const row of saved) ownedChildren.add(row.sessionId);
+  let release: (() => void) | undefined;
+  try {
+    // Listening before asking: a line printed after the replay was read
+    // then arrives live instead of being lost.
+    release = await acquireHarnessBridge();
+    const live = await invoke<LiveSessionRow[]>("harness_live_sessions");
+    for (const row of saved) {
+      const now = live.find((entry) => entry.sessionId === row.sessionId);
+      if (!now || now.pid !== row.pid) continue;
+      const replay = await invoke<ReplayResult>("harness_replay", {
+        sessionId: row.sessionId,
+        afterSeq: row.lastSeq,
+      });
+      // Lines past the bound are gone: the turn cannot be rebuilt.
+      if (replay.truncated) continue;
+      livePid.set(row.sessionId, row.pid);
+      reattached.add(row.sessionId);
+      // Replayed lines go ahead of live ones buffered meanwhile; a live line
+      // the replay also has is dropped by its number.
+      const arrived = lineBuffer.get(row.sessionId) ?? [];
+      lineBuffer.delete(row.sessionId);
+      const merged = [
+        ...replay.entries.map((entry) => ({
+          line: entry.line,
+          seq: entry.seq,
+        })),
+        ...arrived,
+      ].sort((x, y) => (x.seq ?? Infinity) - (y.seq ?? Infinity));
+      // Count from where the old page stopped; the live lines buffered
+      // meanwhile moved the mark past the replay's.
+      seenSeq.set(row.sessionId, row.lastSeq);
+      for (const entry of merged)
+        deliverLine(row.sessionId, entry.line, entry.seq);
+      const early = unwatchedExit.get(row.sessionId);
+      unwatchedExit.delete(row.sessionId);
+      if (replay.exit?.pid === row.pid) {
+        replayedExit.set(row.sessionId, replay.exit.code);
+        seenSeq.set(
+          row.sessionId,
+          Math.max(seenSeq.get(row.sessionId) ?? 0, replay.exit.seq),
+        );
+      } else if (early?.pid === row.pid) {
+        replayedExit.set(row.sessionId, early.code);
+      }
+      taken.add(row.sessionId);
+    }
+  } catch {
+    // Anything missing: these chats fall back to Continue.
+  } finally {
+    // The caller holds its own lease (`startHarnessBridge`): dropping the
+    // last one would clear what was just buffered.
+    release?.();
+  }
+  for (const row of saved) {
+    unwatchedExit.delete(row.sessionId);
+    if (taken.has(row.sessionId)) continue;
+    ownedChildren.delete(row.sessionId);
+    lineBuffer.delete(row.sessionId);
+  }
+  return taken;
+}
+
+/**
+ * True when this page took back the session's child after a reload: the
+ * same pid still runs (or just exited) in Rust, and every line this window
+ * missed is buffered for the next `watchChild`. Once per page load. Call it
+ * with the bridge held (`startHarnessBridge`).
+ */
+export function reattachChild(sessionId: string): Promise<boolean> {
+  reattaching ??= reattachSavedChildren();
+  return reattaching.then((taken) => taken.has(sessionId));
 }
 
 export function startHarnessBridge(): () => void {
@@ -300,7 +508,13 @@ export function watchChild(
   lineHandlers.set(sessionId, onLine);
   exitHandlers.set(sessionId, onExit);
   if (onStderr) stderrHandlers.set(sessionId, onStderr);
-  if (queued) queued.forEach(onLine);
+  if (queued) queued.forEach((entry) => onLine(entry.line));
+  if (replayedExit.has(sessionId) && exitHandlers.get(sessionId) === onExit) {
+    const code = replayedExit.get(sessionId) ?? null;
+    replayedExit.delete(sessionId);
+    livePid.delete(sessionId);
+    onExit(code);
+  }
 }
 
 export function unwatchChild(sessionId: string) {
@@ -310,6 +524,9 @@ export function unwatchChild(sessionId: string) {
   ownedChildren.delete(sessionId);
   stderrHandlers.delete(sessionId);
   pendingExit.delete(sessionId);
+  replayedExit.delete(sessionId);
+  unwatchedExit.delete(sessionId);
+  reattached.delete(sessionId);
 }
 
 export function watchSse(
@@ -380,7 +597,8 @@ export function killChild(sessionId: string): Promise<void> {
   return invoke("harness_kill", { sessionId });
 }
 
-export function killAllChildren(): Promise<void> {
+/** `keep`: chats a reloading page hands to the next one; left running. */
+export function killAllChildren(keep: string[] = []): Promise<void> {
   lineHandlers.clear();
   exitHandlers.clear();
   lineBuffer.clear();
@@ -392,7 +610,11 @@ export function killAllChildren(): Promise<void> {
   ownedSse.clear();
   livePid.clear();
   pendingExit.clear();
-  return invoke("harness_kill_all");
+  seenSeq.clear();
+  replayedExit.clear();
+  unwatchedExit.clear();
+  reattached.clear();
+  return invoke("harness_kill_all", keep.length ? { keep } : undefined);
 }
 
 type ResolvedHarnessBinary = { path: string; args?: string[] };

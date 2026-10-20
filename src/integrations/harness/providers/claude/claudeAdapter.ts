@@ -1,4 +1,5 @@
 import {
+  attachClaudeSession,
   bindClaudeSession,
   cancelClaudeTurn,
   compactClaudeContext,
@@ -40,6 +41,7 @@ export const claudeAdapter: HarnessAdapter = {
   respondApproval: respondClaudeApproval,
   respondQuestion: respondClaudeQuestion,
   setToolAccess: setClaudeToolAccess,
+  attachSession: attachClaudeSession,
   stopSession: stopClaudeSession,
   forgetSession: forgetClaudeSession,
   bindSession: bindClaudeSession,

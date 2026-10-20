@@ -13,6 +13,7 @@ import type { UserQuestionReply } from "../../../features/sessions/model/userQue
 import type { NativeCommandProvider } from "./nativeCommands";
 import type {
   ApprovalDecision,
+  AttachSessionInput,
   CompactContextInput,
   HarnessEvent,
   HarnessMcpServer,
@@ -100,6 +101,14 @@ export type HarnessAdapter = {
    * a session with no live process.
    */
   setToolAccess?(sessionId: string, access?: HarnessToolAccess): void;
+  /**
+   * Take back a child that outlived a page reload with its turn in flight.
+   * Null when there is nothing to take back; `turn` settles when that turn
+   * ends, and rejects when the child exits first.
+   */
+  attachSession?(
+    input: AttachSessionInput,
+  ): Promise<{ turn: Promise<void> } | null>;
   /** Kill the child but keep resume state for later rebind. */
   stopSession(sessionId: string): Promise<void>;
   /** Drop resume state and kill the child (delete, harness switch, idle detach). */
@@ -436,6 +445,70 @@ export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
       }
       scheduleIdlePark(input.harness, input.sessionId);
     }
+  });
+}
+
+export function canAttachHarnessSession(id: HarnessId): boolean {
+  const adapter = adapters.get(id);
+  return adapter?.live === true && adapter.attachSession != null;
+}
+
+export type AttachOutcome = {
+  /** The adapter took the child back and watched its turn. */
+  attached: boolean;
+  status: "completed" | "interrupted" | "failed";
+};
+
+/**
+ * Re-attaches a turn that was in flight when the page reloaded (Mac 2.8).
+ * Like `sendHarnessTurn` it holds the session's queue until the turn ends,
+ * and announces the end with `turn.completed` exactly once, whatever
+ * happens: `interrupted` when nothing could be taken back or the attach
+ * threw, or after Stop.
+ */
+export function attachHarnessSession(
+  input: AttachSessionInput & { harness: HarnessId },
+): Promise<AttachOutcome> {
+  return queueSessionOperation(input.sessionId, async () => {
+    const adapter = getHarness(input.harness);
+    const sessionId = input.sessionId;
+    cancelIdlePark(sessionId);
+    activeTurnSessions.add(sessionId);
+    stoppedTurnSessions.delete(sessionId);
+    let attached = false;
+    let status: AttachOutcome["status"] = "completed";
+    try {
+      const taken = adapter?.live
+        ? await adapter.attachSession?.({
+            ...input,
+            onEvent: (event) => {
+              if (event.type === "session.error") status = "failed";
+              input.onEvent(event);
+            },
+          })
+        : null;
+      if (!taken) {
+        status = "interrupted";
+      } else {
+        attached = true;
+        await taken.turn;
+      }
+    } catch {
+      status = attached ? "failed" : "interrupted";
+    } finally {
+      activeTurnSessions.delete(sessionId);
+      if (stoppedTurnSessions.delete(sessionId)) status = "interrupted";
+      completeTurn(sessionId, input.onEvent, status);
+      // The page that started the turn never got to release it.
+      if (typeof isTauri === "function" && isTauri()) {
+        await markPlanTurn(sessionId, false);
+        await invoke("control_turn_finished", { sessionId }).catch(
+          () => undefined,
+        );
+      }
+      if (attached) scheduleIdlePark(input.harness, sessionId);
+    }
+    return { attached, status };
   });
 }
 

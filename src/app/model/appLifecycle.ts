@@ -1,11 +1,21 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ask } from "@tauri-apps/plugin-dialog";
 import {
+  attachHarnessSession,
   bindHarnessSession,
+  canAttachHarnessSession,
   forgetHarnessSession,
   isLiveHarness,
+  stopHarnessSession,
 } from "../../integrations/harness/core/registry";
-import { killAllChildren } from "../../integrations/harness/core/child";
+import {
+  killAllChildren,
+  killChild,
+  saveChildrenForReload,
+} from "../../integrations/harness/core/child";
+import type { HarnessEvent } from "../../integrations/harness/core/types";
+import { stopStreaming } from "../../integrations/harness/core/apply";
+import { sessionToolsInput } from "../../features/session-tools/model/harnessInput";
 import {
   hasInFlightSessions,
   inFlightRefs,
@@ -23,7 +33,12 @@ import {
   type DockSide,
   type ProjectTerminalDock,
 } from "../../features/projects/model/projectTerminal";
-import { sessionWorkCwd, type Session } from "../../features/sessions/model/session";
+import {
+  sessionNeedsInput,
+  sessionWorkCwd,
+  type Block,
+  type Session,
+} from "../../features/sessions/model/session";
 import { sessionChildHarnesses } from "../../features/sessions/model/handoff";
 import {
   getSession,
@@ -396,6 +411,15 @@ export async function persistQuitState(
 ): Promise<void> {
   const refs = inFlightRefs(sessions, tabs);
   const interrupted = new Set(refs.map((ref) => ref.sessionId));
+  // A reload leaves the provider processes running in Rust: the turns that
+  // can be taken back are handed to the next page before any await, so the
+  // note is written before the page goes (Mac test 2.8). The transcript is
+  // still saved interrupted below, for when taking it back fails.
+  if (mode === "unload" && !movedWindow) {
+    handOverForReload(
+      sessions.filter((session) => interrupted.has(session.id)),
+    );
+  }
   // A quit ends the process, so a swallowed write is work that never comes
   // back: let it reject and let the caller call the quit off. An unload is a
   // reload, where best effort is enough and failing loudly helps nobody.
@@ -513,14 +537,18 @@ export async function reapWindowRuntime(
   projectTerminals: ProjectTerminalDock[] = [],
   includeAllChildren = true,
 ): Promise<void> {
+  // Chats handed to the page that loads next keep their processes.
+  const kept = includeAllChildren ? [...handedOver] : [];
   await Promise.all(
-    sessions.map((session) =>
-      Promise.all(
-        sessionChildHarnesses(session).map((harness) =>
-          forgetHarnessSession(harness, session.id),
+    sessions
+      .filter((session) => !kept.includes(session.id))
+      .map((session) =>
+        Promise.all(
+          sessionChildHarnesses(session).map((harness) =>
+            forgetHarnessSession(harness, session.id),
+          ),
         ),
       ),
-    ),
   );
   await Promise.all(
     [...terminalFileIds(tabs), ...projectTerminalFileIds(projectTerminals)].map(
@@ -529,8 +557,225 @@ export async function reapWindowRuntime(
   );
   // Catalog probes, title generators, and usage scrapers are not session
   // children. Drop them so an unused Pi/Codex probe cannot outlive the window.
-  if (includeAllChildren) await killAllChildren().catch(() => undefined);
+  if (includeAllChildren) await killAllChildren(kept).catch(() => undefined);
 }
+
+/**
+ * What a reloading page hands the next one for each in-flight chat whose
+ * provider process keeps running: the turn's prompt boundary and the calls
+ * still open, which the saved transcript marks cancelled. `sessionStorage`
+ * survives a reload in the same webview, not a quit.
+ */
+const RELOAD_TURNS_KEY = "monocode.reloadTurns";
+
+type ReloadTurn = {
+  sessionId: string;
+  providerTurnId?: string;
+  openTools: {
+    blockId: string;
+    callId: string;
+    kind?: string;
+    title?: string;
+    command?: string;
+    status?: string;
+  }[];
+};
+
+/** Chats this page handed over on unload; their children stay alive. */
+const handedOver = new Set<string>();
+
+function isOpenTool(block: Block): boolean {
+  if (block.role !== "tool" || !block.tool?.callId) return false;
+  if (block.streaming) return true;
+  const status = block.tool.status?.toLowerCase() ?? "";
+  return (
+    status === "in_progress" || status === "pending" || status === "running"
+  );
+}
+
+function reloadTurn(session: Session): ReloadTurn | null {
+  if (
+    !session.busy ||
+    !session.providerSessionId ||
+    session.worktreeRemoved ||
+    // An open approval or question was asked before the reload; the next
+    // page never sees it again, and the turn would hang on it.
+    sessionNeedsInput(session) ||
+    !canAttachHarnessSession(session.harness)
+  )
+    return null;
+  let userIndex = -1;
+  for (let i = session.blocks.length - 1; i >= 0; i--) {
+    if (session.blocks[i].role === "user") {
+      userIndex = i;
+      break;
+    }
+  }
+  if (userIndex < 0) return null;
+  return {
+    sessionId: session.id,
+    ...(session.blocks[userIndex].providerTurnId
+      ? { providerTurnId: session.blocks[userIndex].providerTurnId }
+      : {}),
+    openTools: session.blocks.slice(userIndex + 1).flatMap((block) =>
+      isOpenTool(block)
+        ? [
+            {
+              blockId: block.id,
+              callId: block.tool!.callId!,
+              kind: block.tool!.kind,
+              title: block.tool!.title,
+              command: block.tool!.command,
+              status: block.tool!.status,
+            },
+          ]
+        : [],
+    ),
+  };
+}
+
+/** Never throws: the unload's own saves must still run. */
+function handOverForReload(sessions: Session[]): void {
+  handedOver.clear();
+  try {
+    const turns = sessions.flatMap((session) => reloadTurn(session) ?? []);
+    saveChildrenForReload(turns.map((turn) => turn.sessionId));
+    if (turns.length)
+      sessionStorage.setItem(RELOAD_TURNS_KEY, JSON.stringify(turns));
+    else sessionStorage.removeItem(RELOAD_TURNS_KEY);
+    // Only once both notes are down are the processes spared.
+    for (const turn of turns) handedOver.add(turn.sessionId);
+  } catch {
+    // No storage: the next page falls back to Continue.
+  }
+}
+
+let reloadTurnsTaken: ReloadTurn[] | null = null;
+
+/** Once per page load: a StrictMode remount finds nothing left to take. */
+function takeReloadTurns(): ReloadTurn[] {
+  if (reloadTurnsTaken) return [];
+  reloadTurnsTaken = [];
+  try {
+    const raw = sessionStorage.getItem(RELOAD_TURNS_KEY);
+    sessionStorage.removeItem(RELOAD_TURNS_KEY);
+    const rows: unknown = raw ? JSON.parse(raw) : [];
+    if (Array.isArray(rows)) {
+      reloadTurnsTaken = rows.filter(
+        (row): row is ReloadTurn =>
+          !!row &&
+          typeof row.sessionId === "string" &&
+          Array.isArray(row.openTools),
+      );
+    }
+  } catch {
+    // Nothing to take back.
+  }
+  return reloadTurnsTaken;
+}
+
+/**
+ * Undo what the unload saved for a turn that is being taken back: drop the
+ * interrupt note, reopen the calls it cancelled, and mark the chat busy
+ * again, so Continue does not start a second turn meanwhile.
+ */
+export function reopenReloadedTurn(
+  session: Session,
+  turn: ReloadTurn,
+): Session {
+  const open = new Map(turn.openTools.map((tool) => [tool.blockId, tool]));
+  const blocks = (
+    wasTurnInterrupted(session) ? session.blocks.slice(0, -1) : session.blocks
+  ).map((block) => {
+    const saved = open.get(block.id);
+    if (!saved || !block.tool || block.tool.callId !== saved.callId)
+      return block;
+    return {
+      ...block,
+      streaming: true,
+      tool: { ...block.tool, status: saved.status },
+    };
+  });
+  return { ...session, blocks, busy: true };
+}
+
+/** How the app's session state reaches a re-attached turn. */
+export type ReattachSink = {
+  /** Queue a harness event for the chat, like a live turn's. */
+  onEvent: (sessionId: string, event: HarnessEvent) => void;
+  /** Deliver every queued event now. */
+  flush: () => void;
+  /** Replace one chat's session state. */
+  update: (sessionId: string, change: (session: Session) => Session) => void;
+};
+
+/**
+ * After a reload: takes back every in-flight turn the old page handed over
+ * whose provider process still runs with the same pid. Each such chat is
+ * reopened busy at once; when its turn ends it is settled like any turn, and
+ * when it cannot be taken back it is marked interrupted for Continue, as
+ * without this. Call it with the harness bridge held.
+ */
+export async function attachResumedSessions(
+  sessions: Session[],
+  sink: ReattachSink,
+): Promise<void> {
+  const turns = takeReloadTurns();
+  const byId = new Map(sessions.map((session) => [session.id, session]));
+  await Promise.all(
+    turns.map(async (turn) => {
+      const session = byId.get(turn.sessionId);
+      if (!session?.providerSessionId || !wasTurnInterrupted(session)) {
+        // The old page spared this process; nothing here takes it back.
+        await killChild(turn.sessionId).catch(() => undefined);
+        return;
+      }
+      sink.update(session.id, (current) => reopenReloadedTurn(current, turn));
+      const workCwd = sessionWorkCwd(session);
+      let outcome: { attached: boolean } = { attached: false };
+      try {
+        outcome = await attachHarnessSession({
+          harness: session.harness,
+          sessionId: session.id,
+          cwd: workCwd,
+          model: session.model,
+          modelSettings: session.modelSettings,
+          providerAccountId: session.providerAccountId,
+          runtimeMode: session.runtimeMode,
+          ephemeral: session.ephemeral === true,
+          ...sessionToolsInput(session, workCwd),
+          providerSessionId: session.providerSessionId,
+          ...(turn.providerTurnId
+            ? { providerTurnId: turn.providerTurnId }
+            : {}),
+          openTools: turn.openTools,
+          onEvent: (event) => sink.onEvent(session.id, event),
+        });
+      } catch {
+        // Settled below as a turn that could not be taken back.
+      }
+      // Not taken back: stop the spared process, as the unload would have,
+      // keeping the conversation for Continue.
+      if (!outcome.attached)
+        await stopHarnessSession(session.harness, session.id).catch(
+          () => undefined,
+        );
+      sink.flush();
+      sink.update(session.id, (current) =>
+        outcome.attached
+          ? stopStreaming(current)
+          : markTurnInterrupted(current),
+      );
+    }),
+  );
+}
+
+/** For tests: forget this page's reload hand-over. */
+export function __resetReloadHandover(): void {
+  handedOver.clear();
+  reloadTurnsTaken = null;
+}
+
 
 function terminalFileIds(tabs: WorkspaceTab[]): string[] {
   const ids: string[] = [];

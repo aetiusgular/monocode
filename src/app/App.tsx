@@ -828,6 +828,7 @@ import {
 } from "../features/workspace/model/workspaceSave";
 import type { InstalledUpdate } from "./model/updateNotice";
 import {
+  attachResumedSessions,
   bindResumedSessions,
   closeBusyWindow,
   closeCurrentWindow,
@@ -1814,6 +1815,21 @@ function Workspace({
     const bootSessions = bootSessionsToBind(windowTransfer, resumed);
     if (bootSessions.length) bindResumedSessions(bootSessions);
     const stopBridge = startHarnessBridge();
+    // Mac test 2.8: a turn whose agent kept running through a reload is
+    // taken back; one that cannot be falls back to Continue.
+    if (bootSessions.length)
+      void attachResumedSessions(bootSessions, {
+        onEvent: enqueueHarnessEvent,
+        flush: flushHarnessEvents,
+        update: (sessionId, change) =>
+          syncDockBadge(
+            updateSessionState(sessionsRef, setSessions, (current) =>
+              current.map((session) =>
+                session.id === sessionId ? change(session) : session,
+              ),
+            ),
+          ),
+      });
     const reap = () => {
       if (isAppQuitting()) return;
       void persistQuitState(
