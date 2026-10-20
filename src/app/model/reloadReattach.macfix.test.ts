@@ -424,6 +424,29 @@ describe("a re-attached turn keeps what it was sent as (security review X7, X8)"
     });
   });
 
+  it("a hand-over row with no prompt id is not taken back", async () => {
+    // A reload before the prompt's uuid was noted would re-attach a turn
+    // whose own result is then ignored as late, and it would never end
+    // (review Y2). Such a row goes to Continue instead.
+    const saved = await firstPageUnloads();
+    const key = "monocode.reloadTurns";
+    const rows = JSON.parse(sessionStorage.getItem(key)!) as Record<
+      string,
+      unknown
+    >[];
+    rows[0].userMessageUuids = [];
+    sessionStorage.setItem(key, JSON.stringify(rows));
+    harnessAfterReload({
+      entries: missed().map((text, index) => ({ seq: 3 + index, line: text })),
+    });
+    const { state } = await reload(saved);
+    expect(state().blocks.at(-1)?.notice).toBe("interrupt");
+    expect(state().busy).toBe(false);
+    expect(mocks.invoke).toHaveBeenCalledWith("harness_kill", {
+      sessionId: CHAT,
+    });
+  });
+
   it("the activity log gets the re-attached turn's start once, marked reattached", async () => {
     const saved = await firstPageUnloads();
     harnessAfterReload({

@@ -697,8 +697,11 @@ function reloadTurnIntent(
     userMessageUuids?: unknown;
   };
   if (intent !== "plan" && intent !== "default") return null;
+  // At least one id: with none, the turn's own result would be ignored as
+  // late and the re-attached turn would never end (review Y2).
   if (
     !Array.isArray(userMessageUuids) ||
+    userMessageUuids.length === 0 ||
     !userMessageUuids.every((uuid) => typeof uuid === "string" && uuid)
   )
     return null;
