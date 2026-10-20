@@ -508,13 +508,16 @@ mod tests {
 
     #[test]
     fn splits_offered_events() {
-        let (kept, missing) =
-            split_events("exec\nfork\n exit \ncreate\nrename\nunlink\nclose\nopen\nmmap\n");
-        assert_eq!(kept.len(), 8);
+        let (kept, missing) = split_events(
+            "exec\nfork\n exit \ncreate\nrename\nunlink\nclose\nopen\nmmap\ntruncate\nlink\ncopyfile\nclone\nexchangedata\nwrite\n",
+        );
+        assert_eq!(kept.len(), 13);
         assert_eq!(missing, vec!["tcc_modify"]);
+        // `write` is offered but never asked for (note AA, appendix A).
+        assert!(!kept.contains(&"write".to_owned()));
         let (kept, missing) = split_events("");
         assert!(kept.is_empty());
-        assert_eq!(missing.len(), 9);
+        assert_eq!(missing.len(), RawKind::ALL.len());
     }
 
     #[test]

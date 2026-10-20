@@ -234,3 +234,63 @@ fn logged_events_read_back_through_the_read_path() {
     assert!(res.events[0].id.starts_with("es-2025-10-09-"));
     fs::remove_dir_all(&dir).unwrap();
 }
+
+const FILE_EVENTS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/file_events.jsonl"
+);
+
+fn replayed_file_events() -> Vec<ActivityEvent> {
+    let file = fs::File::open(FILE_EVENTS).expect("fixture");
+    let setup = Setup {
+        roots: vec![(5000, "chat-9".to_owned())],
+        grants: Vec::new(),
+    };
+    replay::replay(BufReader::new(file), &setup).expect("replay")
+}
+
+#[test]
+fn a_fork_names_its_child_and_events_carry_tier_and_lineage() {
+    // Finding 3.8: the fork is logged under the parent with the new
+    // process in `detail.child`, and every event says root or child.
+    let events = replayed_file_events();
+    let fork = events.iter().find(|e| e.kind == "fork").expect("fork kept");
+    assert_eq!(fork.pid, Some(5000));
+    assert_eq!(fork.detail["child"], 5001);
+    assert_eq!(fork.detail["tier"], "root");
+    let exec = events.iter().find(|e| e.kind == "exec").expect("exec kept");
+    assert_eq!(exec.detail["tier"], "child");
+    assert_eq!(exec.detail["ppid"], 1);
+    assert_eq!(exec.detail["originalPpid"], 5000);
+    assert_eq!(exec.detail["groupId"], 5000);
+    assert_eq!(exec.detail["sessionId"], 100001);
+}
+
+#[test]
+fn truncate_link_copyfile_clone_and_exchangedata_are_logged_with_paths() {
+    // Finding 1.3: the events eslogger offers on macOS 26 that the fixed
+    // list left out.
+    let events = replayed_file_events();
+    let by = |kind: &str| {
+        events
+            .iter()
+            .find(|e| e.kind == kind)
+            .unwrap_or_else(|| panic!("{kind} not logged"))
+    };
+    assert_eq!(by("truncate").detail["path"], "/Users/dev/proj/out.log");
+    let link = by("link");
+    assert_eq!(link.detail["path"], "/Users/dev/proj/a.txt");
+    assert_eq!(link.detail["dest"], "/Users/dev/Desktop/a-link.txt");
+    assert_eq!(
+        by("copyfile").detail["dest"],
+        "/Users/dev/Desktop/a-copy.txt"
+    );
+    assert_eq!(by("clone").detail["dest"], "/Users/dev/Desktop/b-clone.txt");
+    let swap = by("exchangedata");
+    assert_eq!(swap.detail["path"], "/Users/dev/proj/c.txt");
+    assert_eq!(swap.detail["dest"], "/Users/dev/Documents/c.txt");
+    assert_eq!(
+        swap.summary,
+        "exchangedata /Users/dev/proj/c.txt <-> /Users/dev/Documents/c.txt"
+    );
+}
