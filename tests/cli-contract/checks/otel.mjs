@@ -76,10 +76,12 @@ export function codexArgs(endpoint, logPrompts) {
 
 /** `codex_shell_env_args` in harness_env.rs, for a home with no policy. */
 export function codexShellEnvArgs() {
-  return ["-c", `shell_environment_policy.exclude=${JSON.stringify(CODEX_TOKEN_VARS).replace(/,/g, ", ")}`];
+  return ["-c", `shell_environment_policy.exclude=${JSON.stringify([...CODEX_TOKEN_VARS, ...CODEX_SHELL_EXCLUDES]).replace(/,/g, ", ")}`];
 }
 
 const CODEX_TOKEN_VARS = ["OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_LOGS_HEADERS", "OTEL_EXPORTER_OTLP_METRICS_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS"];
+/** `CODEX_SHELL_EXCLUDES` in harness_env.rs: the computer-use bridge's variables. */
+const CODEX_SHELL_EXCLUDES = ["MONOCODE_CU_*"];
 
 /** `codex_env` in harness_env.rs. */
 export function codexEnv(token) {

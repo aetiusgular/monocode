@@ -5,8 +5,10 @@
 //! from the environment MonoCode gave the harness, connects here, sends the
 //! token as its first line, and then relays MCP lines both ways. The token
 //! picks the chat; a wrong token gets one error line and the connection ends.
-//! A chat switched off keeps its connection: the facade offers it nothing
-//! until it is on again, since the harness never restarts the server.
+//! A chat with a token that is off (a spawn before the user's switch-on,
+//! 4.12) connects and is offered nothing until it is on. Stop keeps the
+//! connection (4.7). Switching off replaces the token, so a connection made
+//! with the old one ends at its next line or poll (security review X2).
 
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::net::{TcpListener, TcpStream};
@@ -139,7 +141,8 @@ fn serve(core: &Arc<Core>, stream: TcpStream) {
     let token = serde_json::from_slice::<Value>(&hello)
         .ok()
         .and_then(|v| v.get("token").and_then(Value::as_str).map(str::to_string));
-    let Some(chat) = token.and_then(|token| core.chat_for_token(&token)) else {
+    let token = token.unwrap_or_default();
+    let Some(chat) = core.chat_for_token(&token) else {
         let _ = write_line(
             &mut writer,
             &json!({"monocode": "refused", "message": "Computer use is not on for this chat."}),
@@ -152,7 +155,13 @@ fn serve(core: &Arc<Core>, stream: TcpStream) {
     let _ = reader.get_ref().set_read_timeout(Some(POLL));
     let mut facade = Facade::new(chat.clone());
     loop {
-        match next_line(&mut reader, &mut pending, MAX_REQUEST) {
+        let line = next_line(&mut reader, &mut pending, MAX_REQUEST);
+        // Switching the chat off replaces its token (security review X2):
+        // a connection made with the old one ends here.
+        if core.chat_for_token(&token).as_deref() != Some(chat.as_str()) {
+            return;
+        }
+        match line {
             Line::Text(line) => {
                 let reply = match serde_json::from_slice::<Value>(&line) {
                     Ok(message) => facade.handle(core.as_ref(), &message),
@@ -285,11 +294,15 @@ mod tests {
     }
 
     #[test]
-    fn switching_off_keeps_the_connection_and_offers_nothing_until_on_again() {
-        // 4.7: the harness never restarts the stdio server, so the
-        // connection outlives the switch; off empties it instead.
+    fn switching_off_closes_the_connection_and_refuses_the_old_token() {
+        // Security review X2: off replaces the chat's token, so a token an
+        // agent's shell saw ends with the switch, and a connection made with
+        // it ends too. (Before X2 the connection stayed and offered nothing.)
+        // The harness restarts without the server on off; its relay, if one
+        // is left, dials again, is refused and answers "off" itself.
         let (core, _, _) = core_with(FakeLauncher::new());
         core.set_chat("c1", true);
+        let old = core.token("c1").unwrap();
         let (mut stream, mut reader) = ready(&core, "c1");
         send(
             &mut stream,
@@ -303,30 +316,20 @@ mod tests {
             2
         );
         core.set_chat("c1", false);
+        let mut rest = String::new();
         assert_eq!(
-            read(&mut reader)["method"],
-            "notifications/tools/list_changed"
+            reader.read_line(&mut rest).unwrap_or(0),
+            0,
+            "closed after the switch-off, got {rest:?}"
         );
-        send(
-            &mut stream,
-            json!({"jsonrpc":"2.0","id":3,"method":"tools/list"}),
-        );
-        assert_eq!(read(&mut reader)["result"]["tools"], json!([]));
-        send(
-            &mut stream,
-            json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"request_app_access","arguments":{"app":"com.apple.calculator"}}}),
-        );
-        let off = read(&mut reader);
-        assert_eq!(off["result"]["isError"], true);
-        assert_eq!(
-            off["result"]["content"][0]["text"],
-            "Computer use is off for this chat. Ask the user to switch it on in MonoCode."
-        );
+        let address = start(core.clone()).unwrap();
+        let (_stream, mut reader) = connect(address, &old);
+        assert_eq!(read(&mut reader)["monocode"], "refused");
+
+        // On again: the new token (the restarted harness's) gets the tools.
         core.set_chat("c1", true);
-        assert_eq!(
-            read(&mut reader)["method"],
-            "notifications/tools/list_changed"
-        );
+        assert_ne!(core.token("c1").unwrap(), old);
+        let (mut stream, mut reader) = ready(&core, "c1");
         send(
             &mut stream,
             json!({"jsonrpc":"2.0","id":5,"method":"tools/list"}),
@@ -362,11 +365,12 @@ mod tests {
     }
 
     #[test]
-    fn a_chat_switched_off_still_connects_and_hears_when_it_is_switched_on() {
+    fn a_chat_with_a_token_but_off_connects_and_hears_when_it_is_switched_on() {
+        // 4.12 and X1: a spawn before the switch-on gets a token for a chat
+        // that is still off. Its relay connects and is offered nothing.
         let (core, _, _) = core_with(FakeLauncher::new());
-        core.set_chat("c1", true);
-        let token = core.token("c1").unwrap();
-        core.set_chat("c1", false);
+        let token = core.mint_token("c1").unwrap();
+        assert!(!core.is_on("c1"));
         let address = start(core.clone()).unwrap();
         let (mut stream, mut reader) = connect(address, &token);
         assert_eq!(read(&mut reader)["monocode"], "ok");

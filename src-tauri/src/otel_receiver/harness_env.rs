@@ -196,7 +196,17 @@ pub const CODEX_TOKEN_VARS: &[&str] = &[
     "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
 ];
 
-/// Codex's `-c` flags that keep the token out of its shell commands, written
+/// Kept out of Codex's shell commands besides the telemetry token: the chat's
+/// computer-use endpoint and token (`computer_use/bridge_cli.rs`). Codex
+/// hands them to that MCP server through `env_vars`, and its shell inherits
+/// everything by default (`shell_environment_policy.rs:136`, default
+/// excludes off), so an agent could read the token with `env` (security
+/// review X2). `MONOCODE_APP_*` and `MONOCODE_CONTROL_*` stay: the agent runs
+/// the app and control CLIs in its shell and they read them there
+/// (`control_cli.rs:536-553`).
+pub const CODEX_SHELL_EXCLUDES: &[&str] = &["MONOCODE_CU_*"];
+
+/// Codex's `-c` flags that keep the tokens out of its shell commands, written
 /// so the user's own shell environment filters survive. A `-c` layer is
 /// merged over `config.toml`: a legacy `exclude` array there replaces a lower
 /// one whole and drops a lower `filters` table, and a `filters` table drops
@@ -209,9 +219,15 @@ pub fn codex_shell_env_args(config_toml: Option<&str>) -> Vec<String> {
         .and_then(|text| toml::from_str::<toml::Table>(text).ok())
         .and_then(|t| t.get("shell_environment_policy").cloned());
     let policy = policy.as_ref().and_then(toml::Value::as_table);
-    if policy.is_some_and(|p| p.contains_key("filters")) {
-        return CODEX_TOKEN_VARS
-            .iter()
+    let names = CODEX_TOKEN_VARS.iter().chain(CODEX_SHELL_EXCLUDES);
+    if let Some(filters) = policy
+        .and_then(|p| p.get("filters"))
+        .and_then(toml::Value::as_table)
+    {
+        // Codex refuses two filter keys that differ only in case
+        // (`shell_environment_policy.rs:111-119`), so one the user has stays.
+        return names
+            .filter(|name| !filters.keys().any(|k| k.eq_ignore_ascii_case(name)))
             .flat_map(|name| {
                 [
                     "-c".to_string(),
@@ -229,7 +245,7 @@ pub fn codex_shell_env_args(config_toml: Option<&str>) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default();
-    for name in CODEX_TOKEN_VARS {
+    for name in names {
         if !exclude.iter().any(|e| e.eq_ignore_ascii_case(name)) {
             exclude.push((*name).to_string());
         }
@@ -355,18 +371,19 @@ mod tests {
 
     #[test]
     fn codex_shell_commands_never_see_the_token() {
-        // No policy of the user's: one exclude array with the four names.
+        // No policy of the user's: one exclude array with the four names and
+        // the computer-use pattern (X2).
         let args = codex_shell_env_args(None);
         assert_eq!(
             args,
             s(&[
                 "-c",
-                "shell_environment_policy.exclude=[\"OTEL_EXPORTER_OTLP_HEADERS\", \"OTEL_EXPORTER_OTLP_LOGS_HEADERS\", \"OTEL_EXPORTER_OTLP_METRICS_HEADERS\", \"OTEL_EXPORTER_OTLP_TRACES_HEADERS\"]",
+                "shell_environment_policy.exclude=[\"OTEL_EXPORTER_OTLP_HEADERS\", \"OTEL_EXPORTER_OTLP_LOGS_HEADERS\", \"OTEL_EXPORTER_OTLP_METRICS_HEADERS\", \"OTEL_EXPORTER_OTLP_TRACES_HEADERS\", \"MONOCODE_CU_*\"]",
             ])
         );
         let (_, value) = args[1].split_once('=').unwrap();
         let parsed: toml::Table = toml::from_str(&format!("v = {value}")).unwrap();
-        assert_eq!(parsed["v"].as_array().unwrap().len(), 4);
+        assert_eq!(parsed["v"].as_array().unwrap().len(), 5);
 
         // The user's own exclude array is kept: ours replaces it whole.
         let args = codex_shell_env_args(Some(
@@ -381,17 +398,50 @@ mod tests {
             .map(|v| v.as_str().unwrap())
             .collect();
         assert_eq!(list[0], "AWS_*");
-        assert_eq!(list.len(), 5);
+        assert_eq!(list.len(), 6);
 
         // The user's `filters` table: ours as its keys, never an array that
         // would drop it.
         let args = codex_shell_env_args(Some(
             "[shell_environment_policy.filters]\n\"AWS_*\" = \"exclude\"\n",
         ));
-        assert_eq!(args.len(), 8);
-        assert!(args.iter().skip(1).step_by(2).all(|a| a
+        assert_eq!(args.len(), 10);
+        assert!(args.iter().skip(1).step_by(2).all(|a| (a
             .starts_with("shell_environment_policy.filters.OTEL_EXPORTER_OTLP_")
+            || a.starts_with("shell_environment_policy.filters.MONOCODE_CU_"))
             && a.ends_with("=\"exclude\"")));
+
+        // A key the user has in another case is not added twice.
+        let args = codex_shell_env_args(Some(
+            "[shell_environment_policy.filters]\n\"monocode_cu_*\" = \"exclude\"\n",
+        ));
+        assert_eq!(args.len(), 8);
+    }
+
+    #[test]
+    fn codex_shell_commands_never_see_the_computer_use_token() {
+        // Security review X2: the chat's computer-use server gets these
+        // through `env_vars`; the agent's shell needs neither.
+        let args = codex_shell_env_args(None);
+        let (_, value) = args[1].split_once('=').unwrap();
+        let parsed: toml::Table = toml::from_str(&format!("v = {value}")).unwrap();
+        let list: Vec<&str> = parsed["v"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(list.contains(&"MONOCODE_CU_*"), "{list:?}");
+        // The app and control CLIs the agent runs in its shell read these.
+        assert!(!list
+            .iter()
+            .any(|p| p.starts_with("MONOCODE_APP") || p.starts_with("MONOCODE_CONTROL")));
+        let args = codex_shell_env_args(Some(
+            "[shell_environment_policy.filters]\n\"AWS_*\" = \"exclude\"\n",
+        ));
+        assert!(args
+            .iter()
+            .any(|a| a == "shell_environment_policy.filters.MONOCODE_CU_*=\"exclude\""));
     }
 
     #[test]

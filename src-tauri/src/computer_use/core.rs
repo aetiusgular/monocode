@@ -34,6 +34,11 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// A bridge token: 256 random bits as hex.
+fn new_token() -> String {
+    format!("{}{}", new_id(), new_id())
+}
+
 fn new_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
@@ -119,10 +124,11 @@ fn note_runtime_end(chat: &str, entry: &RuntimeEntry) {
 
 #[derive(Default)]
 struct Inner {
-    /// Each chat's bridge token, made the first time the chat is switched on
-    /// and kept for the app run, so a harness started with it keeps its
-    /// connection through off and on (Mac test 4.7). A token gives nothing
-    /// while its chat is off.
+    /// Each chat's bridge token. Made at the first switch-on, or at a spawn
+    /// that names the chat's server (4.12), and kept through Stop so the
+    /// harness keeps its connection (Mac test 4.7). Switching off makes a new
+    /// one, so a token an agent's shell saw ends with the switch (security
+    /// review X2). A token gives nothing while its chat is off.
     tokens: HashMap<String, String>,
     /// Chats computer use is switched on for now.
     on: std::collections::HashSet<String>,
@@ -212,9 +218,11 @@ impl Core {
 
     // --- Chats and tokens ---
 
-    /// Switches computer use on or off for a chat. Off ends its grants, its
-    /// cards and its runtime; its connections stay, and offer nothing until
-    /// it is on again.
+    /// Switches computer use on or off for a chat. On keeps the chat's token.
+    /// Off ends its grants, its cards and its runtime, and replaces its token:
+    /// its connections close, and a relay that dials again with the old token
+    /// is refused and answers "off". The harness restarts without the server
+    /// and gets the new token at the spawn after the next switch-on.
     pub fn set_chat(&self, chat: &str, on: bool) {
         if chat.is_empty() || chat.len() > 200 {
             return;
@@ -224,14 +232,38 @@ impl Core {
             inner
                 .tokens
                 .entry(chat.to_string())
-                .or_insert_with(|| format!("{}{}", new_id(), new_id()));
+                .or_insert_with(new_token);
             inner.on.insert(chat.to_string());
             return;
         }
-        let had = self.lock().on.remove(chat);
+        let had = {
+            let mut inner = self.lock();
+            if let Some(token) = inner.tokens.get_mut(chat) {
+                *token = new_token();
+            }
+            inner.on.remove(chat)
+        };
         if had {
             self.stop(chat);
         }
+    }
+
+    /// The chat's token, made now if it has none, without switching the chat
+    /// on. For a harness spawn that names the chat's server: its relay can
+    /// connect, and gets nothing until the user's switch-on (security review
+    /// X1, Mac test 4.12).
+    pub fn mint_token(&self, chat: &str) -> Option<String> {
+        if chat.is_empty() || chat.len() > 200 {
+            return None;
+        }
+        let mut inner = self.lock();
+        Some(
+            inner
+                .tokens
+                .entry(chat.to_string())
+                .or_insert_with(new_token)
+                .clone(),
+        )
     }
 
     /// Whether computer use is switched on for a chat now.
@@ -239,7 +271,8 @@ impl Core {
         self.lock().on.contains(chat)
     }
 
-    /// The bridge token for a chat once it has been switched on in this run.
+    /// The chat's bridge token, if it has one. Spawns take `mint_token`.
+    #[cfg(test)]
     pub fn token(&self, chat: &str) -> Option<String> {
         self.lock().tokens.get(chat).cloned()
     }
@@ -1325,7 +1358,7 @@ pub mod tests {
     }
 
     #[test]
-    fn tokens_are_per_chat_and_last_the_app_run_while_the_switch_is_a_flag() {
+    fn tokens_are_per_chat_survive_stop_and_are_replaced_when_switched_off() {
         let (core, _, _) = core_with(FakeLauncher::new());
         core.set_chat("c1", true);
         core.set_chat("c2", true);
@@ -1352,12 +1385,25 @@ pub mod tests {
                 .is_err(),
             "nothing is granted while off"
         );
-        // 4.7: the token outlives the switch, so a harness started with it
-        // keeps working once the chat is on again.
-        assert_eq!(core.chat_for_token(&t1).as_deref(), Some("c1"));
+        // X2: off replaces the token, so one an agent's shell saw is dead.
+        // Off also takes the server out of the launch config, so the harness
+        // restarts and its next spawn with the server gets the new token.
+        assert_eq!(core.chat_for_token(&t1), None, "the old token is refused");
+        let t3 = core.token("c1").unwrap();
+        assert_ne!(t3, t1);
+        assert!(t3.len() >= 64);
+        assert_eq!(core.chat_for_token(&t2).as_deref(), Some("c2"));
         core.set_chat("c1", true);
-        assert_eq!(core.token("c1").unwrap(), t1);
+        assert_eq!(core.token("c1").unwrap(), t3, "on keeps the current token");
         assert!(core.is_on("c1"));
+        // 4.7: Stop keeps the token, so the harness keeps its connection.
+        core.stop("c1");
+        assert_eq!(core.token("c1").unwrap(), t3);
+        assert_eq!(core.chat_for_token(&t3).as_deref(), Some("c1"));
+        // A spawn's token never switches a chat on, and keeps one it has.
+        assert_eq!(core.mint_token("c9"), core.token("c9"));
+        assert!(!core.is_on("c9"));
+        assert_eq!(core.mint_token("c1").unwrap(), t3);
     }
 
     #[test]
