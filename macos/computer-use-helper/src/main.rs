@@ -16,9 +16,6 @@
 //! <pid> --data <dir>`. A debug build also takes `--driver <path>`; a release
 //! build uses the `cua-driver` beside its own executable only.
 
-// Off macOS only the tests use most of this crate.
-#![cfg_attr(not(target_os = "macos"), allow(dead_code, unused_imports))]
-
 mod apps;
 mod base64;
 mod caller;
@@ -34,8 +31,6 @@ mod stop;
 mod tools;
 
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 #[derive(Debug, PartialEq, Eq)]
 struct Args {
@@ -105,6 +100,8 @@ fn run(_args: Args) -> i32 {
 fn run(args: Args) -> i32 {
     use std::os::unix::io::AsRawFd;
     use std::os::unix::net::UnixListener;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)

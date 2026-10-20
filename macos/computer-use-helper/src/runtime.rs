@@ -178,6 +178,10 @@ fn random_hex() -> Result<String, String> {
 }
 
 impl Runtimes {
+    #[cfg_attr(
+        all(not(target_os = "macos"), not(test)),
+        expect(dead_code, reason = "called only from the macOS `run` in main.rs")
+    )]
     pub fn new(driver: PathBuf, data: PathBuf, private: PathBuf, home: PathBuf) -> Self {
         Self {
             driver,

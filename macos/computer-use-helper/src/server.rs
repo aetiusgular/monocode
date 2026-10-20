@@ -56,6 +56,10 @@ pub struct Shared {
 }
 
 impl Shared {
+    #[cfg_attr(
+        all(not(target_os = "macos"), not(test)),
+        expect(dead_code, reason = "called only from the macOS `run` in main.rs")
+    )]
     pub fn new(
         runtimes: Runtimes,
         mouse: Box<dyn Mouse + Send + Sync>,
@@ -192,6 +196,10 @@ pub fn stop_now(shared: &Shared, runtime: &str) -> crate::stop::StopReport {
 
 /// Serves one verified connection until it closes. Every runtime ends when
 /// it does, so no grant outlives MonoCode's connection.
+#[cfg_attr(
+    all(not(target_os = "macos"), not(test)),
+    expect(dead_code, reason = "called only from the macOS `run` in main.rs")
+)]
 pub fn serve(shared: Arc<Shared>, stream: UnixStream) {
     let Ok(reader) = stream.try_clone() else {
         return;
