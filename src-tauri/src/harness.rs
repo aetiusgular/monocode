@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -43,6 +43,8 @@ struct HarnessLine {
 struct HarnessLines {
     session_id: String,
     lines: Vec<String>,
+    /// Sequence number of `lines[0]`; the rest follow it one by one.
+    seq: u64,
 }
 
 #[derive(Serialize, Clone)]
@@ -51,6 +53,7 @@ struct HarnessExit {
     session_id: String,
     code: Option<i32>,
     pid: u32,
+    seq: u64,
 }
 
 #[derive(Serialize, Clone)]
@@ -58,6 +61,182 @@ struct HarnessExit {
 struct HarnessSseBatch {
     session_id: String,
     events: Vec<String>,
+    /// Sequence number of `events[0]`.
+    seq: u64,
+}
+
+/// Lines kept per session for a reloaded webview to replay. Tauri drops an
+/// event no page listens to, and a reload unregisters every listener
+/// (https://v2.tauri.app/develop/calling-frontend/), so output a running
+/// child prints while the page reloads exists only here.
+const REPLAY_MAX_LINES: usize = 4000;
+const REPLAY_MAX_BYTES: usize = 4 << 20;
+/// Logs of children that exited and were never forgotten. Each still holds
+/// its tail and exit for a page that comes back; the oldest go first.
+const REPLAY_MAX_EXITED: usize = 16;
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayEntry {
+    seq: u64,
+    line: String,
+}
+
+#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayExit {
+    code: Option<i32>,
+    pid: u32,
+    seq: u64,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessReplay {
+    entries: Vec<ReplayEntry>,
+    exit: Option<ReplayExit>,
+    first_seq: u64,
+    last_seq: u64,
+    /// Lines after `afterSeq` were dropped to stay in bounds.
+    truncated: bool,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveSessionInfo {
+    session_id: String,
+    pid: u32,
+    last_seq: u64,
+    exited: bool,
+}
+
+struct ReplayLog {
+    pid: u32,
+    entries: VecDeque<ReplayEntry>,
+    bytes: usize,
+    /// Highest sequence number dropped from the front, 0 when none was.
+    dropped_through: u64,
+    last_seq: u64,
+    exit: Option<ReplayExit>,
+}
+
+/// One counter for every session, so sequence numbers only grow, even for a
+/// session id that is spawned again after its log was forgotten.
+#[derive(Default)]
+struct ReplayLogs {
+    seq: u64,
+    logs: HashMap<String, ReplayLog>,
+}
+
+impl ReplayLogs {
+    fn begin(&mut self, session_id: &str, pid: u32) {
+        self.logs.insert(
+            session_id.to_string(),
+            ReplayLog {
+                pid,
+                entries: VecDeque::new(),
+                bytes: 0,
+                dropped_through: 0,
+                last_seq: self.seq,
+                exit: None,
+            },
+        );
+    }
+
+    /// Numbers `count` items in a row and returns the first number.
+    fn take_seqs(&mut self, count: usize) -> u64 {
+        let first = self.seq + 1;
+        self.seq += count as u64;
+        first
+    }
+
+    /// Numbers the lines; keeps them when they belong to the session's child.
+    fn push_lines(&mut self, session_id: &str, pid: u32, lines: &[String]) -> u64 {
+        let first = self.take_seqs(lines.len());
+        let Some(log) = self.logs.get_mut(session_id).filter(|log| log.pid == pid) else {
+            return first;
+        };
+        for (offset, line) in lines.iter().enumerate() {
+            let seq = first + offset as u64;
+            log.bytes += line.len();
+            log.entries.push_back(ReplayEntry {
+                seq,
+                line: line.clone(),
+            });
+            log.last_seq = seq;
+        }
+        while log.entries.len() > REPLAY_MAX_LINES || log.bytes > REPLAY_MAX_BYTES {
+            let Some(dropped) = log.entries.pop_front() else {
+                break;
+            };
+            log.bytes -= dropped.line.len();
+            log.dropped_through = dropped.seq;
+        }
+        first
+    }
+
+    fn push_exit(&mut self, session_id: &str, pid: u32, code: Option<i32>) -> u64 {
+        let seq = self.take_seqs(1);
+        if let Some(log) = self.logs.get_mut(session_id).filter(|log| log.pid == pid) {
+            log.exit = Some(ReplayExit { code, pid, seq });
+            log.last_seq = seq;
+        }
+        let mut exited: Vec<(u64, String)> = self
+            .logs
+            .iter()
+            .filter_map(|(id, log)| log.exit.map(|exit| (exit.seq, id.clone())))
+            .collect();
+        if exited.len() > REPLAY_MAX_EXITED {
+            exited.sort();
+            for (_, id) in exited.iter().take(exited.len() - REPLAY_MAX_EXITED) {
+                self.logs.remove(id);
+            }
+        }
+        seq
+    }
+
+    fn forget(&mut self, session_id: &str) {
+        self.logs.remove(session_id);
+    }
+
+    fn retain(&mut self, keep: &[String]) {
+        self.logs.retain(|id, _| keep.contains(id));
+    }
+
+    fn live(&self) -> Vec<LiveSessionInfo> {
+        let mut rows: Vec<LiveSessionInfo> = self
+            .logs
+            .iter()
+            .map(|(id, log)| LiveSessionInfo {
+                session_id: id.clone(),
+                pid: log.pid,
+                last_seq: log.last_seq,
+                exited: log.exit.is_some(),
+            })
+            .collect();
+        rows.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+        rows
+    }
+
+    fn replay(&self, session_id: &str, after_seq: u64) -> Option<HarnessReplay> {
+        let log = self.logs.get(session_id)?;
+        let entries: Vec<ReplayEntry> = log
+            .entries
+            .iter()
+            .filter(|entry| entry.seq > after_seq)
+            .cloned()
+            .collect();
+        Some(HarnessReplay {
+            first_seq: log
+                .entries
+                .front()
+                .map_or(log.last_seq + 1, |entry| entry.seq),
+            last_seq: log.last_seq,
+            truncated: log.dropped_through > after_seq,
+            exit: log.exit.filter(|exit| exit.seq > after_seq),
+            entries,
+        })
+    }
 }
 
 /// Each `emit` is a JS eval in every window, and a streaming agent prints a
@@ -171,6 +350,9 @@ struct HarnessInner {
 pub struct HarnessHost {
     inner: Mutex<HarnessInner>,
     sse: Mutex<HashMap<String, Arc<LiveSse>>>,
+    /// Lives in the Rust process, so it outlasts a webview reload
+    /// (https://v2.tauri.app/develop/state-management/).
+    replay: Mutex<ReplayLogs>,
     runtime_binary_paths: Mutex<Option<HashMap<String, String>>>,
     /// Bumped by `kill_all` so a spawn that started before quit cannot reinsert.
     kill_all_gen: AtomicU64,
@@ -201,6 +383,7 @@ impl HarnessHost {
                 epochs: HashMap::new(),
             }),
             sse: Mutex::new(HashMap::new()),
+            replay: Mutex::new(ReplayLogs::default()),
             runtime_binary_paths: Mutex::new(None),
             kill_all_gen: AtomicU64::new(0),
         }
@@ -208,6 +391,10 @@ impl HarnessHost {
 
     fn lock_inner(&self) -> std::sync::MutexGuard<'_, HarnessInner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn lock_replay(&self) -> std::sync::MutexGuard<'_, ReplayLogs> {
+        self.replay.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn get(&self, session_id: &str) -> Option<Arc<LiveChild>> {
@@ -254,6 +441,7 @@ impl HarnessHost {
     }
 
     fn kill_session(&self, session_id: &str) -> Option<Arc<LiveChild>> {
+        self.lock_replay().forget(session_id);
         let mut inner = self.lock_inner();
         *inner.epochs.entry(session_id.to_string()).or_insert(0) += 1;
         inner.children.remove(session_id)
@@ -292,6 +480,7 @@ impl HarnessHost {
         };
         for (session_id, _) in &children {
             self.stop_sse(session_id);
+            self.lock_replay().forget(session_id);
         }
         let pids: Vec<u32> = children.iter().map(|(_, child)| child.pid).collect();
         drop(children);
@@ -299,12 +488,27 @@ impl HarnessHost {
     }
 
     pub(crate) fn kill_all(&self) {
+        self.kill_all_except(&[]);
+    }
+
+    /// `keep`: chats a reloading page re-attaches to; their children and
+    /// logs stay.
+    fn kill_all_except(&self, keep: &[String]) {
         let kids: Vec<Arc<LiveChild>> = {
             let mut inner = self.lock_inner();
             self.kill_all_gen.fetch_add(1, Ordering::SeqCst);
-            inner.children.drain().map(|(_, child)| child).collect()
+            let ids: Vec<String> = inner
+                .children
+                .keys()
+                .filter(|id| !keep.contains(id))
+                .cloned()
+                .collect();
+            ids.iter()
+                .filter_map(|id| inner.children.remove(id))
+                .collect()
         };
-        self.stop_all_sse();
+        self.lock_replay().retain(keep);
+        self.stop_all_sse_except(keep);
         let pids: Vec<u32> = kids.iter().map(|live| live.pid).collect();
         // Drop stdin before signaling so ACP CLIs that watch the pipe can exit.
         drop(kids);
@@ -329,10 +533,15 @@ impl HarnessHost {
         }
     }
 
-    fn stop_all_sse(&self) {
+    fn stop_all_sse_except(&self, keep: &[String]) {
         let streams: Vec<Arc<LiveSse>> = {
             let mut map = self.sse.lock().unwrap_or_else(|e| e.into_inner());
-            map.drain().map(|(_, live)| live).collect()
+            let ids: Vec<String> = map
+                .keys()
+                .filter(|id| !keep.contains(id))
+                .cloned()
+                .collect();
+            ids.iter().filter_map(|id| map.remove(id)).collect()
         };
         for live in streams {
             live.stop.store(true, Ordering::SeqCst);
@@ -1016,15 +1225,23 @@ pub fn harness_spawn(
         });
         return Err(SPAWN_CANCELLED.to_string());
     }
+    host.lock_replay().begin(&session_id, pid);
 
     let stdout_app = app.clone();
     let stdout_id = session_id.clone();
     let (stdout_tx, stdout_drained) = spawn_output_batcher(move |lines| {
+        // Numbered and kept before the emit, so a page that reloads between
+        // the two finds the lines in the replay.
+        let Some(host) = stdout_app.try_state::<HarnessHost>() else {
+            return;
+        };
+        let seq = host.lock_replay().push_lines(&stdout_id, pid, &lines);
         let _ = stdout_app.emit(
             STDOUT_EVENT,
             HarnessLines {
                 session_id: stdout_id.clone(),
                 lines,
+                seq,
             },
         );
     });
@@ -1072,10 +1289,13 @@ pub fn harness_spawn(
         if let Some(store) = wait_store {
             store.sync_auth();
         }
+        let mut seq = 0;
         if let Some(host) = wait_app.try_state::<HarnessHost>() {
             if host.remove_if_pid(&wait_id, wait_pid).is_some() {
                 host.stop_sse(&wait_id);
             }
+            // The log stays: a page that reloaded meanwhile replays the exit.
+            seq = host.lock_replay().push_exit(&wait_id, wait_pid, code);
         }
         // [w3-a] exited
         // [w3-b] exited
@@ -1087,6 +1307,7 @@ pub fn harness_spawn(
                 session_id: wait_id,
                 code,
                 pid: wait_pid,
+                seq,
             },
         );
     });
@@ -1256,10 +1477,33 @@ pub fn harness_kill(host: State<'_, HarnessHost>, session_id: String) -> Result<
 
 /// Off the main thread: `kill_all` waits for the children to die before it
 /// returns, and a window close calls this while the app keeps running.
+/// `keep` names chats a reloading page re-attaches to (Mac test 2.8).
 #[tauri::command(async)]
-pub fn harness_kill_all(host: State<'_, HarnessHost>) -> Result<(), String> {
-    host.kill_all();
+pub fn harness_kill_all(
+    host: State<'_, HarnessHost>,
+    keep: Option<Vec<String>>,
+) -> Result<(), String> {
+    host.kill_all_except(keep.as_deref().unwrap_or(&[]));
     Ok(())
+}
+
+/// Sessions with a replay log: running children, and exited ones nothing
+/// has forgotten yet.
+#[tauri::command]
+pub fn harness_live_sessions(host: State<'_, HarnessHost>) -> Vec<LiveSessionInfo> {
+    host.lock_replay().live()
+}
+
+/// What a session's child printed after `after_seq`, for a reloaded page.
+#[tauri::command]
+pub fn harness_replay(
+    host: State<'_, HarnessHost>,
+    session_id: String,
+    after_seq: u64,
+) -> Result<HarnessReplay, String> {
+    host.lock_replay()
+        .replay(&session_id, after_seq)
+        .ok_or_else(|| "No replay for this session".to_string())
 }
 
 #[tauri::command]
@@ -1338,11 +1582,17 @@ pub fn harness_sse_open(
                 let events_app = app.clone();
                 let events_id = session_id.clone();
                 let (tx, drained) = spawn_output_batcher(move |events| {
+                    // Numbered like stdout; not kept, since no SSE consumer
+                    // re-attaches after a reload.
+                    let seq = events_app
+                        .try_state::<HarnessHost>()
+                        .map_or(0, |host| host.lock_replay().take_seqs(events.len()));
                     let _ = events_app.emit(
                         SSE_EVENT,
                         HarnessSseBatch {
                             session_id: events_id.clone(),
                             events,
+                            seq,
                         },
                     );
                 });
@@ -4390,5 +4640,125 @@ mod reap_logic_tests {
         assert!(!is_legacy_orphaned_cursor_acp(
             "node /usr/local/bin/typescript-language-server --stdio"
         ));
+    }
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+
+    fn lines(range: std::ops::Range<usize>) -> Vec<String> {
+        range.map(|i| format!("line {i}")).collect()
+    }
+
+    #[test]
+    fn replay_returns_lines_after_the_seq_in_order_then_the_exit() {
+        let mut logs = ReplayLogs::default();
+        logs.begin("chat", 41);
+        let first = logs.push_lines("chat", 41, &lines(0..3));
+        let second = logs.push_lines("chat", 41, &lines(3..5));
+        assert_eq!(second, first + 3);
+        let exit = logs.push_exit("chat", 41, Some(0));
+        let replay = logs.replay("chat", first + 1).unwrap();
+        let seqs: Vec<u64> = replay.entries.iter().map(|e| e.seq).collect();
+        assert_eq!(seqs, vec![first + 2, first + 3, first + 4]);
+        assert_eq!(replay.entries[0].line, "line 2");
+        assert_eq!(
+            replay.exit,
+            Some(ReplayExit {
+                code: Some(0),
+                pid: 41,
+                seq: exit
+            })
+        );
+        assert_eq!(replay.last_seq, exit);
+        assert!(!replay.truncated);
+        assert_eq!(
+            logs.live(),
+            vec![LiveSessionInfo {
+                session_id: "chat".into(),
+                pid: 41,
+                last_seq: exit,
+                exited: true
+            }]
+        );
+        // Nothing after the exit: an empty replay, no exit to repeat.
+        let done = logs.replay("chat", exit).unwrap();
+        assert!(done.entries.is_empty() && done.exit.is_none());
+    }
+
+    #[test]
+    fn replay_drops_the_oldest_lines_past_the_line_bound_and_says_so() {
+        let mut logs = ReplayLogs::default();
+        logs.begin("chat", 7);
+        let first = logs.push_lines("chat", 7, &lines(0..REPLAY_MAX_LINES + 10));
+        let replay = logs.replay("chat", 0).unwrap();
+        assert_eq!(replay.entries.len(), REPLAY_MAX_LINES);
+        assert_eq!(replay.first_seq, first + 10);
+        assert_eq!(replay.entries[0].line, "line 10");
+        assert!(replay.truncated);
+        // A page that already had the dropped lines lost nothing.
+        assert!(!logs.replay("chat", first + 9).unwrap().truncated);
+    }
+
+    #[test]
+    fn replay_drops_the_oldest_lines_past_the_byte_bound() {
+        let mut logs = ReplayLogs::default();
+        logs.begin("chat", 7);
+        let big = "x".repeat(REPLAY_MAX_BYTES / 2);
+        logs.push_lines("chat", 7, &[big.clone(), big.clone(), "tail".into()]);
+        let replay = logs.replay("chat", 0).unwrap();
+        let kept: Vec<&str> = replay.entries.iter().map(|e| e.line.as_str()).collect();
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[1], "tail");
+        assert!(replay.truncated);
+    }
+
+    #[test]
+    fn replay_ignores_output_of_a_replaced_child_and_forgets_on_kill() {
+        let host = HarnessHost::new();
+        host.lock_replay().begin("chat", 1);
+        host.lock_replay().begin("chat", 2);
+        host.lock_replay().push_lines("chat", 1, &lines(0..2));
+        assert!(host
+            .lock_replay()
+            .replay("chat", 0)
+            .unwrap()
+            .entries
+            .is_empty());
+        host.kill_session("chat");
+        assert!(host.lock_replay().replay("chat", 0).is_none());
+    }
+
+    #[test]
+    fn kill_all_keeps_the_logs_a_reloading_page_keeps() {
+        let host = HarnessHost::new();
+        host.lock_replay().begin("keep", 1);
+        host.lock_replay().begin("drop", 2);
+        host.kill_all_except(&["keep".to_string()]);
+        let ids: Vec<String> = host
+            .lock_replay()
+            .live()
+            .into_iter()
+            .map(|row| row.session_id)
+            .collect();
+        assert_eq!(ids, vec!["keep".to_string()]);
+        host.kill_all();
+        assert!(host.lock_replay().live().is_empty());
+    }
+
+    #[test]
+    fn exited_logs_are_bounded() {
+        let mut logs = ReplayLogs::default();
+        for i in 0..REPLAY_MAX_EXITED + 3 {
+            let id = format!("chat{i}");
+            logs.begin(&id, i as u32 + 1);
+            logs.push_exit(&id, i as u32 + 1, Some(0));
+        }
+        assert_eq!(logs.live().len(), REPLAY_MAX_EXITED);
+        assert!(logs.replay("chat0", 0).is_none());
+        assert!(logs
+            .replay(&format!("chat{}", REPLAY_MAX_EXITED + 2), 0)
+            .is_some());
     }
 }
