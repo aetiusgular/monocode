@@ -436,9 +436,13 @@ pub fn terminal_plan(
             "/usr/bin/sudo /bin/sh -c 'B=$(/usr/bin/shasum -a 256 {daemon_path}.new | /usr/bin/cut -d \" \" -f 1); P=$(/usr/bin/shasum -a 256 {plist_path}.new | /usr/bin/cut -d \" \" -f 1); if [ \"$B\" = \"{binary_sha256}\" ] && [ \"$P\" = \"{plist_sha256}\" ]; then /bin/mv -f {daemon_path}.new {daemon_path} && /bin/mv -f {plist_path}.new {plist_path} || {{ echo \"could not move the files into place, not installed\"; exit 1; }}; /bin/launchctl bootout system/{label} 2>/dev/null; /bin/launchctl bootstrap system {plist_path} || {{ echo \"collector not running, start it with: sudo /bin/launchctl bootstrap system {plist_path}\"; exit 1; }}; else echo \"hash mismatch, not installed\"; /bin/rm -f {daemon_path}.new {plist_path}.new; exit 1; fi'"
         ),
     ];
+    let mut explanation = explanation(true);
+    explanation.push(format!(
+        "The binary installed is {built_binary}, SHA-256 {binary_sha256}."
+    ));
     Ok(InstallPlan {
         route: "terminal".into(),
-        explanation: explanation(true),
+        explanation,
         plist: plist_text,
         commands,
         staged_plist: Some(staged_plist.to_string()),
@@ -778,6 +782,26 @@ mod tests {
         assert!(plan.commands[2].contains(&hash));
         assert!(plan.commands[2].contains("launchctl bootstrap system"));
         assert!(plan.explanation.iter().any(|l| l.contains("unsigned")));
+    }
+
+    #[test]
+    fn the_plan_names_the_binary_it_installs_and_its_hash() {
+        // Review X11: the explanation names the path as well as the hash.
+        let hash = "b".repeat(64);
+        let plan = plan(
+            "/Users/t/build/collector",
+            &hash,
+            "/Users/t/stage/c.plist",
+            "/Users/t/mono/MonoCode",
+        )
+        .unwrap();
+        assert!(
+            plan.explanation
+                .iter()
+                .any(|l| l.contains("/Users/t/build/collector") && l.contains(&hash)),
+            "{:?}",
+            plan.explanation
+        );
     }
 
     #[test]

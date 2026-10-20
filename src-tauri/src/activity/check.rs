@@ -206,7 +206,10 @@ fn data_noise(path: &str, data_dir: Option<&str>) -> bool {
         return false;
     };
     let parts: Vec<&str> = rest.split('/').collect();
-    if parts.iter().any(|p| p.is_empty() || *p == "." || *p == "..") {
+    if parts
+        .iter()
+        .any(|p| p.is_empty() || *p == "." || *p == "..")
+    {
         return false;
     }
     let state = match parts.as_slice() {
@@ -835,7 +838,9 @@ fn group_folder(path: &str) -> Option<String> {
     let rest = path.strip_prefix(&format!("{home}/"))?;
     let parts: Vec<&str> = rest.split('/').collect();
     if parts.len() < 2
-        || parts.iter().any(|p| p.is_empty() || *p == "." || *p == "..")
+        || parts
+            .iter()
+            .any(|p| p.is_empty() || *p == "." || *p == "..")
         || parts.iter().any(|p| p.eq_ignore_ascii_case("bin"))
         || never_hidden_write(path)
         || sensitive_file(path)
@@ -2666,9 +2671,21 @@ mod tests {
                 "/Applications/Docker.app/Contents/Resources/bin/docker-credential-desktop",
             ),
             read("d", 13 + DEDUPE_WINDOW_MS, "/Users/t/bin/docker"),
-            read("e", 14 + 2 * DEDUPE_WINDOW_MS, "/tmp/x/docker-credential-desktop"),
-            read("f", 15 + 3 * DEDUPE_WINDOW_MS, "/usr/local/bin/docker-credential-"),
-            read("g", 16 + 4 * DEDUPE_WINDOW_MS, "/Applications/Docker.app/Contents/../../x/docker"),
+            read(
+                "e",
+                14 + 2 * DEDUPE_WINDOW_MS,
+                "/tmp/x/docker-credential-desktop",
+            ),
+            read(
+                "f",
+                15 + 3 * DEDUPE_WINDOW_MS,
+                "/usr/local/bin/docker-credential-",
+            ),
+            read(
+                "g",
+                16 + 4 * DEDUPE_WINDOW_MS,
+                "/Applications/Docker.app/Contents/../../x/docker",
+            ),
         ];
         let out = check_full(&events, &[], DATA);
         let ids: Vec<&str> = out.flags.iter().map(|f| f.event_id.as_str()).collect();
@@ -2684,15 +2701,50 @@ mod tests {
         let flags = check(
             &[
                 es("1", 1, "write", &format!("{base}/otel-helper/h.sh")),
-                es("2", 2, "write", &format!("{base}/provider-accounts/claude/a/settings.json")),
+                es(
+                    "2",
+                    2,
+                    "write",
+                    &format!("{base}/provider-accounts/claude/a/settings.json"),
+                ),
                 es("3", 3, "write", &format!("{base}/monocode.db")),
                 es("4", 4, "write", &format!("{base}/Monocode.db-wal")),
-                es("5", 5, "write", &format!("{base}/codex-monos/a/config.toml")),
-                es("6", 6, "write", &format!("{base}/codex-monos/a/sessions/2026/r.jsonl")),
-                es("7", 7, "write", &format!("{base}/provider-accounts/claude/a/projects/p/s.jsonl")),
-                es("8", 8, "write", &format!("{base}/provider-accounts/claude/a/.claude.json")),
-                es("9", 9, "write", &format!("{base}/provider-accounts/codex/a/log/codex-tui.log")),
-                es("10", 10, "write", &format!("{base}/codex-monos/a/../a/auth.json")),
+                es(
+                    "5",
+                    5,
+                    "write",
+                    &format!("{base}/codex-monos/a/config.toml"),
+                ),
+                es(
+                    "6",
+                    6,
+                    "write",
+                    &format!("{base}/codex-monos/a/sessions/2026/r.jsonl"),
+                ),
+                es(
+                    "7",
+                    7,
+                    "write",
+                    &format!("{base}/provider-accounts/claude/a/projects/p/s.jsonl"),
+                ),
+                es(
+                    "8",
+                    8,
+                    "write",
+                    &format!("{base}/provider-accounts/claude/a/.claude.json"),
+                ),
+                es(
+                    "9",
+                    9,
+                    "write",
+                    &format!("{base}/provider-accounts/codex/a/log/codex-tui.log"),
+                ),
+                es(
+                    "10",
+                    10,
+                    "write",
+                    &format!("{base}/codex-monos/a/../a/auth.json"),
+                ),
             ],
             &[],
         );

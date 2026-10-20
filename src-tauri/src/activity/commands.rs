@@ -274,15 +274,24 @@ fn regular_file(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file())
 }
 
-/// The collector binary a development build installs, in order:
-/// `MONOCODE_COLLECTOR_BIN` (debug builds only, an absolute path to a
-/// regular file), the source tree's release build (debug builds only), then
-/// beside the executable. The install still checks its hash.
+/// The collector binary to install. A release build takes only the one
+/// beside its executable. A debug build, in order: `MONOCODE_COLLECTOR_BIN`
+/// (an absolute path to a regular file), the source tree's release build,
+/// beside the executable, then the old build layouts above it. The install
+/// still checks its hash, and the plan names the path and the hash.
 fn built_collector_from(
     exe: &Path,
     env_bin: Option<&str>,
     source_tree: Option<&Path>,
+    release: bool,
 ) -> Option<PathBuf> {
+    let bundled = exe.parent()?.join(collector::BINARY_NAME);
+    // A release build installs only what ships beside its executable: an
+    // ancestor such as /Applications/macos/... is writable by any admin
+    // user, and its binary would run as root (review X11).
+    if release {
+        return regular_file(&bundled).then_some(bundled);
+    }
     if let Some(bin) = env_bin.map(Path::new) {
         if bin.is_absolute() && regular_file(bin) {
             return Some(bin.to_path_buf());
@@ -291,7 +300,7 @@ fn built_collector_from(
     if let Some(path) = source_tree.filter(|p| regular_file(p)) {
         return Some(path.to_path_buf());
     }
-    let mut candidates = vec![exe.parent()?.join(collector::BINARY_NAME)];
+    let mut candidates = vec![bundled];
     // Old layouts: <repo>/target/<profile>/x, <repo>/src-tauri/target/<profile>/x
     // and <repo>/target/<profile>/MonoCode.app/Contents/MacOS/x.
     for up in [3usize, 4, 6] {
@@ -312,9 +321,10 @@ fn built_collector(exe: &Path) -> Option<PathBuf> {
             exe,
             env_bin.as_deref(),
             Some(Path::new(SOURCE_TREE_COLLECTOR)),
+            false,
         )
     } else {
-        built_collector_from(exe, None, None)
+        built_collector_from(exe, None, None, true)
     }
 }
 
@@ -691,7 +701,7 @@ mod tests {
             .join(collector::BINARY_NAME);
         std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
         std::fs::write(&bin, b"x").unwrap();
-        assert_eq!(built_collector_from(&exe, None, None), Some(bin));
+        assert_eq!(built_collector_from(&exe, None, None, false), Some(bin));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -707,16 +717,16 @@ mod tests {
         std::fs::write(root.join("x").join(collector::BINARY_NAME), b"x").unwrap();
         let env = env_bin.to_string_lossy().to_string();
         assert_eq!(
-            built_collector_from(&exe, Some(&env), Some(&tree_bin)),
+            built_collector_from(&exe, Some(&env), Some(&tree_bin), false),
             Some(env_bin.clone())
         );
         // A relative or missing override is ignored.
         assert_eq!(
-            built_collector_from(&exe, Some("rel/c"), Some(&tree_bin)),
+            built_collector_from(&exe, Some("rel/c"), Some(&tree_bin), false),
             Some(tree_bin.clone())
         );
         assert_eq!(
-            built_collector_from(&exe, None, None),
+            built_collector_from(&exe, None, None, false),
             Some(root.join("x").join(collector::BINARY_NAME))
         );
         // A directory is not a binary.
@@ -724,7 +734,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let dir_text = dir.to_string_lossy().to_string();
         assert_eq!(
-            built_collector_from(&exe, Some(&dir_text), Some(&tree_bin)),
+            built_collector_from(&exe, Some(&dir_text), Some(&tree_bin), false),
             Some(tree_bin)
         );
         assert!(SOURCE_TREE_COLLECTOR
@@ -791,17 +801,40 @@ mod tests {
     }
 
     #[test]
+    fn a_release_build_takes_only_the_bundled_collector() {
+        // Review X11: an ancestor folder such as /Applications/macos/... is
+        // writable by an admin user, so a release build must not look there.
+        let root = temp("built-release");
+        let exe = root.join("target/release/MonoCode.app/Contents/MacOS/MonoCode");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        let ancestor = root
+            .join("macos/activity-collector/target/release")
+            .join(collector::BINARY_NAME);
+        std::fs::create_dir_all(ancestor.parent().unwrap()).unwrap();
+        std::fs::write(&ancestor, b"x").unwrap();
+        assert_eq!(built_collector_from(&exe, None, None, true), None);
+        assert_eq!(
+            built_collector_from(&exe, None, None, false),
+            Some(ancestor)
+        );
+        let bundled = exe.parent().unwrap().join(collector::BINARY_NAME);
+        std::fs::write(&bundled, b"x").unwrap();
+        assert_eq!(built_collector_from(&exe, None, None, true), Some(bundled));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn the_built_collector_is_found_beside_the_repository() {
         let root = temp("built");
         let exe = root.join("src-tauri/target/debug/monocode");
         std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
-        assert!(built_collector_from(&exe, None, None).is_none());
+        assert!(built_collector_from(&exe, None, None, false).is_none());
         let bin = root
             .join("macos/activity-collector/target/release")
             .join(collector::BINARY_NAME);
         std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
         std::fs::write(&bin, b"x").unwrap();
-        assert_eq!(built_collector_from(&exe, None, None), Some(bin));
+        assert_eq!(built_collector_from(&exe, None, None, false), Some(bin));
         let _ = std::fs::remove_dir_all(&root);
     }
 }
