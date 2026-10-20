@@ -18,7 +18,17 @@ export type HarnessEvent =
   | { type: "session.error"; message: string }
   | { type: "session.providerBound"; providerSessionId: string }
   | { type: "turn.started"; providerTurnId: string }
+  /** The provider accepted the prompt. Not the turn's end. */
   | { type: "turn.ready" }
+  /**
+   * The turn is over: sent once, by the registry, when `sendHarnessTurn`
+   * settles. `interrupted` after Stop, `failed` when the send threw or the
+   * turn reported an error.
+   */
+  | {
+      type: "turn.completed";
+      status: "completed" | "interrupted" | "failed";
+    }
   | {
       type: "session.configChanged";
       model?: string;

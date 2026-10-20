@@ -79,6 +79,8 @@ type ChatState = {
   /** Written calls, newest last, for late OTel events. */
   recent: Held[];
   turnActive: boolean;
+  /** The open turn's provider id, to skip a repeated start. */
+  turnId?: string;
   seq: number;
   /** Random per chat state, so ids never repeat after a restart or after
    * the state was dropped as idle (security review S3). */
@@ -365,7 +367,10 @@ export class TelemetryFeed {
         return;
       }
       case "turn.started":
+        // Codex sends the start again for a steer into the same turn.
+        if (state.turnActive && state.turnId === event.providerTurnId) return;
         state.turnActive = true;
+        state.turnId = event.providerTurnId;
         this.emit({
           ...base,
           id: this.nextId(state, chatId, "turn"),
@@ -375,7 +380,9 @@ export class TelemetryFeed {
           detail: { providerTurnId: event.providerTurnId },
         });
         return;
-      case "turn.ready":
+      // The real end, from the registry when the send settles. Never
+      // `turn.ready`, which only says the prompt was accepted (Mac 2.2).
+      case "turn.completed":
         if (!state.turnActive) return;
         state.turnActive = false;
         this.emit({
@@ -383,8 +390,13 @@ export class TelemetryFeed {
           id: this.nextId(state, chatId, "turn"),
           at: now,
           kind: "turn.end",
-          summary: "Turn ended",
-          detail: {},
+          summary:
+            event.status === "interrupted"
+              ? "Turn stopped"
+              : event.status === "failed"
+                ? "Turn failed"
+                : "Turn ended",
+          detail: { status: event.status },
         });
         return;
       case "session.ended":

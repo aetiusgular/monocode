@@ -87,11 +87,14 @@ describe("adapter events (A4)", () => {
 
   it("turn start and end, session end and error", () => {
     const { f, written } = feed();
-    f.adapter("c", "codex", { type: "turn.ready" }, 0);
+    // The end comes from turn.completed (Mac test 2.2): one with no turn
+    // open, and a second for the same turn, write nothing.
+    const end = { type: "turn.completed", status: "completed" } as const;
+    f.adapter("c", "codex", end, 0);
     expect(written).toHaveLength(0);
     f.adapter("c", "codex", { type: "turn.started", providerTurnId: "p1" }, 1);
-    f.adapter("c", "codex", { type: "turn.ready" }, 2);
-    f.adapter("c", "codex", { type: "turn.ready" }, 3);
+    f.adapter("c", "codex", end, 2);
+    f.adapter("c", "codex", end, 3);
     f.adapter(
       "c",
       "codex",
