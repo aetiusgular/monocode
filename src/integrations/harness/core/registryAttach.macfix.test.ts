@@ -29,6 +29,8 @@ async function registryWith(
       model: "claude:claude-sonnet-5",
       runtimeMode: "supervised",
       providerSessionId: "conv",
+      // A re-attach must say what the turn was sent as (security review X7).
+      intent: "default",
       openTools: [],
       onEvent: (event) => chat.push(event),
     });

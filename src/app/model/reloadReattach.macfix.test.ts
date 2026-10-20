@@ -51,8 +51,11 @@ function line(rec: Record<string, unknown>) {
   return JSON.stringify({ session_id: CONVERSATION, ...rec });
 }
 
+/** The prompt's uuid, as the first page wrote it to Claude Code. */
+let promptUuid = "";
+
 /** What Claude Code printed while the page reloaded. */
-const MISSED = [
+const missed = () => [
   line({
     type: "user",
     uuid: "e-result",
@@ -67,7 +70,7 @@ const MISSED = [
     uuid: "e-reply",
     message: { content: [{ type: "text", text: "It printed slept." }] },
   }),
-  line({ type: "result", subtype: "success", user_message_uuid: "u-prompt" }),
+  line({ type: "result", subtype: "success", user_message_uuid: promptUuid }),
   line({ type: "system", subtype: "session_state_changed", state: "idle" }),
 ];
 
@@ -131,24 +134,59 @@ async function fresh() {
   };
 }
 
-/** The first page: spawned the child, saw nothing of the result, unloads. */
-async function firstPageUnloads(): Promise<Session> {
+/**
+ * The first page: sent the turn through the registry as the app does, saw
+ * nothing of the result, unloads.
+ */
+async function firstPageUnloads(
+  options: { intent?: "plan"; runtimeMode?: Session["runtimeMode"] } = {},
+): Promise<Session> {
   const page = await fresh();
-  mocks.invoke.mockImplementation(async (command: string) =>
-    command === "harness_spawn" ? PID : undefined,
+  const writes: string[] = [];
+  mocks.invoke.mockImplementation(
+    async (command: string, args?: Record<string, unknown>) => {
+      if (command === "harness_spawn") return PID;
+      if (command === "harness_resolve_claude") return { path: "/bin/claude" };
+      if (command === "git_repo_names_commands") return false;
+      if (command === "harness_write") writes.push(String(args?.line));
+      return undefined;
+    },
   );
   page.child.startHarnessBridge();
   await page.child.acquireHarnessBridge();
-  page.child.watchChild(
-    CHAT,
-    () => undefined,
-    () => undefined,
-  );
-  await page.child.spawnChild(CHAT, "/bin/claude", [], "/repo");
+  void page.registry
+    .sendHarnessTurn({
+      harness: "claude",
+      sessionId: CHAT,
+      cwd: "/repo",
+      model: "claude:claude-sonnet-5",
+      runtimeMode: options.runtimeMode ?? "supervised",
+      ...(options.intent ? { intent: options.intent } : {}),
+      text: "run the sleep",
+      onEvent: () => undefined,
+    })
+    .catch(() => undefined);
+  await vi.waitFor(() => expect(writes).toHaveLength(1));
   mocks.handlers.get("harness-stdout")!({
-    payload: { sessionId: CHAT, lines: ["{}", "{}"], seq: 1 },
+    payload: {
+      sessionId: CHAT,
+      lines: [line({ type: "system", subtype: "init" }), "{}"],
+      seq: 1,
+    },
   });
-  const chat = busyChat(page.session.newSession("claude", "/repo"));
+  await vi.waitFor(() =>
+    expect(
+      writes.map((text) => JSON.parse(text)).find((m) => m.type === "user"),
+    ).toBeTruthy(),
+  );
+  promptUuid = writes
+    .map((text) => JSON.parse(text))
+    .find((m) => m.type === "user").uuid;
+  expect(promptUuid).toBeTruthy();
+  const chat = {
+    ...busyChat(page.session.newSession("claude", "/repo")),
+    runtimeMode: options.runtimeMode ?? "supervised",
+  };
   await page.lifecycle.persistQuitState(
     [chat],
     [page.layout.newTab(CHAT)],
@@ -183,7 +221,7 @@ function harnessAfterReload(
               {
                 sessionId: CHAT,
                 pid: PID,
-                lastSeq: 2 + MISSED.length,
+                lastSeq: 2 + replay.entries.length,
                 exited: false,
               },
             ]
@@ -194,7 +232,7 @@ function harnessAfterReload(
           ...replay,
           exit: null,
           firstSeq: 1,
-          lastSeq: 2 + MISSED.length,
+          lastSeq: 2 + (replay?.entries.length ?? 0),
           truncated: false,
         };
       }
@@ -243,7 +281,7 @@ describe("a turn in flight across a page reload (Mac test 2.8)", () => {
   it("re-attaches: the tool result, the reply and the turn end land once", async () => {
     const saved = await firstPageUnloads();
     harnessAfterReload({
-      entries: MISSED.map((text, index) => ({ seq: 3 + index, line: text })),
+      entries: missed().map((text, index) => ({ seq: 3 + index, line: text })),
     });
     const { state, written, ends } = await reload(saved);
     const blocks = state().blocks;
@@ -282,6 +320,121 @@ describe("a turn in flight across a page reload (Mac test 2.8)", () => {
     // The process the old page spared is stopped, as a reload did before.
     expect(mocks.invoke).toHaveBeenCalledWith("harness_kill", {
       sessionId: CHAT,
+    });
+  });
+});
+
+/** Every answer MonoCode wrote to a Claude Code control request. */
+function controlAnswers(): Record<string, unknown>[] {
+  return mocks.invoke.mock.calls
+    .filter(([command]) => command === "harness_write")
+    .map(([, args]) => JSON.parse(String((args as { line: string }).line)))
+    .filter((m) => m.type === "control_response")
+    .map((m) => m.response as Record<string, unknown>);
+}
+
+const writeRequest = line({
+  type: "control_request",
+  request_id: "req_write",
+  request: {
+    subtype: "can_use_tool",
+    tool_name: "Write",
+    tool_use_id: "toolu_write",
+    input: { file_path: "/repo/notes.txt", content: "changed" },
+  },
+});
+
+describe("a re-attached turn keeps what it was sent as (security review X7, X8)", () => {
+  it("a re-attached plan turn denies a write tool request, as a live plan turn does", async () => {
+    const saved = await firstPageUnloads({
+      intent: "plan",
+      runtimeMode: "full-access",
+    });
+    harnessAfterReload({
+      entries: [writeRequest, ...missed()].map((text, index) => ({
+        seq: 3 + index,
+        line: text,
+      })),
+    });
+    await reload(saved);
+    await vi.waitFor(() => expect(controlAnswers()).toHaveLength(1));
+    const answer = controlAnswers()[0] as {
+      request_id: string;
+      response: { behavior: string };
+    };
+    expect(answer.request_id).toBe("req_write");
+    expect(answer.response.behavior).toBe("deny");
+  });
+
+  it("a late result naming an older prompt does not end the re-attached turn", async () => {
+    const saved = await firstPageUnloads();
+    const [toolResult, reply, ...rest] = missed();
+    const stale = line({
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      user_message_uuid: "uuid-of-an-earlier-stopped-prompt",
+    });
+    // The stale result and idle come first; the turn's own reply after.
+    harnessAfterReload({
+      entries: [
+        stale,
+        line({ type: "system", subtype: "session_state_changed", state: "idle" }),
+        line({
+          type: "system",
+          subtype: "session_state_changed",
+          state: "running",
+        }),
+        toolResult,
+        reply,
+        ...rest,
+      ].map((text, index) => ({ seq: 3 + index, line: text })),
+    });
+    const { state, ends } = await reload(saved);
+    // Ended by its own result: the reply landed inside the turn, once.
+    expect(
+      state()
+        .blocks.filter((block) => block.role === "assistant")
+        .map((b) => b.text),
+    ).toEqual(["It printed slept."]);
+    expect(
+      state().blocks.find((block) => block.id === "b-tool")?.tool?.status,
+    ).toBe("completed");
+    expect(ends).toEqual([{ type: "turn.completed", status: "completed" }]);
+  });
+
+  it("a hand-over row without a readable intent is not taken back", async () => {
+    const saved = await firstPageUnloads();
+    const key = "monocode.reloadTurns";
+    const rows = JSON.parse(sessionStorage.getItem(key)!) as Record<
+      string,
+      unknown
+    >[];
+    expect(rows[0].intent).toBe("default");
+    delete rows[0].intent;
+    sessionStorage.setItem(key, JSON.stringify(rows));
+    harnessAfterReload({
+      entries: missed().map((text, index) => ({ seq: 3 + index, line: text })),
+    });
+    const { state } = await reload(saved);
+    expect(state().blocks.at(-1)?.notice).toBe("interrupt");
+    expect(state().busy).toBe(false);
+    expect(mocks.invoke).toHaveBeenCalledWith("harness_kill", {
+      sessionId: CHAT,
+    });
+  });
+
+  it("the activity log gets the re-attached turn's start once, marked reattached", async () => {
+    const saved = await firstPageUnloads();
+    harnessAfterReload({
+      entries: missed().map((text, index) => ({ seq: 3 + index, line: text })),
+    });
+    const { written } = await reload(saved);
+    const starts = written.filter((event) => event.kind === "turn.start");
+    expect(starts).toHaveLength(1);
+    expect(starts[0].detail).toMatchObject({
+      providerTurnId: "e-before",
+      reattached: true,
     });
   });
 });

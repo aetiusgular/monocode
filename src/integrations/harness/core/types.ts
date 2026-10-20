@@ -17,7 +17,12 @@ export type HarnessEvent =
   | { type: "session.ended"; code?: number | null }
   | { type: "session.error"; message: string }
   | { type: "session.providerBound"; providerSessionId: string }
-  | { type: "turn.started"; providerTurnId: string }
+  | {
+      type: "turn.started";
+      providerTurnId: string;
+      /** A turn taken back after a page reload (Mac 2.8), not a new one. */
+      reattached?: true;
+    }
   /** The provider accepted the prompt. Not the turn's end. */
   | { type: "turn.ready" }
   /**
@@ -367,6 +372,11 @@ export type AttachSessionInput = HarnessSessionInput & {
   providerSessionId: string;
   /** The in-flight turn's prompt boundary, from its saved user message. */
   providerTurnId?: string;
+  /**
+   * The ids of the user messages the old page wrote for this turn (prompt
+   * and steers). A result naming none of them is an earlier prompt's.
+   */
+  userMessageUuids?: string[];
   /** Tool calls the saved transcript still shows running, by call id. */
   openTools: {
     callId: string;

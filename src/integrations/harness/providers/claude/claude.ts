@@ -85,6 +85,7 @@ import {
   type ClaudeControlRequest,
 } from "./claudeProtocol";
 import { existingDirs } from "../../core/existingDirs";
+import { noteHarnessTurnUserMessages } from "../../core/registry";
 import { CLAUDE_GIT_ASK_RULE, claudeGitAskNeeded } from "./claudeGitAsk";
 import { readClaudeLastEntry } from "./claudeLastEntry";
 import { toolRules, type ToolRules } from "../../core/toolRules";
@@ -452,6 +453,8 @@ export async function steerClaudeTurn(input: SteerTurnInput): Promise<void> {
   const content = (message.message as { content: unknown[] }).content;
   if (content.length === 0) return;
   live.turnUuids.add(uuid);
+  // Kept for a reload, so the next page knows this turn's results (X8).
+  noteHarnessTurnUserMessages(input.sessionId, live.turnUuids);
 
   await writeJson(input.sessionId, message);
 }
@@ -982,6 +985,8 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
   live.taskNotes = [];
   live.turnResultSeen = false;
   live.turnUuids = new Set([uuid]);
+  if (!live.manualCompaction)
+    noteHarnessTurnUserMessages(input.sessionId, live.turnUuids);
   // An idle still to come from a stopped turn must not count for this one.
   live.claudeIdle = false;
 
@@ -2900,7 +2905,9 @@ export async function attachClaudeSession(
     taskNotes: [],
     claudeTasks,
     turnResultSeen: false,
-    turnUuids: new Set(),
+    // The old page's prompt and steers: a result naming none of them is an
+    // earlier, stopped prompt's, and must not end this turn (X8).
+    turnUuids: new Set(input.userMessageUuids ?? []),
     sessionStates: false,
     claudeIdle: false,
     usageLimit: null,
@@ -2927,29 +2934,12 @@ export async function attachClaudeSession(
     live.onEvent({
       type: "turn.started",
       providerTurnId: input.providerTurnId,
+      reattached: true,
     });
   }
-  // The prompt's uuid went with the old page. The first result is this
-  // turn's, so it is taken as one this turn sent.
-  let resultSeen = false;
   watchChild(
     sessionId,
-    (line) => {
-      if (!resultSeen && line.includes('"result"')) {
-        const rec = parseJsonLine(line);
-        if (
-          rec &&
-          stringField(rec, "type") === "result" &&
-          !isSubagentMessage(rec)
-        ) {
-          resultSeen = true;
-          for (const uuid of resultUserMessageUuids(rec) ?? []) {
-            live.turnUuids.add(uuid);
-          }
-        }
-      }
-      handleLine(sessionId, live, line);
-    },
+    (line) => handleLine(sessionId, live, line),
     (code) => {
       if (liveByThread.get(sessionId) === live) liveByThread.delete(sessionId);
       live.exited = true;
