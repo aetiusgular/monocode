@@ -70,3 +70,64 @@ describe("plan turns reach computer use", () => {
     expect(seen).toHaveLength(1);
   });
 });
+
+describe("a re-attached turn holds the computer use plan mark (security review X7)", () => {
+  async function attach(
+    sessionId: string,
+    intent: "plan" | "default" | undefined,
+  ) {
+    const { attachHarnessSession } = await import("./registry");
+    const marksAtAttach: string[] = [];
+    registerHarness({
+      id: "claude",
+      live: true,
+      attachSession: async () => {
+        marksAtAttach.push(
+          calls
+            .filter(([c]) => c === "computer_use_set_plan")
+            .map(([, a]) => JSON.stringify(a))
+            .join("|"),
+        );
+        return { turn: Promise.resolve() };
+      },
+    } as never);
+    const outcome = await attachHarnessSession({
+      harness: "claude",
+      sessionId,
+      cwd: "/tmp/x",
+      model: "claude:claude-sonnet-5",
+      runtimeMode: "full-access",
+      providerSessionId: "conv",
+      openTools: [],
+      ...(intent ? { intent } : {}),
+      onEvent: () => {},
+    } as never);
+    return { outcome, marksAtAttach };
+  }
+
+  it("a re-attached plan turn is marked before it is taken back and cleared after", async () => {
+    const { outcome, marksAtAttach } = await attach("a1", "plan");
+    expect(outcome.attached).toBe(true);
+    expect(marksAtAttach).toEqual([
+      JSON.stringify({ chatId: "a1", plan: true }),
+    ]);
+    expect(
+      calls.filter(([c]) => c === "computer_use_set_plan").map(([, a]) => a),
+    ).toEqual([
+      { chatId: "a1", plan: true },
+      { chatId: "a1", plan: false },
+    ]);
+  });
+
+  it("a re-attached plan turn whose mark fails is not taken back", async () => {
+    const { outcome, marksAtAttach } = await attach("broken", "plan");
+    expect(outcome).toEqual({ attached: false, status: "interrupted" });
+    expect(marksAtAttach).toHaveLength(0);
+  });
+
+  it("a re-attach without an intent is not taken back", async () => {
+    const { outcome, marksAtAttach } = await attach("a2", undefined);
+    expect(outcome).toEqual({ attached: false, status: "interrupted" });
+    expect(marksAtAttach).toHaveLength(0);
+  });
+});

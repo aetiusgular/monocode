@@ -377,7 +377,11 @@ export class TelemetryFeed {
           at: now,
           kind: "turn.start",
           summary: "Turn started",
-          detail: { providerTurnId: event.providerTurnId },
+          detail: {
+            providerTurnId: event.providerTurnId,
+            // The activity check treats this span as the old page's turn.
+            ...(event.reattached ? { reattached: true } : {}),
+          },
         });
         return;
       // The real end, from the registry when the send settles. Never

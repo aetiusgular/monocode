@@ -213,6 +213,41 @@ const idleParkTimers = new Map<
 const sessionOperationTails = new Map<string, Promise<void>>();
 const sessionSteerTails = new Map<string, Promise<void>>();
 const activeTurnSessions = new Set<string>();
+/**
+ * What the turn now running in each session was sent as: a plan turn or
+ * not, and the user message ids the adapter wrote for it (its prompt and
+ * steers). A reloading page hands both to the next one, which may take the
+ * turn back only with them (security review X7, X8).
+ */
+const inFlightTurns = new Map<
+  string,
+  { intent: "plan" | "default"; userMessageUuids: string[] }
+>();
+
+export type HarnessReloadTurn = {
+  intent: "plan" | "default";
+  userMessageUuids: string[];
+};
+
+/** The running turn's intent and prompt ids, or null when none is known. */
+export function harnessReloadTurn(sessionId: string): HarnessReloadTurn | null {
+  const turn = inFlightTurns.get(sessionId);
+  return turn
+    ? { intent: turn.intent, userMessageUuids: [...turn.userMessageUuids] }
+    : null;
+}
+
+/**
+ * An adapter notes the ids of the user messages it wrote for the running
+ * turn. Ignored when no turn runs.
+ */
+export function noteHarnessTurnUserMessages(
+  sessionId: string,
+  uuids: Iterable<string>,
+): void {
+  const turn = inFlightTurns.get(sessionId);
+  if (turn) turn.userMessageUuids = [...uuids];
+}
 /** Sessions whose running turn was stopped, for its `turn.completed`. */
 const stoppedTurnSessions = new Set<string>();
 
@@ -416,6 +451,10 @@ export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
     }
     activeTurnSessions.add(input.sessionId);
     stoppedTurnSessions.delete(input.sessionId);
+    inFlightTurns.set(input.sessionId, {
+      intent: input.intent === "plan" ? "plan" : "default",
+      userMessageUuids: [],
+    });
     // The one place a turn's end is announced, for every adapter: where the
     // send settles (Claude's finishActiveTurn, Codex's turn/completed, any
     // other adapter's return).
@@ -437,6 +476,7 @@ export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
       throw error;
     } finally {
       activeTurnSessions.delete(input.sessionId);
+      inFlightTurns.delete(input.sessionId);
       if (stoppedTurnSessions.delete(input.sessionId)) status = "interrupted";
       completeTurn(input.sessionId, input.onEvent, status);
       if (controlled) {
@@ -472,21 +512,37 @@ export function attachHarnessSession(
   return queueSessionOperation(input.sessionId, async () => {
     const adapter = getHarness(input.harness);
     const sessionId = input.sessionId;
+    const controlled = typeof isTauri === "function" && isTauri();
     cancelIdlePark(sessionId);
     activeTurnSessions.add(sessionId);
     stoppedTurnSessions.delete(sessionId);
     let attached = false;
     let status: AttachOutcome["status"] = "completed";
+    const plan = input.intent === "plan";
+    // Without the turn's intent it is not known whether it may act: it is
+    // not taken back (security review X7).
+    const known = input.intent !== undefined;
+    if (known)
+      inFlightTurns.set(sessionId, {
+        intent: plan ? "plan" : "default",
+        userMessageUuids: [...(input.userMessageUuids ?? [])],
+      });
     try {
-      const taken = adapter?.live
-        ? await adapter.attachSession?.({
-            ...input,
-            onEvent: (event) => {
-              if (event.type === "session.error") status = "failed";
-              input.onEvent(event);
-            },
-          })
-        : null;
+      // As for a sent turn: a plan turn is taken back only once computer
+      // use holds its actions back again (security review S6, T7).
+      const marked =
+        known &&
+        (!controlled || (await markPlanTurn(sessionId, plan)) || !plan);
+      const taken =
+        marked && adapter?.live
+          ? await adapter.attachSession?.({
+              ...input,
+              onEvent: (event) => {
+                if (event.type === "session.error") status = "failed";
+                input.onEvent(event);
+              },
+            })
+          : null;
       if (!taken) {
         status = "interrupted";
       } else {
@@ -497,10 +553,11 @@ export function attachHarnessSession(
       status = attached ? "failed" : "interrupted";
     } finally {
       activeTurnSessions.delete(sessionId);
+      inFlightTurns.delete(sessionId);
       if (stoppedTurnSessions.delete(sessionId)) status = "interrupted";
       completeTurn(sessionId, input.onEvent, status);
       // The page that started the turn never got to release it.
-      if (typeof isTauri === "function" && isTauri()) {
+      if (controlled) {
         await markPlanTurn(sessionId, false);
         await invoke("control_turn_finished", { sessionId }).catch(
           () => undefined,

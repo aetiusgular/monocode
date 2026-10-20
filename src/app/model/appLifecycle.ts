@@ -5,6 +5,7 @@ import {
   bindHarnessSession,
   canAttachHarnessSession,
   forgetHarnessSession,
+  harnessReloadTurn,
   isLiveHarness,
   stopHarnessSession,
 } from "../../integrations/harness/core/registry";
@@ -570,6 +571,13 @@ const RELOAD_TURNS_KEY = "monocode.reloadTurns";
 
 type ReloadTurn = {
   sessionId: string;
+  /**
+   * What the turn was sent as. A plan turn must stay read-only after the
+   * reload; a row without a readable intent is not taken back (X7).
+   */
+  intent: "plan" | "default";
+  /** The user message ids the old page wrote for this turn (X8). */
+  userMessageUuids: string[];
   providerTurnId?: string;
   openTools: {
     blockId: string;
@@ -612,8 +620,14 @@ function reloadTurn(session: Session): ReloadTurn | null {
     }
   }
   if (userIndex < 0) return null;
+  // The registry knows what the running turn was sent as; without that it
+  // is not handed over (X7).
+  const sent = harnessReloadTurn(session.id);
+  if (!sent) return null;
   return {
     sessionId: session.id,
+    intent: sent.intent,
+    userMessageUuids: sent.userMessageUuids,
     ...(session.blocks[userIndex].providerTurnId
       ? { providerTurnId: session.blocks[userIndex].providerTurnId }
       : {}),
@@ -674,6 +688,23 @@ function takeReloadTurns(): ReloadTurn[] {
   return reloadTurnsTaken;
 }
 
+/** The row's intent and prompt ids as written, or null when unreadable. */
+function reloadTurnIntent(
+  turn: ReloadTurn,
+): Pick<ReloadTurn, "intent" | "userMessageUuids"> | null {
+  const { intent, userMessageUuids } = turn as {
+    intent?: unknown;
+    userMessageUuids?: unknown;
+  };
+  if (intent !== "plan" && intent !== "default") return null;
+  if (
+    !Array.isArray(userMessageUuids) ||
+    !userMessageUuids.every((uuid) => typeof uuid === "string" && uuid)
+  )
+    return null;
+  return { intent, userMessageUuids };
+}
+
 /**
  * Undo what the unload saved for a turn that is being taken back: drop the
  * interrupt note, reopen the calls it cancelled, and mark the chat busy
@@ -725,7 +756,10 @@ export async function attachResumedSessions(
   await Promise.all(
     turns.map(async (turn) => {
       const session = byId.get(turn.sessionId);
-      if (!session?.providerSessionId || !wasTurnInterrupted(session)) {
+      // Without its intent the turn might be a plan turn that would act
+      // once taken back: it stays interrupted, for Continue (X7).
+      const sent = reloadTurnIntent(turn);
+      if (!session?.providerSessionId || !wasTurnInterrupted(session) || !sent) {
         // The old page spared this process; nothing here takes it back.
         await killChild(turn.sessionId).catch(() => undefined);
         return;
@@ -743,6 +777,8 @@ export async function attachResumedSessions(
           providerAccountId: session.providerAccountId,
           runtimeMode: session.runtimeMode,
           ephemeral: session.ephemeral === true,
+          intent: sent.intent,
+          userMessageUuids: sent.userMessageUuids,
           ...sessionToolsInput(session, workCwd),
           providerSessionId: session.providerSessionId,
           ...(turn.providerTurnId
