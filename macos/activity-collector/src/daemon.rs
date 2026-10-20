@@ -382,9 +382,29 @@ pub fn ensure_plain_dir(dir: &Path, mode: u32) -> io::Result<()> {
     fs::set_permissions(dir, fs::Permissions::from_mode(mode))
 }
 
+/// `sun_path` holds 104 bytes on macOS (xnu `bsd/sys/un.h`) and 108 on
+/// Linux (unix(7)), the NUL included. The smaller one holds everywhere.
+pub const MAX_SOCKET_PATH: usize = 104;
+
+/// A socket path that fits `sun_path` on macOS, with its NUL.
+pub fn check_socket_path(path: &Path) -> io::Result<()> {
+    let len = path.as_os_str().len();
+    if len >= MAX_SOCKET_PATH {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "socket path is {len} bytes; it must be under {MAX_SOCKET_PATH} (sun_path on macOS): {}",
+                path.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Binds a socket at `path` (mode 0666; every caller is checked),
 /// replacing only a stale socket, never another kind of file.
 pub fn bind_socket(path: &Path) -> io::Result<UnixListener> {
+    check_socket_path(path)?;
     match fs::symlink_metadata(path) {
         Ok(m) if m.file_type().is_socket() => fs::remove_file(path)?,
         Ok(_) => return Err(io::Error::other("socket path is taken")),
@@ -505,6 +525,34 @@ mod tests {
     use super::*;
     use crate::log::tests::temp_dir;
     use std::io::{Cursor, Read};
+
+    /// A short folder for sockets: `temp_dir()` on macOS is too long for
+    /// `sun_path` (Mac test 0.6).
+    fn socket_dir() -> PathBuf {
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = PathBuf::from(format!(
+            "/tmp/mc-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn a_socket_path_too_long_for_macos_is_refused_with_a_clear_error() {
+        let dir = socket_dir();
+        ensure_plain_dir(&dir, 0o755).unwrap();
+        let name = "s".repeat(MAX_SOCKET_PATH - 1 - dir.as_os_str().len());
+        let long = dir.join(name);
+        assert_eq!(long.as_os_str().len(), MAX_SOCKET_PATH);
+        let err = bind_socket(&long).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("must be under 104"), "{err}");
+        let fits = dir.join("s".repeat(MAX_SOCKET_PATH - 2 - dir.as_os_str().len()));
+        assert!(bind_socket(&fits).is_ok());
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn splits_offered_events() {
@@ -627,7 +675,7 @@ mod tests {
 
     #[test]
     fn sockets_check_callers_and_cap_connections() {
-        let dir = temp_dir("daemon-sock");
+        let dir = socket_dir();
         let shared = Arc::new(Shared::open(&dir.join("log")).unwrap());
         ensure_plain_dir(&dir.join("run"), 0o755).unwrap();
         let path = dir.join("run").join("read.sock");
