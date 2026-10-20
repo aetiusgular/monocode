@@ -103,8 +103,8 @@ pub struct CheckInput<'a> {
     pub known_hosts: &'a HashSet<String>,
     /// The time of the check, for "still running".
     pub now_ms: i64,
-    /// The app's data folder (`app_data_dir`), whose `activity` and
-    /// `computer-use` folders are guarded.
+    /// The app's data folder (`app_data_dir`), guarded but for a harness
+    /// home's session state.
     pub data_dir: Option<&'a str>,
 }
 
@@ -168,13 +168,63 @@ fn data_sub(data_dir: Option<&str>, sub: &str) -> Option<String> {
     (!base.is_empty()).then(|| format!("{base}/{sub}").to_ascii_lowercase())
 }
 
-/// The activity log's and computer use's folders in MonoCode's data folder.
-fn guarded_path(path: &str, data_dir: Option<&str>) -> bool {
+/// Session and log state a harness keeps in the homes MonoCode gives it in
+/// the data folder, the same kind `~/.claude` and `~/.codex` hold as noise.
+/// Claude Code's (`CLAUDE_CONFIG_DIR`, harness.rs:1426): `projects`,
+/// `shell-snapshots`, `session-env`, `file-history`, `todos`, `statsig`,
+/// `debug` (Claude Code 2.1.304 strings). Codex's (`CODEX_HOME`,
+/// harness.rs:1168, :1433): `codex_mono_store.rs` STATE_NAMES less
+/// `memories` and `backups`, which are not caches. Settings, config,
+/// credentials and `.claude.json` stay guarded.
+const HARNESS_HOME_NOISE: &[&str] = &[
+    "projects",
+    "shell-snapshots",
+    "session-env",
+    "file-history",
+    "todos",
+    "statsig",
+    "debug",
+    "sessions",
+    "archived_sessions",
+    "session_index.jsonl",
+    "history.jsonl",
+    "log",
+    "logs",
+    "tmp",
+    "shell_snapshots",
+];
+
+/// The only writes in the data folder that are noise: a harness home's
+/// session state, `provider-accounts/<provider>/<id>/<state>` or
+/// `codex-monos/<id>/<state>` (review X6).
+fn data_noise(path: &str, data_dir: Option<&str>) -> bool {
+    let Some(base) = data_sub(data_dir, "") else {
+        return false;
+    };
     let lower = path.to_ascii_lowercase();
-    ["activity", "computer-use"]
-        .iter()
-        .filter_map(|sub| data_sub(data_dir, sub))
-        .any(|folder| inside(&lower, &folder))
+    let Some(rest) = lower.strip_prefix(base.as_str()) else {
+        return false;
+    };
+    let parts: Vec<&str> = rest.split('/').collect();
+    if parts.iter().any(|p| p.is_empty() || *p == "." || *p == "..") {
+        return false;
+    }
+    let state = match parts.as_slice() {
+        ["provider-accounts", _, _, state, ..] => state,
+        ["codex-monos", _, state, ..] => state,
+        _ => return false,
+    };
+    HARNESS_HOME_NOISE.contains(state)
+}
+
+/// Everything in MonoCode's data folder but a harness home's session state:
+/// the log, computer use's recordings, the OTel helper script Claude Code
+/// runs, the provider accounts' settings, the database (review X6).
+fn guarded_path(path: &str, data_dir: Option<&str>) -> bool {
+    let Some(data) = data_dir.map(|d| d.trim_end_matches('/').to_ascii_lowercase()) else {
+        return false;
+    };
+    !data.is_empty() && inside(&path.to_ascii_lowercase(), &data) && !data_noise(path, data_dir)
 }
 
 /// Paths a write never flags: scratch space, devices, and the harnesses' own
@@ -190,17 +240,16 @@ pub fn noise_path(path: &str, granted_app: bool, data_dir: Option<&str>) -> bool
     if SYSTEM.iter().any(|prefix| inside(path, prefix)) {
         return true;
     }
-    // The log itself, its install staging and computer use's recordings sit
-    // in MonoCode's data folder. A chat's process writing there is the
-    // tampering the log exists to catch (security review S5). The app's own
-    // writes are never attributed to a chat, so they raise nothing.
+    // MonoCode's data folder holds the log, computer use's recordings, a
+    // script Claude Code runs and the provider accounts. A chat's process
+    // writing there is the tampering the log exists to catch (security
+    // review S5, X6); only a harness home's session state is noise. The
+    // app's own writes are never attributed to a chat, so they raise nothing.
+    if data_noise(path, data_dir) {
+        return true;
+    }
     if guarded_path(path, data_dir) {
         return false;
-    }
-    if let Some(data) = data_dir.map(|d| d.trim_end_matches('/').to_ascii_lowercase()) {
-        if !data.is_empty() && inside(&path.to_ascii_lowercase(), &data) {
-            return true;
-        }
     }
     let Some(home) = home_of(path) else {
         return false;
@@ -1477,7 +1526,8 @@ mod tests {
             &[],
         );
         let ids: Vec<&str> = flags.iter().map(|f| f.event_id.as_str()).collect();
-        assert_eq!(ids, vec!["1", "2", "3"]);
+        // The database is guarded too since review X6.
+        assert_eq!(ids, vec!["1", "2", "3", "4"]);
     }
 
     #[test]
@@ -2647,7 +2697,8 @@ mod tests {
             &[],
         );
         let ids: Vec<&str> = flags.iter().map(|f| f.event_id.as_str()).collect();
-        assert_eq!(ids, vec!["1", "2", "3", "4", "5", "10"]);
+        // A provider account's `.claude.json` holds its MCP servers: shown.
+        assert_eq!(ids, vec!["1", "2", "3", "4", "5", "8", "10"]);
     }
 
     #[test]
