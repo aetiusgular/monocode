@@ -14,6 +14,7 @@ import type {
 import { loadClaudeHooks } from "../../../../features/settings/model/settings";
 import {
   killChild,
+  reattachChild,
   resolveClaudeBinary,
   spawnChild,
   unwatchChild,
@@ -118,6 +119,7 @@ import {
 import { claudePluginOverrides } from "../../../../features/claude-plugins/model/chatPlugins";
 import type {
   ApprovalDecision,
+  AttachSessionInput,
   CompactContextInput,
   HarnessEvent,
   HarnessSessionInput,
@@ -2814,4 +2816,148 @@ function heldChatRule(
     (held) => (held ? approvalTool(commandRuleKey(held)) : undefined),
     () => undefined,
   );
+}
+
+/**
+ * Takes back a Claude Code process that kept running through a page reload
+ * with its turn in flight (Mac test 2.8). The child layer has every line the
+ * old page missed buffered (`reattachChild`); this rebuilds the live session
+ * the old page held, with the turn active and the calls the saved transcript
+ * still shows running known by their tool_use ids, then watches the child.
+ * The replayed tool results, reply and result land as if never cut off.
+ * Null when the child is gone or was replaced: the chat falls back to
+ * Continue.
+ */
+export async function attachClaudeSession(
+  input: AttachSessionInput,
+): Promise<{ turn: Promise<void> } | null> {
+  const sessionId = input.sessionId;
+  const claudeSessionId = input.providerSessionId.trim();
+  if (!claudeSessionId || liveByThread.has(sessionId)) return null;
+  if (!(await reattachChild(sessionId))) return null;
+  if (liveByThread.has(sessionId)) return null;
+  const extraDirs = await existingDirs(input.extraDirs);
+  const { settingsKey } = await launchSettingsKey(input, extraDirs);
+  const retained = tasksByThread.get(sessionId);
+  const claudeTasks =
+    retained?.providerSessionId === claudeSessionId
+      ? retained.tasks
+      : new Map<string, TaskListItem>();
+  tasksByThread.set(sessionId, {
+    providerSessionId: claudeSessionId,
+    tasks: claudeTasks,
+  });
+  resumeByThread.set(sessionId, {
+    sessionId: claudeSessionId,
+    cwd: input.cwd,
+    providerAccountId: input.providerAccountId,
+  });
+  const toolsById = new Map<string, InFlightTool>();
+  for (const open of input.openTools) {
+    // Claude's own tool name is not saved. A kind maps back to itself
+    // (`toolKindFromName`), which is all a result needs.
+    const name = open.kind ?? "tool";
+    toolsById.set(open.callId, {
+      id: open.callId,
+      name,
+      input: open.command ? { command: open.command } : {},
+      partialJson: "",
+      title: open.title ?? name,
+    });
+  }
+  let turnDone!: () => void;
+  let turnFailed!: (error: Error) => void;
+  const turn = new Promise<void>((resolve, reject) => {
+    turnDone = resolve;
+    turnFailed = reject;
+  });
+  const live: Live = {
+    cwd: input.cwd,
+    claudeSessionId,
+    fresh: false,
+    exited: false,
+    cutPending: false,
+    providerAccountId: input.providerAccountId,
+    runtimeMode: input.runtimeMode,
+    planning: input.intent === "plan",
+    settingsKey,
+    toolRules: toolRules(input.toolAccess),
+    onEvent: input.onEvent,
+    approvals: new Map(),
+    questions: new Map(),
+    visibleQuestionId: null,
+    nextApprovalUiId: 1,
+    // Clear of the ids the old page used for its own control requests.
+    nextControlId: 1000,
+    toolsByIndex: new Map(),
+    toolsById,
+    deniedToolUses: new Set(),
+    agentTasks: new Map(),
+    backgroundTasks: new Map(),
+    backgroundRows: new Map(),
+    awaitingResume: null,
+    backgroundKey: "",
+    taskNotes: [],
+    claudeTasks,
+    turnResultSeen: false,
+    turnUuids: new Set(),
+    sessionStates: false,
+    claudeIdle: false,
+    usageLimit: null,
+    cancelled: false,
+    muteUpdates: false,
+    turns: turn.catch(() => undefined),
+    turnDone,
+    turnFailed,
+    turnEndPending: false,
+    activeTurn: true,
+    initDone: null,
+    initialized: true,
+    emittedAssistant: "",
+    emittedReasoning: "",
+    pendingAssistantBoundary: false,
+    manualCompaction: false,
+    compactionConfirmed: false,
+    backgroundItemsKey: "",
+    chatFolders: chatFolders(input.cwd, input.extraDirs),
+  };
+  liveByThread.set(sessionId, live);
+  // The activity log opens the turn again in this page, so its end is kept.
+  if (input.providerTurnId) {
+    live.onEvent({
+      type: "turn.started",
+      providerTurnId: input.providerTurnId,
+    });
+  }
+  // The prompt's uuid went with the old page. The first result is this
+  // turn's, so it is taken as one this turn sent.
+  let resultSeen = false;
+  watchChild(
+    sessionId,
+    (line) => {
+      if (!resultSeen && line.includes('"result"')) {
+        const rec = parseJsonLine(line);
+        if (
+          rec &&
+          stringField(rec, "type") === "result" &&
+          !isSubagentMessage(rec)
+        ) {
+          resultSeen = true;
+          for (const uuid of resultUserMessageUuids(rec) ?? []) {
+            live.turnUuids.add(uuid);
+          }
+        }
+      }
+      handleLine(sessionId, live, line);
+    },
+    (code) => {
+      if (liveByThread.get(sessionId) === live) liveByThread.delete(sessionId);
+      live.exited = true;
+      if (!live.muteUpdates) live.onEvent({ type: "session.ended", code });
+      live.turnFailed?.(new Error("Claude Code exited"));
+      live.turnDone = null;
+      live.turnFailed = null;
+    },
+  );
+  return { turn };
 }

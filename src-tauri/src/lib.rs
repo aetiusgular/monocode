@@ -557,6 +557,8 @@ pub fn run() {
             harness::harness_write,
             harness::harness_kill,
             harness::harness_kill_all,
+            harness::harness_live_sessions,
+            harness::harness_replay,
             harness::harness_http,
             harness::harness_sse_open,
             harness::harness_sse_close,
