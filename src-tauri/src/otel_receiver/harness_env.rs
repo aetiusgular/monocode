@@ -225,9 +225,17 @@ pub fn codex_shell_env_args(config_toml: Option<&str>) -> Vec<String> {
         .and_then(toml::Value::as_table)
     {
         // Codex refuses two filter keys that differ only in case
-        // (`shell_environment_policy.rs:111-119`), so one the user has stays.
+        // (`shell_environment_policy.rs:111-119`). A key the user already has
+        // is set under the user's own spelling; one they already exclude is
+        // left alone, and any other value is overridden (review Y5).
         return names
-            .filter(|name| !filters.keys().any(|k| k.eq_ignore_ascii_case(name)))
+            .filter_map(
+                |name| match filters.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)) {
+                    Some((_, v)) if v.as_str() == Some("exclude") => None,
+                    Some((k, _)) => Some(k.clone()),
+                    None => Some((*name).to_string()),
+                },
+            )
             .flat_map(|name| {
                 [
                     "-c".to_string(),
@@ -416,6 +424,29 @@ mod tests {
             "[shell_environment_policy.filters]\n\"monocode_cu_*\" = \"exclude\"\n",
         ));
         assert_eq!(args.len(), 8);
+    }
+
+    #[test]
+    fn a_users_include_filter_never_lets_a_token_back_in() {
+        // Review Y5: a user filter naming our pattern as "include" was kept,
+        // so the token reached Codex's shell. Ours overrides it, under the
+        // user's own spelling so Codex sees one key.
+        let args = codex_shell_env_args(Some(
+            "[shell_environment_policy.filters]\n\"monocode_cu_*\" = \"include\"\n",
+        ));
+        assert!(
+            args.iter()
+                .any(|a| a == "shell_environment_policy.filters.monocode_cu_*=\"exclude\""),
+            "{args:?}"
+        );
+        // One the user already excludes is left alone.
+        let args = codex_shell_env_args(Some(
+            "[shell_environment_policy.filters]\n\"MONOCODE_CU_*\" = \"exclude\"\n",
+        ));
+        assert!(
+            !args.iter().any(|a| a.contains("MONOCODE_CU_*")),
+            "{args:?}"
+        );
     }
 
     #[test]

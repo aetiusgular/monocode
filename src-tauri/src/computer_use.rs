@@ -223,7 +223,7 @@ pub fn configure_child(app: &AppHandle, session_id: &str, args: &[String], cmd: 
     if let Some((endpoint, token)) = state.child_env(session_id, args) {
         cmd.env(bridge_cli::ENDPOINT_ENV, endpoint)
             .env(bridge_cli::TOKEN_ENV, token);
-        if names_codex_server(args) && !has_shell_policy(cmd) {
+        if names_codex_server(args) && !has_cu_exclude(cmd) {
             // Telemetry adds these when it is on; without it Codex's shell
             // commands would see the token (security review X2).
             let config = codex_home(cmd)
@@ -235,13 +235,14 @@ pub fn configure_child(app: &AppHandle, session_id: &str, args: &[String], cmd: 
     }
 }
 
-/// Whether the spawn already carries Codex shell environment flags (the
-/// telemetry's, which include the computer-use pattern). A second
-/// `exclude` array would replace the first.
-fn has_shell_policy(cmd: &Command) -> bool {
+/// Whether the spawn already keeps the computer-use token out of Codex's
+/// shell (telemetry adds the same flags when it is on). Only our own
+/// pattern counts: any other shell policy flag, which the webview could add,
+/// does not stand in for it (review Y6).
+fn has_cu_exclude(cmd: &Command) -> bool {
     cmd.get_args().any(|arg| {
-        arg.to_string_lossy()
-            .starts_with("shell_environment_policy.")
+        let arg = arg.to_string_lossy().to_ascii_lowercase();
+        arg.starts_with("shell_environment_policy.") && arg.contains("monocode_cu_*")
     })
 }
 
@@ -464,6 +465,25 @@ pub async fn computer_use_resolve_app(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn another_shell_policy_flag_does_not_skip_the_token_exclude() {
+        // Review Y6: any `shell_environment_policy.*` flag made the exclude
+        // skipped, so `-c shell_environment_policy.inherit="all"` left the
+        // token in Codex's shell. Only our own pattern counts as done.
+        let mut cmd = Command::new("codex");
+        cmd.args(["-c", "shell_environment_policy.inherit=\"all\""]);
+        assert!(!has_cu_exclude(&cmd));
+        cmd.args(["-c", "shell_environment_policy.exclude=[\"MONOCODE_CU_*\"]"]);
+        assert!(has_cu_exclude(&cmd));
+        let mut keyed = Command::new("codex");
+        keyed.args([
+            "-c",
+            "shell_environment_policy.filters.monocode_cu_*=\"exclude\"",
+        ]);
+        assert!(has_cu_exclude(&keyed));
+    }
+
     use super::*;
 
     /// The helper keeps its own copy of the relayed tool list. Both must say
@@ -627,11 +647,11 @@ mod tests {
         ])));
         let mut cmd = Command::new("codex");
         cmd.env("CODEX_HOME", "/nonexistent-monocode-test");
-        assert!(!has_shell_policy(&cmd));
+        assert!(!has_cu_exclude(&cmd));
         cmd.args(crate::otel_receiver::harness_env::codex_shell_env_args(
             None,
         ));
-        assert!(has_shell_policy(&cmd));
+        assert!(has_cu_exclude(&cmd));
         assert!(cmd
             .get_args()
             .any(|a| a.to_string_lossy().contains("MONOCODE_CU_*")));
