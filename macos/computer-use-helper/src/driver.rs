@@ -1,15 +1,31 @@
 //! How the helper starts Cua Driver for one runtime.
 //!
-//! From Cua's embedding guide (read 16 Oct 2026): the host spawns
-//! `cua-driver serve --embedded --socket <path>` itself, never through
-//! open(1), so the driver inherits the host's macOS grants; the mode and the
-//! manifest go in through the environment; `cua-driver mcp --embedded
-//! --socket <path>` is the stdio proxy a client talks to.
+//! One child per runtime: `cua-driver mcp --direct --embedded`, which runs
+//! Cua's runtime in that process and talks MCP on its stdio. No socket, so no
+//! other process of this user can connect and drive the granted apps (Mac
+//! test finding 4.14). Verified in Cua 0.37.0:
+//! - `--direct` runs the runtime in the MCP process; with `--socket` it is
+//!   refused (`cua-driver/src/main.rs:430-450`).
+//! - `mcp` refuses every authorization flag (`--permission-mode`,
+//!   `--capability-manifest`, `--approve-capability-manifest`, ...;
+//!   `cua-driver/src/cli.rs:268-287`, `:798-805`), so the mode and the
+//!   manifest go in through the environment only
+//!   (`cua-driver-core/src/authorization.rs:1306-1331`).
+//! - The manifest is read once, at startup, before stdin is read
+//!   (`cua-driver/src/proxy.rs:41-47`, `session_manifest.rs:693-698`).
+//! - On stdin EOF it ends this transport's Cua sessions and shuts down
+//!   (`proxy.rs:66-84`, `:174`).
 
 use std::path::{Path, PathBuf};
 
-/// The helper's own bundle id. MonoCode's manifest never names it.
-pub const HELPER_BUNDLE_ID: &str = "com.monocode.computer-use-helper";
+/// The helper's own bundle id. A debug helper has its own, so its grants are
+/// never the release helper's (the user's decision 1). MonoCode's manifest
+/// never names either.
+pub const HELPER_BUNDLE_ID: &str = if cfg!(debug_assertions) {
+    "com.monocode.computer-use-helper.dev"
+} else {
+    "com.monocode.computer-use-helper"
+};
 
 /// One process to start: program, arguments, and the environment to set on
 /// top of a cleared one.
@@ -35,8 +51,8 @@ pub fn base_env(home: &Path) -> Vec<(String, String)> {
     ]
 }
 
-/// The daemon for one runtime, bounded by the manifest at `manifest`.
-pub fn serve_launch(driver: &Path, socket: &Path, manifest: &Path, home: &Path) -> Launch {
+/// The one Cua process of a runtime, bounded by the manifest at `manifest`.
+pub fn direct_launch(driver: &Path, manifest: &Path, home: &Path) -> Launch {
     let mut env = base_env(home);
     env.extend([
         ("CUA_DRIVER_EMBEDDED".into(), "1".into()),
@@ -50,34 +66,8 @@ pub fn serve_launch(driver: &Path, socket: &Path, manifest: &Path, home: &Path) 
     ]);
     Launch {
         program: driver.to_path_buf(),
-        args: vec![
-            "serve".into(),
-            "--embedded".into(),
-            "--socket".into(),
-            socket.to_string_lossy().into_owned(),
-            "--host-bundle-id".into(),
-            HELPER_BUNDLE_ID.into(),
-            "--permission-mode".into(),
-            "bounded".into(),
-            "--capability-manifest".into(),
-            manifest.to_string_lossy().into_owned(),
-            "--approve-capability-manifest".into(),
-        ],
+        args: vec!["mcp".into(), "--direct".into(), "--embedded".into()],
         env,
-    }
-}
-
-/// The stdio proxy the helper talks MCP through.
-pub fn mcp_launch(driver: &Path, socket: &Path, home: &Path) -> Launch {
-    Launch {
-        program: driver.to_path_buf(),
-        args: vec![
-            "mcp".into(),
-            "--embedded".into(),
-            "--socket".into(),
-            socket.to_string_lossy().into_owned(),
-        ],
-        env: base_env(home),
     }
 }
 
@@ -96,14 +86,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn serve_is_bounded_by_the_manifest_with_cuas_calls_off() {
-        let launch = serve_launch(
+    fn one_direct_child_bounded_by_the_manifest_with_no_socket() {
+        let launch = direct_launch(
             Path::new("/H.app/Contents/MacOS/cua-driver"),
-            Path::new("/d/rt1.sock"),
-            Path::new("/d/rt1.yaml"),
+            Path::new("/t/m-1/manifest.yaml"),
             Path::new("/Users/t"),
         );
-        assert_eq!(&launch.args[..2], ["serve", "--embedded"]);
+        assert_eq!(launch.args, ["mcp", "--direct", "--embedded"]);
+        // Cua's `mcp` exits on any of these (cli.rs:268-276).
+        for flag in [
+            "--socket",
+            "--permission-mode",
+            "--capability-manifest",
+            "--approve-capability-manifest",
+            "--session-policy",
+            "--approve-session-policy",
+            "--dangerously-bypass-approvals",
+            "--no-permissions-gate",
+        ] {
+            assert!(!launch.args.iter().any(|a| a.starts_with(flag)), "{flag}");
+        }
         let env = |key: &str| {
             launch
                 .env
@@ -111,29 +113,30 @@ mod tests {
                 .find(|(k, _)| k == key)
                 .map(|(_, v)| v.as_str())
         };
+        assert_eq!(env("CUA_DRIVER_EMBEDDED"), Some("1"));
+        assert_eq!(env("CUA_DRIVER_HOST_BUNDLE_ID"), Some(HELPER_BUNDLE_ID));
         assert_eq!(env("CUA_DRIVER_PERMISSION_MODE"), Some("bounded"));
         assert_eq!(
             env("CUA_DRIVER_CAPABILITY_MANIFEST_FILE"),
-            Some("/d/rt1.yaml")
+            Some("/t/m-1/manifest.yaml")
         );
+        assert_eq!(env("CUA_DRIVER_CAPABILITY_MANIFEST_APPROVED"), Some("1"));
         assert_eq!(env("CUA_DRIVER_RS_TELEMETRY_ENABLED"), Some("false"));
         assert_eq!(env("CUA_DRIVER_RS_UPDATE_CHECK"), Some("false"));
         assert_eq!(env("CUA_DRIVER_DISABLE_RUN_SCRIPT"), Some("1"));
         assert!(env("CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS").is_none());
-        assert!(!launch.args.iter().any(|a| a.contains("unrestricted")));
     }
 
     #[test]
-    fn the_proxy_has_cuas_calls_off_too() {
-        let launch = mcp_launch(
-            Path::new("/d/cua-driver"),
-            Path::new("/d/s"),
-            Path::new("/h"),
+    fn a_debug_helper_has_its_own_bundle_id() {
+        assert_eq!(
+            HELPER_BUNDLE_ID,
+            if cfg!(debug_assertions) {
+                "com.monocode.computer-use-helper.dev"
+            } else {
+                "com.monocode.computer-use-helper"
+            }
         );
-        assert_eq!(launch.args, ["mcp", "--embedded", "--socket", "/d/s"]);
-        assert!(launch
-            .env
-            .contains(&("CUA_DRIVER_RS_UPDATE_CHECK".into(), "false".into())));
     }
 
     #[test]

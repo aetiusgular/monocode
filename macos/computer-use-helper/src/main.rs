@@ -6,8 +6,9 @@
 //!   shell inherits them (note W, section 4).
 //! - It listens on one Unix socket MonoCode names, takes one caller, and
 //!   checks that caller's code signature against MonoCode's (`caller.rs`).
-//! - Per chat it starts `cua-driver serve --embedded` itself, bounded by the
-//!   chat's manifest, with Cua's telemetry and update check off.
+//! - Per chat it starts one `cua-driver mcp --direct --embedded` itself,
+//!   bounded by the chat's manifest, talked to over its stdio with no socket,
+//!   with Cua's telemetry and update check off.
 //! - When MonoCode's connection closes, or MonoCode exits, every runtime ends
 //!   and the helper quits.
 //!
@@ -19,6 +20,7 @@
 #![cfg_attr(not(target_os = "macos"), allow(dead_code, unused_imports))]
 
 mod apps;
+mod base64;
 mod caller;
 mod driver;
 mod lines;
@@ -119,11 +121,12 @@ fn run(args: Args) -> i32 {
     if runtime::private_dir(&socket_dir).is_err() {
         return 2;
     }
-    // Sockets for the runtimes beside MonoCode's, in the same private folder.
+    // Each start's manifest goes in a fresh folder inside this private one,
+    // which MonoCode made 0700 with a random name.
     let runtimes = runtime::Runtimes::new(
         driver.clone(),
         args.data.clone(),
-        socket_dir.join("rt"),
+        socket_dir.clone(),
         home.clone(),
     );
     let shared = Arc::new(server::Shared::new(
@@ -154,14 +157,7 @@ fn run(args: Args) -> i32 {
         std::thread::spawn(move || loop {
             std::thread::sleep(Duration::from_secs(2));
             if !process_alive(pid) {
-                let ids = shared
-                    .runtimes
-                    .lock()
-                    .map(|r| r.running_ids())
-                    .unwrap_or_default();
-                for id in ids {
-                    server::stop_now(&shared, &id);
-                }
+                shared.runtimes.stop_all(shared.mouse.as_ref());
                 let _ = std::fs::remove_file(&socket);
                 std::process::exit(0);
             }

@@ -79,6 +79,34 @@ pub fn record_from_action(turn: &str, action: &Value, dir: &Path) -> Value {
     Value::Object(record)
 }
 
+/// The helper's own record of a call Cua does not record: a read-only tool,
+/// or any call while recording is off. Same fields as Cua's, plus
+/// `"source": "helper"`; `turn` is `call-NNNNNN`.
+pub fn helper_record(
+    turn: &str,
+    tool: &str,
+    arguments: &Value,
+    error: bool,
+    at: &str,
+    summary: Option<&str>,
+    screenshot: Option<&str>,
+) -> Value {
+    let mut record = Map::new();
+    record.insert("turn".into(), json!(clip(turn, 32)));
+    record.insert("tool".into(), json!(clip(tool, 64)));
+    record.insert("arguments".into(), clip_value(arguments));
+    record.insert("error".into(), json!(error));
+    record.insert("at".into(), json!(clip(at, 40)));
+    if let Some(summary) = summary {
+        record.insert("summary".into(), json!(clip(summary, MAX_ARG_CHARS)));
+    }
+    if let Some(screenshot) = screenshot {
+        record.insert("screenshot".into(), json!(screenshot));
+    }
+    record.insert("source".into(), json!("helper"));
+    Value::Object(record)
+}
+
 fn clip(text: &str, max: usize) -> String {
     text.chars().filter(|c| !c.is_control()).take(max).collect()
 }
