@@ -355,6 +355,14 @@ while IFS= read -r line; do
     say "call get_window_state"
     reply '{"content":[{"type":"text","text":"window 1"},{"type":"image","data":"iVBORw0KGgpmYWtlLXBuZw==","mimeType":"image/png"}]}' ;;
   *'"name":"drag"'*)
+    case "$manifest" in
+    *'# fake: hang'*)
+      # Never answers, and leaves a child holding stdout, so no EOF comes.
+      sleep 600 </dev/null 2>/dev/null &
+      printf '%s\n' "$!" >> "$(dirname "$0")/hang.pids"
+      say "call drag"
+      wait ;;
+    esac
     say "call drag"
     sleep 5 </dev/null >/dev/null
     reply '{"content":[{"type":"text","text":"dragged"}]}' ;;
@@ -696,6 +704,51 @@ say eof
             "the call ended with its runtime"
         );
         stop(&shared, "c");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Security review X9: a call that never answers, while something Cua
+    /// started keeps its stdout open, must not hold Stop until the call
+    /// timeout. Stop cancels the call, ends Cua, and releases the mouse.
+    #[test]
+    fn stop_does_not_wait_for_a_hung_call_whose_stdout_stays_open() {
+        let (root, shared, held) = with_driver_and_mouse("hung");
+        assert_eq!(start(&shared, "rt", &manifest_with("hang"))["ok"], true);
+        let busy = {
+            let shared = shared.clone();
+            thread::spawn(move || call(&shared, "rt", "drag"))
+        };
+        assert!(wait_for_line(&root, "call drag"));
+        held.store(true, Ordering::SeqCst);
+        let (tx, rx) = std::sync::mpsc::channel();
+        {
+            let shared = shared.clone();
+            thread::spawn(move || {
+                let _ = tx.send(stop(&shared, "rt"));
+            });
+        }
+        let started = std::time::Instant::now();
+        let reply = rx.recv_timeout(Duration::from_secs(5));
+        let waited = started.elapsed();
+        let kill_children = || {
+            for pid in fs::read_to_string(root.join("bin").join("hang.pids"))
+                .unwrap_or_default()
+                .lines()
+            {
+                let _ = std::process::Command::new("kill").arg(pid.trim()).status();
+            }
+        };
+        let Ok(reply) = reply else {
+            kill_children();
+            panic!("stop still waiting after {waited:?}");
+        };
+        kill_children();
+        assert!(waited < Duration::from_secs(2), "stop waited {waited:?}");
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["releasedButtons"], json!(["left"]), "{reply}");
+        assert!(driver_log(&root).iter().any(|l| l == "release left"));
+        let call = busy.join().unwrap();
+        assert_eq!(call["ok"], false, "{call}");
         let _ = fs::remove_dir_all(&root);
     }
 

@@ -1,7 +1,9 @@
 //! A small MCP client over the driver's stdio.
 
 use std::io::{BufReader, Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -12,11 +14,17 @@ use crate::lines::read_line_capped;
 /// The largest line taken from the driver: a window screenshot, base64.
 pub const MAX_LINE: usize = 64 * 1024 * 1024;
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
+/// How often a waiting request looks at its cancel flag.
+const CANCEL_CHECK: Duration = Duration::from_millis(25);
 
 pub struct McpClient {
     writer: Box<dyn Write + Send>,
     incoming: Receiver<Value>,
     next_id: u64,
+    /// Set by Stop. A request waiting on the driver returns at once, since
+    /// its answer may never come: anything Cua started can hold its stdout
+    /// open, so no EOF ends the wait either (security review X9).
+    cancel: Arc<AtomicBool>,
 }
 
 impl McpClient {
@@ -44,6 +52,7 @@ impl McpClient {
             writer: Box::new(writer),
             incoming,
             next_id: 1,
+            cancel: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -62,6 +71,12 @@ impl McpClient {
         self.writer = Box::new(std::io::sink());
     }
 
+    /// The flag that cancels this client's requests, for Stop to set
+    /// without the lock a call holds.
+    pub fn canceller(&self) -> Arc<AtomicBool> {
+        self.cancel.clone()
+    }
+
     pub fn notify(&mut self, method: &str, params: Value) -> Result<(), String> {
         self.send(&json!({"jsonrpc": "2.0", "method": method, "params": params}))
     }
@@ -74,14 +89,21 @@ impl McpClient {
         params: Value,
         timeout: Duration,
     ) -> Result<Value, String> {
+        if self.cancel.load(Ordering::SeqCst) {
+            return Err("The computer-use runtime was stopped.".into());
+        }
         let id = self.next_id;
         self.next_id += 1;
         self.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))?;
         let deadline = Instant::now() + timeout;
         loop {
+            if self.cancel.load(Ordering::SeqCst) {
+                return Err("The computer-use runtime was stopped.".into());
+            }
             let left = deadline.saturating_duration_since(Instant::now());
-            let message = match self.incoming.recv_timeout(left) {
+            let message = match self.incoming.recv_timeout(left.min(CANCEL_CHECK)) {
                 Ok(message) => message,
+                Err(RecvTimeoutError::Timeout) if left > CANCEL_CHECK => continue,
                 Err(RecvTimeoutError::Timeout) => {
                     return Err(format!(
                         "The computer-use runtime did not answer {method} in time."
@@ -190,5 +212,26 @@ mod tests {
             .request("tools/list", json!({}), Duration::from_millis(150))
             .unwrap_err();
         assert!(error.contains("in time"));
+    }
+
+    #[test]
+    fn a_cancelled_request_returns_at_once() {
+        let mut client = fake(|_| vec![]);
+        let cancel = client.canceller();
+        let setter = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            cancel.store(true, Ordering::SeqCst);
+        });
+        let started = Instant::now();
+        let error = client
+            .request("tools/call", json!({}), Duration::from_secs(30))
+            .unwrap_err();
+        assert!(error.contains("stopped"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        setter.join().unwrap();
+        assert!(client
+            .request("tools/list", json!({}), Duration::from_secs(30))
+            .unwrap_err()
+            .contains("stopped"));
     }
 }
