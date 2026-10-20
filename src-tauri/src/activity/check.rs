@@ -462,6 +462,19 @@ impl<'a> Tree<'a> {
         }
     }
 
+    /// Whether the registered harness itself forked `pid` (its last fork
+    /// before `at`). No fork seen means no.
+    fn forked_by_root(&self, chat: &str, pid: u32, at: i64) -> bool {
+        self.forks
+            .get(&(chat.to_string(), pid))
+            .and_then(|list| {
+                list.iter()
+                    .filter(|(t, _, _)| *t <= at)
+                    .max_by_key(|(t, _, _)| *t)
+            })
+            .is_some_and(|(_, _, root)| *root)
+    }
+
     fn in_window(&self, chat: &str, at: i64) -> bool {
         self.windows
             .get(chat)
@@ -582,6 +595,7 @@ fn expected_rule(
     reason: FlagReason,
     harness: &str,
     folders: &[String],
+    forked_by_root: bool,
 ) -> Option<&'static str> {
     if tier == Tier::Tool {
         return None;
@@ -599,7 +613,10 @@ fn expected_rule(
                     || home.as_deref().is_some_and(|h| {
                         path == format!("{h}/Library/Keychains/login.keychain-db")
                     }))
-                && (tier == Tier::Root || exe == "/usr/bin/security");
+                // `security` only when the harness ran it itself: a tool
+                // whose call record is missing lands in the harness-child
+                // tier, and its `security` must still flag.
+                && (tier == Tier::Root || (exe == "/usr/bin/security" && forked_by_root));
             let codex_auth = harness == "codex"
                 && tier == Tier::Root
                 && home
@@ -960,7 +977,11 @@ pub fn run_full(input: &CheckInput) -> CheckOutput {
         };
         let tier = (event.source == ActivitySource::Eslogger).then(|| tree.tier(event));
         if let Some(tier) = tier {
-            if let Some(rule) = expected_rule(event, tier, reason, harness, folders) {
+            let forked_by_root = event
+                .pid
+                .is_some_and(|pid| tree.forked_by_root(&event.chat_id, pid, event.at));
+            if let Some(rule) = expected_rule(event, tier, reason, harness, folders, forked_by_root)
+            {
                 *suppressed.entry(rule.to_string()).or_default() += 1;
                 hidden.push(Candidate {
                     event,
@@ -2054,6 +2075,64 @@ mod tests {
         assert_eq!(ids, vec!["k", "z"]);
         assert!(out.flags.iter().all(|f| f.tier == Some(Tier::Tool)));
         assert!(out.suppressed.is_empty());
+    }
+
+    #[test]
+    fn a_keychain_read_by_security_is_hidden_only_when_the_harness_ran_it() {
+        // A tool's call record can be missing (a reload lost it, Mac test
+        // 2.8), which leaves its processes in the harness-child tier. A
+        // `security` run by a shell the harness started is then not the
+        // harness's own sign-in read, and must still flag.
+        let events = [
+            proc_ev(
+                "f1",
+                100,
+                "fork",
+                10,
+                json!({"tier": "root", "child": 40, "exe": "/usr/local/bin/claude"}),
+            ),
+            proc_ev(
+                "own",
+                101,
+                "open",
+                40,
+                json!({"tier": "child", "exe": "/usr/bin/security", "path": "/Users/t/Library/Keychains/login.keychain-db"}),
+            ),
+            proc_ev(
+                "f2",
+                200,
+                "fork",
+                10,
+                json!({"tier": "root", "child": 50, "exe": "/usr/local/bin/claude"}),
+            ),
+            proc_ev(
+                "f3",
+                201,
+                "fork",
+                50,
+                json!({"tier": "child", "child": 51, "exe": "/bin/zsh"}),
+            ),
+            proc_ev(
+                "shell",
+                202,
+                "open",
+                51,
+                json!({"tier": "child", "exe": "/usr/bin/security", "path": "/Users/t/Library/Keychains/login.keychain-db"}),
+            ),
+            proc_ev(
+                "nofork",
+                // Past the 15-minute window, so it is its own row.
+                300 + DEDUPE_WINDOW_MS + 1,
+                "open",
+                60,
+                json!({"tier": "child", "exe": "/usr/bin/security", "path": "/Users/t/Library/Keychains/login.keychain-db"}),
+            ),
+        ];
+        let out = check_full(&events, &[], DATA);
+        let ids: Vec<&str> = out.flags.iter().map(|f| f.event_id.as_str()).collect();
+        assert!(!ids.contains(&"own"), "{ids:?}");
+        assert!(ids.contains(&"shell"), "{ids:?}");
+        assert!(ids.contains(&"nofork"), "{ids:?}");
     }
 
     #[test]
