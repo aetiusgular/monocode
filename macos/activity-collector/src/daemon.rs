@@ -39,6 +39,9 @@ pub const CHANNEL_CAP: usize = 4096;
 pub const MAX_CONNECTIONS: usize = 8;
 /// Socket read and write timeout.
 pub const SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
+/// At most this many characters of eslogger's last stderr line.
+pub const MAX_STDERR_CHARS: usize = 300;
+
 /// How often retention runs.
 pub const MAINTENANCE_EVERY: Duration = Duration::from_secs(3600);
 
@@ -143,6 +146,34 @@ struct EsInfo {
     missing: Vec<String>,
 }
 
+/// One stderr line made safe to show: control characters dropped, at most
+/// 300 characters.
+fn printable_line(line: &str) -> String {
+    line.chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_STDERR_CHARS)
+        .collect::<String>()
+        .trim()
+        .to_owned()
+}
+
+/// Reads eslogger's stderr to its end, keeping the last non-empty line in
+/// `slot`. Lines are read capped, so a flood cannot grow memory.
+pub fn keep_last_line<R: BufRead>(mut reader: R, slot: &Mutex<Option<String>>) {
+    let mut buf = Vec::new();
+    loop {
+        match lines::read_capped(&mut reader, &mut buf, 4096) {
+            Ok(Line::Eof) | Err(_) => return,
+            Ok(_) => {
+                let line = printable_line(&String::from_utf8_lossy(&buf));
+                if !line.is_empty() {
+                    *lock(slot) = Some(line);
+                }
+            }
+        }
+    }
+}
+
 /// State shared by the daemon's threads.
 #[derive(Debug)]
 pub struct Shared {
@@ -152,6 +183,8 @@ pub struct Shared {
     pub dropped: AtomicU64,
     connections: AtomicUsize,
     es: Mutex<EsInfo>,
+    /// eslogger's last stderr line, shown while it is not running.
+    es_error: Mutex<Option<String>>,
 }
 
 impl Shared {
@@ -168,6 +201,7 @@ impl Shared {
                 events: Vec::new(),
                 missing: Vec::new(),
             }),
+            es_error: Mutex::new(None),
         })
     }
 
@@ -187,12 +221,18 @@ impl Shared {
             (t.tracked_count(), t.grant_count())
         };
         let es = lock(&self.es);
+        // The last complaint matters only while eslogger is not running.
+        let eslogger_error = match es.state {
+            EsloggerState::Running => None,
+            _ => lock(&self.es_error).clone(),
+        };
         let log_bytes = log::list_logs(&self.log_dir)
             .map(|files| files.iter().fold(0u64, |a, f| a.saturating_add(f.bytes)))
             .unwrap_or(0);
         Status {
             version: env!("CARGO_PKG_VERSION").to_owned(),
             eslogger: es.state,
+            eslogger_error,
             events: es.events.clone(),
             missing_events: es.missing.clone(),
             tracked: tracked as u64,
@@ -423,13 +463,17 @@ pub fn supervise(shared: &Shared, program: &Path, tx: &SyncSender<String>) {
         let listed = Command::new(program)
             .arg("--list-events")
             .stdin(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .output();
         let split = match listed {
             Ok(out) if out.status.success() => {
                 Some(split_events(&String::from_utf8_lossy(&out.stdout)))
             }
-            _ => None,
+            Ok(out) => {
+                keep_last_line(&out.stderr[..], &shared.es_error);
+                None
+            }
+            Err(_) => None,
         };
         let Some((kept, missing)) = split.filter(|(kept, _)| !kept.is_empty()) else {
             shared.set_es(EsloggerState::Missing, None);
@@ -442,15 +486,24 @@ pub fn supervise(shared: &Shared, program: &Path, tx: &SyncSender<String>) {
             .args(&kept)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn();
         match child {
             Ok(mut child) => {
                 shared.set_es(EsloggerState::Running, Some((kept, missing)));
-                if let Some(stdout) = child.stdout.take() {
-                    pump(BufReader::new(stdout), tx, &shared.dropped);
-                }
-                let _ = child.kill();
+                // eslogger says why it stopped on stderr, such as "Caller
+                // lacks TCC authorization for Full Disk Access" (Mac test 3.4).
+                // Scoped threads join at the end of the scope.
+                thread::scope(|scope| {
+                    if let Some(err) = child.stderr.take() {
+                        let slot = &shared.es_error;
+                        scope.spawn(move || keep_last_line(BufReader::new(err), slot));
+                    }
+                    if let Some(stdout) = child.stdout.take() {
+                        pump(BufReader::new(stdout), tx, &shared.dropped);
+                    }
+                    let _ = child.kill();
+                });
                 let _ = child.wait();
                 shared.set_es(EsloggerState::Stopped, None);
             }
@@ -734,6 +787,51 @@ mod tests {
         ok.read_to_string(&mut reply).unwrap();
         assert_eq!(reply, "{\"ok\":true}\n");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn status_reports_esloggers_last_stderr_line() {
+        // Mac test 3.4: the page said only "eslogger is stopped" when the
+        // reason was Full Disk Access.
+        let dir = temp_dir("daemon-stderr");
+        fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("fake-eslogger");
+        fs::write(
+            &script,
+            "#!/bin/sh\nif [ \"$1\" = --list-events ]; then echo exec; exit 0; fi\necho 'starting' >&2\necho 'Caller lacks TCC authorization for Full Disk Access' >&2\nexit 1\n",
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let shared = Arc::new(Shared::open(&dir.join("log")).unwrap());
+        let (tx, _rx) = mpsc::sync_channel(4);
+        let s = Arc::clone(&shared);
+        let program = script.clone();
+        thread::spawn(move || supervise(&s, &program, &tx));
+        let mut seen = serde_json::Value::Null;
+        for _ in 0..300 {
+            let v: serde_json::Value =
+                serde_json::from_str(&protocol::reply_status(&shared.status())).unwrap();
+            if !v["esloggerError"].is_null() {
+                seen = v;
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            seen["esloggerError"],
+            "Caller lacks TCC authorization for Full Disk Access"
+        );
+        assert_eq!(seen["eslogger"], "stopped");
+    }
+
+    #[test]
+    fn a_stderr_line_is_capped_and_printable() {
+        let slot = Mutex::new(None);
+        let long = format!("a\u{7}b{}\n", "x".repeat(2000));
+        keep_last_line(Cursor::new(format!("first\n{long}\n").into_bytes()), &slot);
+        let kept = lock(&slot).clone().unwrap();
+        assert!(kept.starts_with("ab"));
+        assert_eq!(kept.chars().count(), MAX_STDERR_CHARS);
     }
 
     #[test]

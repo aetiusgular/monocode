@@ -20,7 +20,10 @@ bundle and launchd runs them from there; the sockets and log are the same.
 The daemon starts `/usr/bin/eslogger` with an argument list (never a shell
 string) and a fixed event list:
 
-`exec fork exit create rename unlink close open tcc_modify`
+`exec fork exit create rename unlink close open tcc_modify truncate link copyfile clone exchangedata`
+
+`write` is never asked for: too many events, with no way to select
+processes (note AA, appendix A).
 
 At start it runs `/usr/bin/eslogger --list-events` and drops any of these the
 running macOS does not offer, recording which in its status. `open` events are
@@ -92,9 +95,25 @@ One JSON object a line:
   file with a fresh chain.
 
 `kind` values: `exec`, `fork`, `exit`, `create`, `write` (a modified close),
-`rename`, `unlink`, `open` (sensitive path), `tcc`. `detail` holds `path`,
-`dest` (rename), `argv` (exec, at most 32 items of 512 bytes), `ppid`, `exe`,
-`grant` (the bundle id, when attributed by a grant), each only when known.
+`rename`, `unlink`, `open` (sensitive path), `tcc`, `truncate`, `link`,
+`copyfile`, `clone`, `exchangedata`. `detail` holds `path`, `dest`, `argv`
+(exec, at most 32 items of 512 bytes), `ppid`, `exe`, `grant` (the bundle id,
+when attributed by a grant), each only when known, and:
+
+- `child` (fork only): the new process's pid. A fork is logged under the
+  parent: `pid` is the process that forked, `detail.child` the one it made.
+- `originalPpid`, `groupId`, `sessionId`: `es_process_t`'s `original_ppid`,
+  `group_id` and `session_id`, so a process reparented to launchd (`ppid` 1)
+  can still be placed.
+- `tier`: `root` when the acting pid is a registered root, `child` for a
+  descendant or a process followed through a grant. The app's check splits
+  `child` further; the collector never filters on it.
+
+Paths per kind (Apple's `es_event_*_t` members): `truncate` `path` =
+`target`; `link` `path` = `source`, `dest` = `target_dir` + `target_filename`;
+`copyfile` `path` = `source`, `dest` = `target_file` or `target_dir` +
+`target_name`; `clone` `path` = `source`, `dest` = `target_dir` +
+`target_name`; `exchangedata` `path` = `file1`, `dest` = `file2`.
 
 ## Read socket
 
@@ -107,8 +126,15 @@ Same framing. One request a connection.
 
 - `events` answers with one `ActivityEvent` a line, oldest first, then
   `{"end":true,"truncated":<bool>,"chainOk":<bool>}`. `limit` is at most 10,000.
+  When more events match than the limit, the NEWEST `limit` are sent and
+  `truncated` is true.
 - `status` answers with one line:
-  `{"version":"…","eslogger":"running"|"stopped"|"missing","events":[…],"missingEvents":[…],"tracked":<n>,"grants":<n>,"dropped":<n>,"logBytes":<n>}`.
+  `{"version":"…","eslogger":"running"|"stopped"|"missing","esloggerError":"…","events":[…],"missingEvents":[…],"tracked":<n>,"grants":<n>,"dropped":<n>,"logBytes":<n>}`.
+  `esloggerError` is eslogger's last stderr line (control characters
+  dropped, at most 300 characters), present only while it is not running.
+
+Socket paths must be under 104 bytes, `sun_path` on macOS; the daemon
+refuses a longer one with a clear error.
 
 ## Retention
 
