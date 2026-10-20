@@ -17,6 +17,9 @@ use super::manifest::manifest_yaml;
 use crate::activity::types::{ActivitySource, ApprovalScope, ApprovalSubject};
 use crate::activity::{ActivityEvent, ApprovalRecord, ProcessKind};
 
+/// The most chats that may hold a bridge token at once (review Y8): the same
+/// cap the plan marks have.
+pub const MAX_TOKENS: usize = 4096;
 /// Open cards per chat; a model that asks for more is told to wait.
 const MAX_PENDING_PER_CHAT: usize = 4;
 /// A card nobody answered closes after this.
@@ -229,6 +232,9 @@ impl Core {
         }
         if on {
             let mut inner = self.lock();
+            if !inner.tokens.contains_key(chat) && inner.tokens.len() >= MAX_TOKENS {
+                return;
+            }
             inner
                 .tokens
                 .entry(chat.to_string())
@@ -257,6 +263,12 @@ impl Core {
             return None;
         }
         let mut inner = self.lock();
+        if let Some(token) = inner.tokens.get(chat) {
+            return Some(token.clone());
+        }
+        if inner.tokens.len() >= MAX_TOKENS {
+            return None;
+        }
         Some(
             inner
                 .tokens
@@ -1282,6 +1294,21 @@ pub mod tests {
             .iter()
             .map(|r| r["op"].as_str().unwrap().to_string())
             .collect()
+    }
+
+    #[test]
+    fn minted_tokens_are_capped() {
+        // Review Y8: every webview spawn naming the server minted a token for
+        // any chat id, with no cap.
+        let (core, _, _) = core_with(FakeLauncher::new());
+        for n in 0..MAX_TOKENS {
+            assert!(core.mint_token(&format!("chat-{n}")).is_some());
+        }
+        assert!(core.mint_token("one-too-many").is_none());
+        assert!(
+            core.mint_token("chat-0").is_some(),
+            "an existing chat keeps its token"
+        );
     }
 
     #[test]
