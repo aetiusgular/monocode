@@ -394,6 +394,68 @@ pub fn tool_windows(events: &[ActivityEvent]) -> HashMap<String, Vec<ToolWindow>
     out
 }
 
+/// One turn of a chat, from the adapter feed's `turn.start` to its
+/// `turn.end`; `None` is open to now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TurnSpan {
+    start: i64,
+    end: Option<i64>,
+}
+
+/// Turn spans per chat. A start with no end is open to now; an end whose
+/// start fell before the window opens at the window's start; a start while
+/// a turn is open keeps it open. A record marked `reattached` (a turn taken
+/// back after a reload) opens a span too. Only the adapter writes these
+/// (`src/features/harness-telemetry/model/telemetryFeed.ts`, `turn.started`
+/// and `turn.completed`).
+fn turn_spans(events: &[ActivityEvent]) -> HashMap<String, Vec<TurnSpan>> {
+    let mut out: HashMap<String, Vec<TurnSpan>> = HashMap::new();
+    let mut list: Vec<&ActivityEvent> = events
+        .iter()
+        .filter(|e| e.source == ActivitySource::Adapter && e.kind.starts_with("turn."))
+        .collect();
+    list.sort_by_key(|e| e.at);
+    for e in list {
+        let spans = out.entry(e.chat_id.clone()).or_default();
+        let open = spans.last().is_some_and(|s| s.end.is_none());
+        let reattached = e.detail.get("reattached").and_then(Value::as_bool) == Some(true);
+        match e.kind.as_str() {
+            "turn.end" if open => {
+                if let Some(last) = spans.last_mut() {
+                    last.end = Some(e.at);
+                }
+            }
+            "turn.end" => spans.push(TurnSpan {
+                start: i64::MIN,
+                end: Some(e.at),
+            }),
+            _ if open => {}
+            "turn.start" => spans.push(TurnSpan {
+                start: e.at,
+                end: None,
+            }),
+            _ if reattached => spans.push(TurnSpan {
+                start: e.at,
+                end: None,
+            }),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Whether `at` falls in a turn of the chat. A chat with no turn records in
+/// the window counts as in a turn throughout: nothing at the harness-child
+/// tier is hidden on a guess (review X4).
+fn in_turn(spans: &HashMap<String, Vec<TurnSpan>>, chat: &str, at: i64) -> bool {
+    match spans.get(chat) {
+        None => true,
+        Some(list) => list
+            .iter()
+            .any(|s| at >= s.start && s.end.is_none_or(|end| at <= end)),
+    }
+}
+
 /// Where in a chat's process tree an event came from. The collector says
 /// `root` or `child`; the check splits `child` by tool windows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -589,6 +651,10 @@ fn hideable_write_place(path: &str, folders: &[String]) -> bool {
 
 /// The rule that makes a flag expected, or `None`. Only for `root` and
 /// `harness-child` events; never for a tool's (Mac test 3.7, 3.9, 3.11).
+/// A harness child counts only outside every turn: the tier rests on tool
+/// call records from the webview, and a missing or late one (a reload, a
+/// re-attached turn) leaves a tool's processes looking like the harness's
+/// (review X4).
 fn expected_rule(
     event: &ActivityEvent,
     tier: Tier,
@@ -596,8 +662,9 @@ fn expected_rule(
     harness: &str,
     folders: &[String],
     forked_by_root: bool,
+    during_turn: bool,
 ) -> Option<&'static str> {
-    if tier == Tier::Tool {
+    if tier == Tier::Tool || (tier == Tier::HarnessChild && during_turn) {
         return None;
     }
     let exe = str_field(event, "exe").unwrap_or("");
@@ -849,6 +916,7 @@ pub fn run_full(input: &CheckInput) -> CheckOutput {
     let windows = tool_windows(input.events);
     let runtimes = runtime_spans(input.events);
     let tree = Tree::new(input.events, &windows);
+    let turns = turn_spans(input.events);
 
     for event in input.events {
         if event.chat_id.is_empty() {
@@ -1026,8 +1094,16 @@ pub fn run_full(input: &CheckInput) -> CheckOutput {
             let forked_by_root = event
                 .pid
                 .is_some_and(|pid| tree.forked_by_root(&event.chat_id, pid, event.at));
-            if let Some(rule) = expected_rule(event, tier, reason, harness, folders, forked_by_root)
-            {
+            let during_turn = in_turn(&turns, &event.chat_id, event.at);
+            if let Some(rule) = expected_rule(
+                event,
+                tier,
+                reason,
+                harness,
+                folders,
+                forked_by_root,
+                during_turn,
+            ) {
                 *suppressed.entry(rule.to_string()).or_default() += 1;
                 hidden.push(Candidate {
                     event,
@@ -1976,6 +2052,10 @@ mod tests {
     #[test]
     fn expected_harness_reads_are_not_flags() {
         let events = [
+            // A turn that ended before: what follows is outside every turn
+            // (review X4).
+            turn("t0", 0, "turn.start"),
+            turn("t9", 0, "turn.end"),
             proc_ev(
                 "k1",
                 1,
@@ -2134,6 +2214,10 @@ mod tests {
         // `security` run by a shell the harness started is then not the
         // harness's own sign-in read, and must still flag.
         let events = [
+            // A turn that ended before: what follows is outside every turn
+            // (review X4).
+            turn("t0", 0, "turn.start"),
+            turn("t9", 0, "turn.end"),
             proc_ev(
                 "f1",
                 100,
@@ -2188,6 +2272,10 @@ mod tests {
     #[test]
     fn shell_rc_and_launch_agent_writes_are_never_hidden() {
         let events = [
+            // A turn that ended before: what follows is outside every turn
+            // (review X4).
+            turn("t0", 0, "turn.start"),
+            turn("t9", 0, "turn.end"),
             proc_ev(
                 "rc",
                 1,
