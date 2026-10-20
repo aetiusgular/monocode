@@ -271,7 +271,8 @@ impl Core {
         self.lock().on.contains(chat)
     }
 
-    /// The bridge token for a chat once it has been switched on in this run.
+    /// The chat's bridge token, if it has one. Spawns take `mint_token`.
+    #[cfg(test)]
     pub fn token(&self, chat: &str) -> Option<String> {
         self.lock().tokens.get(chat).cloned()
     }

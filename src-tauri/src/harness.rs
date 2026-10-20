@@ -71,9 +71,15 @@ struct HarnessSseBatch {
 /// child prints while the page reloads exists only here.
 const REPLAY_MAX_LINES: usize = 4000;
 const REPLAY_MAX_BYTES: usize = 4 << 20;
-/// Logs of children that exited and were never forgotten. Each still holds
-/// its tail and exit for a page that comes back; the oldest go first.
+/// Logs of children that exited and were never forgotten, at most. Each
+/// still holds its tail and exit for a page that comes back; the oldest go
+/// first.
 const REPLAY_MAX_EXITED: usize = 16;
+/// How long an exited child's log is kept: long enough for a page that is
+/// reloading now (security review X15).
+const REPLAY_EXITED_TTL: Duration = Duration::from_secs(5 * 60);
+/// All logs together, running and exited. Past it the oldest exited go.
+const REPLAY_TOTAL_BYTES: usize = 64 << 20;
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -118,6 +124,8 @@ struct ReplayLog {
     dropped_through: u64,
     last_seq: u64,
     exit: Option<ReplayExit>,
+    /// When the exit was recorded, for `REPLAY_EXITED_TTL`.
+    exited_at: Option<Instant>,
 }
 
 /// One counter for every session, so sequence numbers only grow, even for a
@@ -130,6 +138,7 @@ struct ReplayLogs {
 
 impl ReplayLogs {
     fn begin(&mut self, session_id: &str, pid: u32) {
+        self.expire();
         self.logs.insert(
             session_id.to_string(),
             ReplayLog {
@@ -139,8 +148,47 @@ impl ReplayLogs {
                 dropped_through: 0,
                 last_seq: self.seq,
                 exit: None,
+                exited_at: None,
             },
         );
+    }
+
+    fn total_bytes(&self) -> usize {
+        self.logs.values().map(|log| log.bytes).sum()
+    }
+
+    /// Drops exited logs past `REPLAY_EXITED_TTL`. Checked on each access
+    /// and insert, so nothing needs a timer.
+    fn expire(&mut self) {
+        let now = Instant::now();
+        self.logs.retain(|_, log| {
+            log.exited_at
+                .is_none_or(|at| now.duration_since(at) < REPLAY_EXITED_TTL)
+        });
+    }
+
+    /// Drops the oldest exited logs while all logs hold more than
+    /// `REPLAY_TOTAL_BYTES`. A running child's log is never dropped here;
+    /// each is held to `REPLAY_MAX_BYTES` already.
+    fn cap_total(&mut self) {
+        let mut total = self.total_bytes();
+        if total <= REPLAY_TOTAL_BYTES {
+            return;
+        }
+        let mut exited: Vec<(u64, String)> = self
+            .logs
+            .iter()
+            .filter_map(|(id, log)| log.exit.map(|exit| (exit.seq, id.clone())))
+            .collect();
+        exited.sort();
+        for (_, id) in exited {
+            if total <= REPLAY_TOTAL_BYTES {
+                break;
+            }
+            if let Some(log) = self.logs.remove(&id) {
+                total -= log.bytes;
+            }
+        }
     }
 
     /// Numbers `count` items in a row and returns the first number.
@@ -172,6 +220,7 @@ impl ReplayLogs {
             log.bytes -= dropped.line.len();
             log.dropped_through = dropped.seq;
         }
+        self.cap_total();
         first
     }
 
@@ -179,6 +228,7 @@ impl ReplayLogs {
         let seq = self.take_seqs(1);
         if let Some(log) = self.logs.get_mut(session_id).filter(|log| log.pid == pid) {
             log.exit = Some(ReplayExit { code, pid, seq });
+            log.exited_at = Some(Instant::now());
             log.last_seq = seq;
         }
         let mut exited: Vec<(u64, String)> = self
@@ -203,7 +253,8 @@ impl ReplayLogs {
         self.logs.retain(|id, _| keep.contains(id));
     }
 
-    fn live(&self) -> Vec<LiveSessionInfo> {
+    fn live(&mut self) -> Vec<LiveSessionInfo> {
+        self.expire();
         let mut rows: Vec<LiveSessionInfo> = self
             .logs
             .iter()
@@ -218,7 +269,8 @@ impl ReplayLogs {
         rows
     }
 
-    fn replay(&self, session_id: &str, after_seq: u64) -> Option<HarnessReplay> {
+    fn replay(&mut self, session_id: &str, after_seq: u64) -> Option<HarnessReplay> {
+        self.expire();
         let log = self.logs.get(session_id)?;
         let entries: Vec<ReplayEntry> = log
             .entries
@@ -4760,5 +4812,63 @@ mod replay_tests {
         assert!(logs
             .replay(&format!("chat{}", REPLAY_MAX_EXITED + 2), 0)
             .is_some());
+    }
+
+    /// Moves a log's exit back in time, as if it exited `ago` earlier.
+    fn age(logs: &mut ReplayLogs, id: &str, ago: Duration) {
+        let log = logs.logs.get_mut(id).unwrap();
+        log.exited_at = Some(Instant::now().checked_sub(ago).unwrap());
+    }
+
+    #[test]
+    fn an_exited_log_is_dropped_five_minutes_after_its_exit() {
+        // Security review X15: an exited log is for a page reloading now,
+        // not for the rest of the app run.
+        let mut logs = ReplayLogs::default();
+        logs.begin("old", 1);
+        logs.push_lines("old", 1, &lines(0..2));
+        logs.push_exit("old", 1, Some(0));
+        logs.begin("recent", 2);
+        logs.push_exit("recent", 2, Some(0));
+        logs.begin("running", 3);
+        age(&mut logs, "old", REPLAY_EXITED_TTL + Duration::from_secs(1));
+        age(
+            &mut logs,
+            "recent",
+            REPLAY_EXITED_TTL - Duration::from_secs(30),
+        );
+        assert!(logs.replay("old", 0).is_none(), "dropped on access");
+        assert!(logs.replay("recent", 0).is_some());
+        let ids: Vec<String> = logs.live().into_iter().map(|r| r.session_id).collect();
+        assert_eq!(ids, vec!["recent".to_string(), "running".to_string()]);
+        // A running log never expires.
+        logs.logs.get_mut("running").unwrap().exited_at = None;
+        age(&mut logs, "recent", REPLAY_EXITED_TTL * 2);
+        logs.begin("next", 4);
+        assert!(!logs.logs.contains_key("recent"), "dropped on insert");
+        assert!(logs.replay("running", 0).is_some());
+    }
+
+    #[test]
+    fn all_logs_together_stay_under_the_byte_cap_oldest_exited_first() {
+        let mut logs = ReplayLogs::default();
+        let full = "x".repeat(REPLAY_MAX_BYTES);
+        let exited = REPLAY_TOTAL_BYTES / REPLAY_MAX_BYTES;
+        for i in 0..exited {
+            let id = format!("chat{i}");
+            logs.begin(&id, i as u32 + 1);
+            logs.push_lines(&id, i as u32 + 1, std::slice::from_ref(&full));
+            logs.push_exit(&id, i as u32 + 1, Some(0));
+        }
+        assert_eq!(logs.total_bytes(), REPLAY_TOTAL_BYTES);
+        assert!(logs.replay("chat0", 0).is_some());
+        // A running child's output takes the total over: the oldest exited
+        // log goes, never the running one.
+        logs.begin("running", 999);
+        logs.push_lines("running", 999, &lines(0..3));
+        assert!(logs.total_bytes() <= REPLAY_TOTAL_BYTES);
+        assert!(logs.replay("chat0", 0).is_none());
+        assert!(logs.replay("chat1", 0).is_some());
+        assert_eq!(logs.replay("running", 0).unwrap().entries.len(), 3);
     }
 }
