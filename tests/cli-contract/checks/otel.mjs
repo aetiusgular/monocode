@@ -3,8 +3,9 @@
 // MonoCode starts it?
 //
 // The environment and flags mirror `src-tauri/src/otel_receiver/harness_env.rs`
-// (`claude_env`, `codex_args`, `codex_env`); keep the two in step. The token
-// goes in the environment only. The receiver here is a stand-in in Node that
+// (`claude_env`, `headers_helper_script`, `settings_with_helper`,
+// `codex_args`, `codex_shell_env_args`, `codex_env`); keep the two in step.
+// The token never goes in an argument. The receiver here is a stand-in in Node that
 // records each request; the real receiver's decoding is covered by its Rust
 // tests, which also decode the payloads this check saves when
 // OTEL_FIXTURES_DIR is set.
@@ -25,7 +26,10 @@ import { CodexClient, makeTempDirs, userInput } from "../lib/codexDriver.mjs";
 
 const TOKEN_HEADER = "x-monocode-token";
 
-/** `claude_env` in harness_env.rs. */
+/**
+ * `claude_env` in harness_env.rs plus `claude_header_var`: the header
+ * variable is now only the fallback where no helper script can be made.
+ */
 export function claudeEnv(endpoint, token, logPrompts) {
   const env = {
     CLAUDE_CODE_ENABLE_TELEMETRY: "1",
@@ -38,6 +42,22 @@ export function claudeEnv(endpoint, token, logPrompts) {
   };
   if (logPrompts) env.OTEL_LOG_USER_PROMPTS = "1";
   return env;
+}
+
+/**
+ * `claude_env` with the header helper (Mac test 2.6): no header variable;
+ * the token reaches Claude Code only through `otelHeadersHelper` in
+ * `--settings`, a script that prints `{"x-monocode-token":"<token>"}`.
+ */
+export function claudeHelperEnv(endpoint, logPrompts) {
+  const env = claudeEnv(endpoint, "", logPrompts);
+  delete env.OTEL_EXPORTER_OTLP_HEADERS;
+  return env;
+}
+
+/** The helper script, as `headers_helper_script` in harness_env.rs writes it. */
+export function headersHelperScript(token) {
+  return `#!/bin/sh\nprintf '%s\\n' '{"${TOKEN_HEADER}":"${token}"}'\n`;
 }
 
 /** `codex_args` in harness_env.rs. */
@@ -53,6 +73,13 @@ export function codexArgs(endpoint, logPrompts) {
     `otel.log_user_prompt=${logPrompts}`,
   ];
 }
+
+/** `codex_shell_env_args` in harness_env.rs, for a home with no policy. */
+export function codexShellEnvArgs() {
+  return ["-c", `shell_environment_policy.exclude=${JSON.stringify(CODEX_TOKEN_VARS).replace(/,/g, ", ")}`];
+}
+
+const CODEX_TOKEN_VARS = ["OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_LOGS_HEADERS", "OTEL_EXPORTER_OTLP_METRICS_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS"];
 
 /** `codex_env` in harness_env.rs. */
 export function codexEnv(token) {
@@ -197,6 +224,55 @@ async function claudeExport({ claudePath, version }) {
   return verdict("Claude Code", receiver.requests, records, (r) => r.name.endsWith("tool_result") && r.attrs.tool_name === "Bash");
 }
 
+async function claudeHelperExport({ claudePath, version }) {
+  const token = randomBytes(32).toString("hex");
+  const receiver = await startStandInReceiver(token);
+  const dirs = makeTempDirs("otel-claude-helper-");
+  const fake = await startFakeMessages({
+    script: (body) => {
+      if (claudeSide(body)) return [textBlock("Telemetry check")];
+      const hasResult = JSON.stringify(body.messages ?? []).includes("tool_result");
+      return hasResult ? [textBlock("done")] : [toolUse("Bash", { command: "echo telemetry-check", description: "Print a word" })];
+    },
+  });
+  // A space in the path, as in macOS's "Application Support".
+  const helperDir = path.join(dirs.root, "app data", "otel-helper");
+  mkdirSync(path.dirname(helperDir), { recursive: true });
+  mkdirSync(helperDir, { mode: 0o700 });
+  const helper = path.join(helperDir, "headers.sh");
+  writeFileSync(helper, headersHelperScript(token), { mode: 0o700, flag: "wx" });
+  const launcher = wrapper(dirs.root, claudePath, claudeHelperEnv(receiver.endpoint, false), ["DISABLE_TELEMETRY", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "DO_NOT_TRACK", "OTEL_EXPORTER_OTLP_HEADERS"]);
+  // As the app does it (`claude_settings_with_helper`): MonoCode's own
+  // --settings stays, and a second, merged copy with the helper goes last.
+  // Claude Code reads only the last --settings.
+  const merged = JSON.stringify({ env: { CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" }, otelHeadersHelper: helper });
+  const session = new ClaudeSession({ claudePath: launcher, dirs, baseUrl: fake.url ?? fake.baseUrl, args: ["--settings", merged] });
+  let bashSawToken = null;
+  try {
+    const { events } = await session.send("Run the check command.", 120000);
+    // Does the agent's own shell see a header variable? It must not.
+    const out = JSON.stringify(events);
+    bashSawToken = out.includes(token);
+    await waitUntil(() => logRecords(receiver.requests).some((r) => r.name.endsWith("tool_result")), 15000);
+  } finally {
+    await session.close();
+    await waitUntil(() => false, 1500);
+    await fake.close?.();
+    await receiver.close();
+  }
+  const records = logRecords(receiver.requests);
+  const result = verdict("Claude Code (headers helper)", receiver.requests, records, (r) => r.name.endsWith("tool_result") && r.attrs.tool_name === "Bash");
+  if (bashSawToken) {
+    result.status = "fail";
+    result.finding += " The token appeared in the session's output.";
+  }
+  if (!result.exports) {
+    result.status = "fail";
+    result.finding += ` otelHeadersHelper from --settings did not reach the receiver (${String(version ?? "").split(" ")[0]}).`;
+  }
+  return result;
+}
+
 async function codexExport({ codexPath }) {
   const token = randomBytes(32).toString("hex");
   const receiver = await startStandInReceiver(token);
@@ -205,11 +281,13 @@ async function codexExport({ codexPath }) {
     script: (body, n) => {
       if (codexSide(body)) return [text("Telemetry check")];
       const hasOutput = (body.input ?? []).some((i) => i?.type === "function_call_output");
-      return hasOutput ? [text("done")] : [call("exec_command", { cmd: "echo telemetry-check" }, "otel1")];
+      return hasOutput ? [text("done")] : [call("exec_command", { cmd: "echo telemetry-check; env | grep -ci '^OTEL_EXPORTER_OTLP_[A-Z_]*HEADERS=' || true" }, "otel1")];
     },
   });
   const launcher = wrapper(dirs.root, codexPath, codexEnv(token), []);
-  const client = new CodexClient({ codexPath: launcher, dirs, baseUrl: fake.url ?? fake.baseUrl, args: codexArgs(receiver.endpoint, false) });
+  // OTEL_CHECK_NO_EXCLUDE=1 drops the excludes, to see the check fail
+  // (0.161.0: "A shell command saw 2 header variable(s)").
+  const client = new CodexClient({ codexPath: launcher, dirs, baseUrl: fake.url ?? fake.baseUrl, args: [...codexArgs(receiver.endpoint, false), ...(process.env.OTEL_CHECK_NO_EXCLUDE ? [] : codexShellEnvArgs())] });
   try {
     await client.initialize();
     const started = await client.request("thread/start", { cwd: dirs.work, approvalPolicy: "on-request", sandbox: "danger-full-access", approvalsReviewer: "user" });
@@ -224,6 +302,23 @@ async function codexExport({ codexPath }) {
   saveFixtures("codex", receiver.requests);
   const records = logRecords(receiver.requests);
   const result = verdict("Codex", receiver.requests, records, (r) => r.name.endsWith("tool_result"));
+  // The command's output, as the model got it: how many header variables
+  // its shell saw. Mac test 2.6: none.
+  const outputs = (fake.requests ?? [])
+    .flatMap((r) => r.body?.input ?? [])
+    .filter((i) => i?.type === "function_call_output")
+    .map((i) => (typeof i.output === "string" ? i.output : JSON.stringify(i.output)));
+  const shellSawToken = outputs.some((o) => o.includes(token));
+  const counted = outputs.join("\n").match(/telemetry-check\s*(?:\\n|\n)+\s*(\d+)/);
+  result.seen.shellHeaderVars = counted ? Number(counted[1]) : null;
+  if (shellSawToken || (counted && Number(counted[1]) > 0)) {
+    result.status = "fail";
+    result.finding += ` A shell command saw ${counted ? counted[1] : "the"} header variable(s).`;
+  } else if (counted) {
+    result.finding += " Shell commands saw no header variable.";
+  } else {
+    result.finding += " Could not read the command's output to check its environment.";
+  }
   if (!result.exports) result.finding += " The npm build may lack the `otel` feature, or app-server mode does not export.";
   return result;
 }
@@ -234,4 +329,5 @@ export const otelCodexChecks = [
 
 export const otelClaudeChecks = [
   { id: "otel-claude", title: "Claude Code exports log events to the receiver with the chat's token", flag: "harness telemetry (A2)", run: claudeExport },
+  { id: "otel-claude-helper", title: "Claude Code sends the token from otelHeadersHelper in --settings, with no header variable", flag: "harness telemetry (Mac 2.6)", run: claudeHelperExport },
 ];

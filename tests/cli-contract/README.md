@@ -37,6 +37,7 @@ Claude Code reads `CLAUDE.md`, `.claude/CLAUDE.md` and `CLAUDE.local.md` from ev
 | `checks/codex.mjs` | The Codex checks |
 | `checks/claude.mjs` | The Claude Code checks |
 | `checks/claudeGitAsk.mjs` | The `git-ask` check: Claude Code's read-only git commands in a partial clone with a planted `uploadpack`, with and without MonoCode's `Bash(git:*)` ask rule, in every permission mode (Mac test 10.1) |
+| `checks/otel.mjs` | Harness telemetry: each CLI exports to a stand-in receiver with the chat's token; `otel-claude-helper` sends it through `otelHeadersHelper` in `--settings` with no header variable; `otel-codex` also checks that Codex's shell commands see no header variable |
 | `lib/fakeResponses.mjs` | Fake OpenAI Responses API, streaming |
 | `lib/fakeMessages.mjs` | Fake Anthropic Messages API, streaming |
 | `lib/codexDriver.mjs` | Starts `codex app-server` and speaks its JSON-RPC as MonoCode does |

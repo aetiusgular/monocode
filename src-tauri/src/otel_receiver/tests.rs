@@ -506,3 +506,51 @@ fn an_error_reply_survives_unread_input() {
         String::from_utf8_lossy(&reply)
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn the_headers_helper_is_private_new_and_prints_the_header() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("otel-helper-{}", uuid::Uuid::new_v4()));
+    let dir = root.join("otel-helper");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("stale.sh"), "old").unwrap();
+    fresh_private_dir(&dir).unwrap();
+    assert!(!dir.join("stale.sh").exists());
+    assert_eq!(
+        std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    let token = "0123456789abcdef0123456789abcdef";
+    let path = write_helper(&dir, token).unwrap();
+    assert!(!path.to_string_lossy().contains(token));
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    let out = Command::new(&path).output().unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value[harness_env::TOKEN_HEADER], token);
+    // Never over an existing file, and never through a link.
+    assert!(write_helper(&dir, token).is_err());
+    let other = "fedcba9876543210fedcba9876543210";
+    let target = root.join("target");
+    std::fs::write(&target, "x").unwrap();
+    let name: String = hash(other)[..12]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    std::os::unix::fs::symlink(&target, dir.join(format!("{name}.sh"))).unwrap();
+    assert!(write_helper(&dir, other).is_err());
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
+    // A link in the folder's place is removed, not followed.
+    let elsewhere = root.join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("keep"), "k").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &dir).unwrap();
+    fresh_private_dir(&dir).unwrap();
+    assert!(elsewhere.join("keep").exists());
+    assert!(std::fs::symlink_metadata(&dir).unwrap().is_dir());
+    std::fs::remove_dir_all(&root).unwrap();
+}

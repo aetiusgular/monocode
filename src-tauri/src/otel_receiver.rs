@@ -7,8 +7,10 @@
 //!
 //! - Listens on 127.0.0.1 only, on a free port, started on first use. It
 //!   makes no outbound call of any kind.
-//! - Each chat gets its own random token, put in its harness's environment,
-//!   never in an argument (`harness_env`). A request without a known token is
+//! - Each chat gets its own random token, never in an argument
+//!   (`harness_env`): Claude Code reads it from an `otelHeadersHelper`
+//!   script in a private folder, Codex from its environment, which its
+//!   shell commands do not inherit. A request without a known token is
 //!   refused before any of its body is read. The token names the chat, so a
 //!   process can only post into the chat whose token it holds.
 //! - Requests whose `Host` is not this listener are refused (DNS rebinding),
@@ -669,12 +671,26 @@ pub fn apply_to_child(
     };
     let endpoint = receiver.endpoint();
     if harness == "claude" {
-        let (set, remove) = harness_env::claude_env(&endpoint, &token, log_prompts);
+        let (set, remove) = harness_env::claude_env(&endpoint, log_prompts);
         for name in remove {
             cmd.env_remove(name);
         }
         for (k, v) in set {
             cmd.env(k, v);
+        }
+        // The token through `otelHeadersHelper`, as Claude Code's docs ask;
+        // the header variable only where the script cannot be made.
+        let settings = helper_for(app, &token)
+            .and_then(|helper| harness_env::settings_with_helper(args, &helper.to_string_lossy()));
+        match settings {
+            Some(settings) => {
+                cmd.env_remove("OTEL_EXPORTER_OTLP_HEADERS");
+                cmd.args(["--settings", &settings]);
+            }
+            None => {
+                let (k, v) = harness_env::claude_header_var(&token);
+                cmd.env(k, v);
+            }
         }
     } else {
         cmd.args(harness_env::codex_args(&endpoint, log_prompts));
@@ -683,6 +699,83 @@ pub fn apply_to_child(
             cmd.env(k, v);
         }
     }
+}
+
+/// This app run's helper scripts, by token hash. The folder is emptied on
+/// first use, so a token from an earlier run is never left on disk past it.
+/// The folder, once made, and each token's script.
+#[derive(Default)]
+struct Helpers {
+    dir: Option<std::path::PathBuf>,
+    scripts: HashMap<[u8; 32], std::path::PathBuf>,
+}
+
+static HELPERS: OnceLock<Mutex<Helpers>> = OnceLock::new();
+
+/// The chat's `otelHeadersHelper` script, written once per app run.
+#[cfg(unix)]
+fn helper_for(app: &tauri::AppHandle, token: &str) -> Option<std::path::PathBuf> {
+    use tauri::Manager;
+    let helpers = HELPERS.get_or_init(Default::default);
+    let mut helpers = helpers.lock().ok()?;
+    if let Some(path) = helpers.scripts.get(&hash(token)) {
+        return Some(path.clone());
+    }
+    let dir = match &helpers.dir {
+        Some(dir) => dir.clone(),
+        None => {
+            let dir = app.path().app_data_dir().ok()?.join("otel-helper");
+            fresh_private_dir(&dir).ok()?;
+            helpers.dir = Some(dir.clone());
+            dir
+        }
+    };
+    let path = write_helper(&dir, token).ok()?;
+    helpers.scripts.insert(hash(token), path.clone());
+    Some(path)
+}
+
+#[cfg(not(unix))]
+fn helper_for(_app: &tauri::AppHandle, _token: &str) -> Option<std::path::PathBuf> {
+    None
+}
+
+/// Empties `dir` (a link there is removed, never followed) and makes it
+/// again, 0700.
+#[cfg(unix)]
+fn fresh_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    match std::fs::symlink_metadata(dir) {
+        Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(dir)?,
+        Ok(_) => std::fs::remove_file(dir)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    if let Some(parent) = dir.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::DirBuilder::new().mode(0o700).create(dir)
+}
+
+/// One chat's script in `dir`: a new file (never an existing one or a link),
+/// 0700, named by a hash so the name says nothing of the token.
+#[cfg(unix)]
+fn write_helper(dir: &std::path::Path, token: &str) -> std::io::Result<std::path::PathBuf> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let name: String = hash(token)[..12]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let path = dir.join(format!("{name}.sh"));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o700)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path)?;
+    file.write_all(harness_env::headers_helper_script(token).as_bytes())?;
+    file.sync_all()?;
+    Ok(path)
 }
 
 /// The switch, the prompt text switch, and which sessions are chats. Takes
