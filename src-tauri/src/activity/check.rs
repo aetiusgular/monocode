@@ -178,8 +178,6 @@ fn data_sub(data_dir: Option<&str>, sub: &str) -> Option<String> {
 /// credentials and `.claude.json` stay guarded.
 const HARNESS_HOME_NOISE: &[&str] = &[
     "projects",
-    "shell-snapshots",
-    "session-env",
     "file-history",
     "todos",
     "statsig",
@@ -191,8 +189,24 @@ const HARNESS_HOME_NOISE: &[&str] = &[
     "log",
     "logs",
     "tmp",
-    "shell_snapshots",
 ];
+
+/// Folders inside a harness home whose files the harness runs as code:
+/// Claude Code runs a shell-snapshots file and the session-env scripts
+/// before each Bash command (Claude Code 2.1.304 strings), and Codex sources
+/// its shell_snapshots file (codex-rs/core/src/shell_snapshot.rs:1010). A
+/// write there is never noise, in `~/.claude`, `~/.codex` or the data
+/// folder's harness homes (review Y1).
+const HARNESS_RUNS: &[&str] = &["shell-snapshots", "session-env", "shell_snapshots"];
+
+/// Whether `path` sits in a folder of `HARNESS_RUNS` under the harness home
+/// that starts at `home_dir`.
+fn harness_runs(path: &str, home_dir: &str) -> bool {
+    path.to_ascii_lowercase()
+        .strip_prefix(&format!("{}/", home_dir.to_ascii_lowercase()))
+        .and_then(|rest| rest.split('/').next())
+        .is_some_and(|first| HARNESS_RUNS.contains(&first))
+}
 
 /// The only writes in the data folder that are noise: a harness home's
 /// session state, `provider-accounts/<provider>/<id>/<state>` or
@@ -266,10 +280,10 @@ pub fn noise_path(path: &str, granted_app: bool, data_dir: Option<&str>) -> bool
         "Library/Caches",
         "Library/Logs",
     ];
-    if HARNESS
-        .iter()
-        .any(|rel| inside(path, &format!("{home}/{rel}")))
-    {
+    if HARNESS.iter().any(|rel| {
+        let dir = format!("{home}/{rel}");
+        inside(path, &dir) && !harness_runs(path, &dir)
+    }) {
         return true;
     }
     if path.starts_with(&format!("{home}/.claude.json")) {
@@ -2691,6 +2705,36 @@ mod tests {
         let ids: Vec<&str> = out.flags.iter().map(|f| f.event_id.as_str()).collect();
         assert_eq!(ids, vec!["d", "e", "f", "g"]);
         assert_eq!(out.suppressed.get(RULE_CREDENTIAL_OWNER), Some(&3));
+    }
+
+    #[test]
+    fn shell_snapshots_the_harness_runs_are_never_noise() {
+        // Claude Code runs a file from shell-snapshots (and the scripts in
+        // session-env) before every Bash command; Codex sources its
+        // shell_snapshots file (codex-rs/core/src/shell_snapshot.rs:1010).
+        // Code planted there runs on every later command (review Y1).
+        let data = DATA;
+        for path in [
+            format!("{data}/provider-accounts/claude/a1/shell-snapshots/snapshot-zsh-1.sh"),
+            format!("{data}/provider-accounts/claude/a1/session-env/x/hook.sh"),
+            format!("{data}/codex-monos/m1/shell_snapshots/s.sh"),
+            "/Users/t/.claude/shell-snapshots/snapshot-zsh-1.sh".to_string(),
+            "/Users/t/.claude/session-env/x/hook.sh".to_string(),
+            "/Users/t/.codex/shell_snapshots/s.sh".to_string(),
+        ] {
+            assert!(!noise_path(&path, false, Some(data)), "{path}");
+        }
+        // Their transcripts and logs stay noise.
+        assert!(noise_path(
+            "/Users/t/.claude/projects/p/s.jsonl",
+            false,
+            Some(data)
+        ));
+        assert!(noise_path(
+            &format!("{data}/codex-monos/m1/logs/x.log"),
+            false,
+            Some(data)
+        ));
     }
 
     #[test]
