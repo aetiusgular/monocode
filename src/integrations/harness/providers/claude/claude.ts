@@ -66,6 +66,8 @@ import {
   runtimeModeToPermission,
   sessionIdFromMessage,
   statusTextFromSystem,
+  resultUserMessageUuids,
+  sessionStateFromSystem,
   streamDeltaFromEvent,
   stringField,
   summarizeToolRequest,
@@ -242,6 +244,18 @@ type Live = {
   /** TaskCreate/TaskUpdate items, keyed by Claude's task id. */
   claudeTasks: Map<string, TaskListItem>;
   turnResultSeen: boolean;
+  /**
+   * The uuids of the user messages this turn sent: its prompt and steers. A
+   * result naming none of them answers an earlier, stopped prompt (Mac 2.8).
+   */
+  turnUuids: Set<string>;
+  /**
+   * Claude Code sends `session_state_changed`. From then on its `idle`, not
+   * the result, ends the turn; before, the result does (older CLIs).
+   */
+  sessionStates: boolean;
+  /** The last state it reported was `idle`. */
+  claudeIdle: boolean;
   /** Latest `rate_limit_event` refused requests; reported when the turn ends. */
   usageLimit: { resetsAt?: number } | null;
   cancelled: boolean;
@@ -426,13 +440,16 @@ export async function steerClaudeTurn(input: SteerTurnInput): Promise<void> {
   const live = liveByThread.get(input.sessionId);
   if (!live?.activeTurn) throw new TurnNotReadyError("No active turn to steer");
 
+  const uuid = crypto.randomUUID();
   const message = buildClaudeUserMessage({
     text: input.text,
     attachments: input.attachments,
     effort: input.modelSettings?.effort,
+    uuid,
   });
   const content = (message.message as { content: unknown[] }).content;
   if (content.length === 0) return;
+  live.turnUuids.add(uuid);
 
   await writeJson(input.sessionId, message);
 }
@@ -847,6 +864,9 @@ async function ensureLive(
     taskNotes: [],
     claudeTasks,
     turnResultSeen: false,
+    turnUuids: new Set(),
+    sessionStates: false,
+    claudeIdle: false,
     usageLimit: null,
     cancelled: false,
     muteUpdates: false,
@@ -936,10 +956,12 @@ async function ensureLive(
 
 async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
   const effort = input.modelSettings?.effort;
+  const uuid = crypto.randomUUID();
   const message = buildClaudeUserMessage({
     text: input.text,
     attachments: input.attachments,
     effort,
+    uuid,
   });
   const content = (message.message as { content: unknown[] }).content;
   if (content.length === 0) return;
@@ -957,6 +979,9 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
   live.backgroundKey = "";
   live.taskNotes = [];
   live.turnResultSeen = false;
+  live.turnUuids = new Set([uuid]);
+  // An idle still to come from a stopped turn must not count for this one.
+  live.claudeIdle = false;
 
   const turnPromise = new Promise<void>((resolve, reject) => {
     live.turnDone = resolve;
@@ -1119,6 +1144,11 @@ function handleLine(sessionId: string, live: Live, line: string): void {
     return;
   }
   if (type === "system") {
+    const sessionState = sessionStateFromSystem(rec);
+    if (sessionState) {
+      noteSessionState(live, sessionState);
+      return;
+    }
     const text = statusTextFromSystem(rec);
     if (text) {
       if ((stringField(rec, "subtype") ?? "").startsWith("compact")) {
@@ -1371,6 +1401,12 @@ function settleInlineAgentTask(live: Live, toolUseId: string): void {
 
 function handleResult(live: Live, rec: Record<string, unknown>): void {
   if (isSubagentMessage(rec)) return;
+  // A result for a prompt this turn did not send: the stopped turn's, late.
+  // Before the next prompt it found no turn to end; after it, it ended the
+  // new one (Mac 2.8). A result naming no prompt (an older CLI, a turn woken
+  // by a background task) still counts.
+  const answers = resultUserMessageUuids(rec);
+  if (answers && !answers.some((uuid) => live.turnUuids.has(uuid))) return;
   // A /compact result reports the summarizer call's usage, not the rebuilt
   // conversation level. The next real turn will provide the fresh reading.
   if (!live.manualCompaction) {
@@ -2315,8 +2351,25 @@ function syncBackgroundWait(live: Live): void {
   live.onEvent({ type: "background.updated", tasks: waiting });
 }
 
+/**
+ * Claude Code's own state. `idle` ends the turn once its result is in;
+ * `requires_action` waits on the user and never ends it.
+ */
+function noteSessionState(
+  live: Live,
+  state: "idle" | "running" | "requires_action",
+): void {
+  live.sessionStates = true;
+  live.claudeIdle = state === "idle";
+  if (state === "idle") {
+    maybeFinishTurn(live);
+    syncBackgroundWait(live);
+  }
+}
+
 function maybeFinishTurn(live: Live): void {
   if (!live.turnResultSeen) return;
+  if (live.sessionStates && !live.claudeIdle) return;
   if (live.agentTasks.size > 0 || live.backgroundTasks.size > 0) return;
   if (live.awaitingResume) return;
   if (!live.activeTurn && !live.turnDone) return;

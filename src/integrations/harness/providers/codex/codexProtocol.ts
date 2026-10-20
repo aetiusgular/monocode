@@ -852,8 +852,10 @@ export function mapCodexNotification(
   if (method === "turn/started") {
     const turn = asRecord(rec.turn);
     const turnId = stringField(turn, "id");
+    // The start, whatever order it comes in against the turn/start reply
+    // (Mac test 2.2). The adapter sends it once per turn.
     return {
-      events: [],
+      events: turnId ? [{ type: "turn.started", providerTurnId: turnId }] : [],
       ...(turnId ? { activeTurnId: turnId } : {}),
     };
   }

@@ -28,7 +28,7 @@ export const TAPPED_EVENT_TYPES: ReadonlySet<HarnessEvent["type"]> = new Set([
   "approval.requested",
   "approval.resolved",
   "turn.started",
-  "turn.ready",
+  "turn.completed",
   "session.ended",
   "session.error",
 ]);
@@ -42,4 +42,15 @@ export function tapHarnessEvent(sessionId: string, event: HarnessEvent): void {
     event,
     Date.now(),
   );
+}
+
+/**
+ * A turn's end, from the registry's observer. It reaches the feed after the
+ * turn's other events: those are tapped from the event queue in a promise
+ * callback, and a timer runs after all of them. Not through the queue, which
+ * the chat stops feeding once the user presses Stop (Mac test 2.2).
+ */
+export function tapTurnCompleted(sessionId: string, event: HarnessEvent): void {
+  if (event.type !== "turn.completed") return;
+  setTimeout(() => tapHarnessEvent(sessionId, event), 0);
 }

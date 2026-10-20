@@ -5,7 +5,12 @@ import {
   configureHarnessTelemetry,
   listenHarnessTelemetry,
 } from "../model/telemetryBridge";
-import { setChatHarnesses, telemetryFeed } from "../model/telemetryTap";
+import {
+  setChatHarnesses,
+  tapTurnCompleted,
+  telemetryFeed,
+} from "../model/telemetryTap";
+import { observeHarnessTurns } from "../../../integrations/harness/core/registry";
 
 /** How often held adapter events are checked for writing. */
 const TICK_MS = 2000;
@@ -48,11 +53,13 @@ export function HarnessTelemetryHost({
     const stop = listenHarnessTelemetry((events) =>
       telemetryFeed.otel(events, Date.now()),
     );
+    const stopTurns = observeHarnessTurns(tapTurnCompleted);
     const timer = setInterval(() => telemetryFeed.tick(Date.now()), TICK_MS);
     const flush = () => telemetryFeed.flushAll();
     window.addEventListener("beforeunload", flush);
     return () => {
       stop();
+      stopTurns();
       clearInterval(timer);
       window.removeEventListener("beforeunload", flush);
       flush();

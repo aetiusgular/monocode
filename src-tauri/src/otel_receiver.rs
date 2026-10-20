@@ -7,8 +7,10 @@
 //!
 //! - Listens on 127.0.0.1 only, on a free port, started on first use. It
 //!   makes no outbound call of any kind.
-//! - Each chat gets its own random token, put in its harness's environment,
-//!   never in an argument (`harness_env`). A request without a known token is
+//! - Each chat gets its own random token, never in an argument
+//!   (`harness_env`): Claude Code reads it from an `otelHeadersHelper`
+//!   script in a private folder, Codex from its environment, which its
+//!   shell commands do not inherit. A request without a known token is
 //!   refused before any of its body is read. The token names the chat, so a
 //!   process can only post into the chat whose token it holds.
 //! - Requests whose `Host` is not this listener are refused (DNS rebinding),
@@ -212,6 +214,8 @@ impl Receiver {
                 self.open.fetch_sub(1, Ordering::SeqCst);
                 let mut stream = stream;
                 let _ = respond(&mut stream, 503, None);
+                // On the accept thread: drain only what is already here.
+                close_without_waiting(&stream);
                 continue;
             }
             let slot = OpenSlot(self.clone());
@@ -240,6 +244,9 @@ impl Receiver {
                         }
                     };
                     let _ = respond(&mut stream, code, kind);
+                    if code != 200 {
+                        close_gently(&stream);
+                    }
                 });
         }
     }
@@ -360,19 +367,65 @@ fn token_from(head: &Head) -> Option<String> {
         .filter(|t| !t.is_empty())
 }
 
-fn respond(stream: &mut TcpStream, status: u16, kind: Option<BodyKind>) -> std::io::Result<()> {
+/// The whole reply in one buffer and one `write_all`: written in pieces,
+/// a close right after can leave the client holding only the first of them
+/// (Mac test 0.5).
+fn respond<W: Write>(stream: &mut W, status: u16, kind: Option<BodyKind>) -> std::io::Result<()> {
     let (content_type, body): (&str, &[u8]) = match kind {
         Some(BodyKind::Protobuf) => ("application/x-protobuf", b""),
         _ => ("application/json", b"{}"),
     };
-    write!(
-        stream,
+    let mut reply = format!(
         "HTTP/1.1 {status} {}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
         reason(status),
         body.len()
-    )?;
-    stream.write_all(body)?;
+    )
+    .into_bytes();
+    reply.extend_from_slice(body);
+    stream.write_all(&reply)?;
     stream.flush()
+}
+
+const LINGER_DEADLINE: Duration = Duration::from_secs(1);
+const LINGER_BYTES: usize = 8 * 1024;
+
+/// `close_gently` for the accept thread, which must not wait: whatever
+/// input has already arrived is read, then the socket goes.
+fn close_without_waiting(stream: &TcpStream) {
+    if stream.shutdown(std::net::Shutdown::Write).is_err() || stream.set_nonblocking(true).is_err()
+    {
+        return;
+    }
+    let mut buf = [0u8; 1024];
+    let mut drained = 0;
+    let mut stream = stream;
+    while drained < LINGER_BYTES {
+        match stream.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => drained += n,
+        }
+    }
+}
+
+/// After an error reply, with the request maybe not all read: close the
+/// write side, then read what the client still sends, for a short while,
+/// until it closes. Closing at once with input unread resets the connection,
+/// and the reset can cost the client the reply (RFC 9112 section 9.6).
+/// `set_linger` is not stable, so this is done by hand.
+fn close_gently(stream: &TcpStream) {
+    if stream.shutdown(std::net::Shutdown::Write).is_err() {
+        return;
+    }
+    let deadline = Instant::now() + LINGER_DEADLINE;
+    let mut drained = 0;
+    let mut buf = [0u8; 1024];
+    let mut reader = Armed::new(stream, deadline);
+    while drained < LINGER_BYTES {
+        match reader.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => drained += n,
+        }
+    }
 }
 
 fn reason(status: u16) -> &'static str {
@@ -424,9 +477,6 @@ impl<'a> Armed<'a> {
             deadline: std::cell::Cell::new(deadline),
         }
     }
-    fn expired(&self) -> bool {
-        Instant::now() >= self.deadline.get()
-    }
 }
 
 impl Read for Armed<'_> {
@@ -446,11 +496,15 @@ impl Read for Armed<'_> {
 
 type Reader<'a> = BufReader<Armed<'a>>;
 
-fn read_failure(reader: &Reader) -> u16 {
-    if reader.get_ref().expired() {
-        408
-    } else {
-        400
+/// 408 when the read timed out, by the error's kind: a socket timeout is
+/// `WouldBlock` or `TimedOut`, and `Armed` answers `TimedOut` itself when no
+/// time is left. Re-reading the clock here could call a timeout that fired
+/// a moment early a bad request. Anything else is a bad request.
+fn read_failure(error: &std::io::Error) -> u16 {
+    use std::io::ErrorKind;
+    match error.kind() {
+        ErrorKind::WouldBlock | ErrorKind::TimedOut => 408,
+        _ => 400,
     }
 }
 
@@ -463,7 +517,7 @@ fn read_head(reader: &mut Reader) -> Result<Head, u16> {
             .by_ref()
             .take(room)
             .read_until(b'\n', &mut line)
-            .map_err(|_| read_failure(reader))?;
+            .map_err(|e| read_failure(&e))?;
         if n == 0 {
             return Err(400);
         }
@@ -504,7 +558,7 @@ fn read_body(reader: &mut Reader, head: &Head, deadline: Instant) -> Result<Vec<
                 .by_ref()
                 .take(256)
                 .read_line(&mut size_line)
-                .map_err(|_| read_failure(reader))?;
+                .map_err(|e| read_failure(&e))?;
             let size = usize::from_str_radix(size_line.trim().split(';').next().unwrap_or(""), 16)
                 .map_err(|_| 400u16)?;
             let total = body.len().checked_add(size).ok_or(413u16)?;
@@ -514,7 +568,7 @@ fn read_body(reader: &mut Reader, head: &Head, deadline: Instant) -> Result<Vec<
             let mut chunk = vec![0; size.checked_add(2).ok_or(413u16)?];
             reader
                 .read_exact(&mut chunk)
-                .map_err(|_| read_failure(reader))?;
+                .map_err(|e| read_failure(&e))?;
             if size == 0 {
                 break;
             }
@@ -533,7 +587,7 @@ fn read_body(reader: &mut Reader, head: &Head, deadline: Instant) -> Result<Vec<
             .by_ref()
             .take(length as u64)
             .read_to_end(&mut body)
-            .map_err(|_| read_failure(reader))?;
+            .map_err(|e| read_failure(&e))?;
         if body.len() < length {
             return Err(400);
         }
@@ -603,10 +657,11 @@ pub fn apply_to_child(
     if harness_env::has_own_env_telemetry(&|name| child_var(cmd, name)) {
         return;
     }
+    let mut codex_config = None;
     if harness == "codex" {
-        let config =
+        codex_config =
             codex_home(cmd).and_then(|home| std::fs::read_to_string(home.join("config.toml")).ok());
-        if harness_env::has_own_codex_otel(config.as_deref()) {
+        if harness_env::has_own_codex_otel(codex_config.as_deref()) {
             return;
         }
     }
@@ -616,19 +671,111 @@ pub fn apply_to_child(
     };
     let endpoint = receiver.endpoint();
     if harness == "claude" {
-        let (set, remove) = harness_env::claude_env(&endpoint, &token, log_prompts);
+        let (set, remove) = harness_env::claude_env(&endpoint, log_prompts);
         for name in remove {
             cmd.env_remove(name);
         }
         for (k, v) in set {
             cmd.env(k, v);
         }
+        // The token through `otelHeadersHelper`, as Claude Code's docs ask;
+        // the header variable only where the script cannot be made.
+        let settings = helper_for(app, &token)
+            .and_then(|helper| harness_env::settings_with_helper(args, &helper.to_string_lossy()));
+        match settings {
+            Some(settings) => {
+                cmd.env_remove("OTEL_EXPORTER_OTLP_HEADERS");
+                cmd.args(["--settings", &settings]);
+            }
+            None => {
+                let (k, v) = harness_env::claude_header_var(&token);
+                cmd.env(k, v);
+            }
+        }
     } else {
         cmd.args(harness_env::codex_args(&endpoint, log_prompts));
+        cmd.args(harness_env::codex_shell_env_args(codex_config.as_deref()));
         for (k, v) in harness_env::codex_env(&token) {
             cmd.env(k, v);
         }
     }
+}
+
+/// This app run's helper scripts, by token hash. The folder is emptied on
+/// first use, so a token from an earlier run is never left on disk past it.
+/// The folder, once made, and each token's script.
+#[derive(Default)]
+struct Helpers {
+    dir: Option<std::path::PathBuf>,
+    scripts: HashMap<[u8; 32], std::path::PathBuf>,
+}
+
+static HELPERS: OnceLock<Mutex<Helpers>> = OnceLock::new();
+
+/// The chat's `otelHeadersHelper` script, written once per app run.
+#[cfg(unix)]
+fn helper_for(app: &tauri::AppHandle, token: &str) -> Option<std::path::PathBuf> {
+    use tauri::Manager;
+    let helpers = HELPERS.get_or_init(Default::default);
+    let mut helpers = helpers.lock().ok()?;
+    if let Some(path) = helpers.scripts.get(&hash(token)) {
+        return Some(path.clone());
+    }
+    let dir = match &helpers.dir {
+        Some(dir) => dir.clone(),
+        None => {
+            let dir = app.path().app_data_dir().ok()?.join("otel-helper");
+            fresh_private_dir(&dir).ok()?;
+            helpers.dir = Some(dir.clone());
+            dir
+        }
+    };
+    let path = write_helper(&dir, token).ok()?;
+    helpers.scripts.insert(hash(token), path.clone());
+    Some(path)
+}
+
+#[cfg(not(unix))]
+fn helper_for(_app: &tauri::AppHandle, _token: &str) -> Option<std::path::PathBuf> {
+    None
+}
+
+/// Empties `dir` (a link there is removed, never followed) and makes it
+/// again, 0700.
+#[cfg(unix)]
+fn fresh_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    match std::fs::symlink_metadata(dir) {
+        Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(dir)?,
+        Ok(_) => std::fs::remove_file(dir)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    if let Some(parent) = dir.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::DirBuilder::new().mode(0o700).create(dir)
+}
+
+/// One chat's script in `dir`: a new file (never an existing one or a link),
+/// 0700, named by a hash so the name says nothing of the token.
+#[cfg(unix)]
+fn write_helper(dir: &std::path::Path, token: &str) -> std::io::Result<std::path::PathBuf> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let name: String = hash(token)[..12]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let path = dir.join(format!("{name}.sh"));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o700)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path)?;
+    file.write_all(harness_env::headers_helper_script(token).as_bytes())?;
+    file.sync_all()?;
+    Ok(path)
 }
 
 /// The switch, the prompt text switch, and which sessions are chats. Takes

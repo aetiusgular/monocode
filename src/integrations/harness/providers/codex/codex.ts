@@ -191,6 +191,8 @@ type Live = {
   cancelled: boolean;
   muteUpdates: boolean;
   activeTurnId: string | null;
+  /** The turn whose `turn.started` went out, so it goes once. */
+  startedTurnId: string | null;
   turns: Promise<void>;
   /** Resolves when the current turn completes (or is cancelled). */
   turnDone: (() => void) | null;
@@ -1033,6 +1035,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       cancelled: false,
       muteUpdates: didResume,
       activeTurnId: null,
+      startedTurnId: null,
       turns: Promise.resolve(),
       turnDone: null,
       turnFailed: null,
@@ -1225,7 +1228,10 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
     // finished turn's id after finishActiveTurn cleared activeTurnId.
     if (turnId && live.turnDone) {
       live.activeTurnId = live.activeTurnId ?? turnId;
-      live.onEvent({ type: "turn.started", providerTurnId: turnId });
+      if (live.startedTurnId !== turnId) {
+        live.startedTurnId = turnId;
+        live.onEvent({ type: "turn.started", providerTurnId: turnId });
+      }
     }
     settlePendingTurn(live);
     await turnPromise;
@@ -1331,6 +1337,10 @@ function handleNotification(
       }
       live.onEvent(event);
       continue;
+    }
+    if (event.type === "turn.started") {
+      if (live.startedTurnId === event.providerTurnId) continue;
+      live.startedTurnId = event.providerTurnId;
     }
     trackAgentRow(live, event);
     if (event.type === "message.delta") {

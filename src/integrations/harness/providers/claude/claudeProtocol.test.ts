@@ -147,6 +147,7 @@ describe("buildClaudeSpawnArgs", () => {
     const session = buildClaudeSpawnArgs({ model: "claude-sonnet-5-5" });
     expect(JSON.parse(session[session.indexOf("--settings") + 1]).env).toEqual({
       CLAUDE_CODE_ENABLE_TODO_TOOLS: "1",
+      CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
     });
 
     const helper = buildClaudeSpawnArgs({ isolated: true, maxTurns: 1 });
@@ -292,7 +293,10 @@ describe("buildClaudeSpawnArgs", () => {
     });
     expect(JSON.parse(args[args.indexOf("--settings") + 1])).toEqual({
       fastMode: true,
-      env: { CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" },
+      env: {
+        CLAUDE_CODE_ENABLE_TODO_TOOLS: "1",
+        CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
+      },
     });
   });
 });

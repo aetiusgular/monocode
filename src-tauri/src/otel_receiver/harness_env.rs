@@ -2,10 +2,12 @@
 //! functions, tested here and mirrored by `tests/cli-contract/checks/otel.mjs`
 //! (keep the two in step).
 //!
-//! The token goes in the environment only, never in an argument: any process
-//! on the Mac, of any user, can read another process's arguments with `ps`,
-//! while its environment is readable only by the same user. Everything in
-//! the arguments here is free to read: the port and the switches.
+//! The token never goes in an argument: any process on the Mac, of any
+//! user, can read another process's arguments with `ps`. Claude Code gets
+//! the path of a 0700 script that prints it (`otelHeadersHelper`), Codex
+//! gets it in its environment, readable only by the same user. Everything
+//! in the arguments here is free to read: the port, the switches, the
+//! script's path.
 
 /// The header that carries a chat's token. A plain name with no space in the
 /// value, so the `OTEL_EXPORTER_OTLP_HEADERS` form (`key=value`, percent
@@ -77,20 +79,17 @@ pub fn has_own_codex_otel(config_toml: Option<&str>) -> bool {
 /// (`http://127.0.0.1:<port>`; Claude Code adds `/v1/logs`). Logs only:
 /// every event the log uses is a log record. Tool details on; prompt text by
 /// the switch. The returned `remove` list is unset in the child.
-pub fn claude_env(
-    endpoint: &str,
-    token: &str,
-    log_prompts: bool,
-) -> (Vec<(String, String)>, Vec<String>) {
+///
+/// No token here: it goes through `otelHeadersHelper` (`headers_helper_script`,
+/// `settings_with_helper`), as Claude Code's docs ask for a collector's
+/// credential (https://code.claude.com/docs/en/monitoring-usage). The helper
+/// runs only for the http protocols, so the protocol stays `http/json`.
+pub fn claude_env(endpoint: &str, log_prompts: bool) -> (Vec<(String, String)>, Vec<String>) {
     let mut set = vec![
         ("CLAUDE_CODE_ENABLE_TELEMETRY", "1".to_string()),
         ("OTEL_LOGS_EXPORTER", "otlp".to_string()),
         ("OTEL_EXPORTER_OTLP_PROTOCOL", "http/json".to_string()),
         ("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint.to_string()),
-        (
-            "OTEL_EXPORTER_OTLP_HEADERS",
-            format!("{TOKEN_HEADER}={token}"),
-        ),
         (
             "OTEL_LOGS_EXPORT_INTERVAL",
             CLAUDE_LOGS_EXPORT_INTERVAL_MS.to_string(),
@@ -107,6 +106,54 @@ pub fn claude_env(
         set.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
         remove,
     )
+}
+
+/// Where no helper script can run (Windows), the token goes in the header
+/// variable as before. Claude Code does not pass `OTEL_*` on to the
+/// processes it starts.
+pub fn claude_header_var(token: &str) -> (String, String) {
+    (
+        "OTEL_EXPORTER_OTLP_HEADERS".to_string(),
+        format!("{TOKEN_HEADER}={token}"),
+    )
+}
+
+/// The `otelHeadersHelper` script for one chat: prints the header as the
+/// JSON object Claude Code expects. The token is two simple UUIDs (hex), so
+/// it needs no quoting inside the single quotes.
+pub fn headers_helper_script(token: &str) -> String {
+    format!("#!/bin/sh\nprintf '%s\\n' '{{\"{TOKEN_HEADER}\":\"{token}\"}}'\n")
+}
+
+/// The `--settings` JSON to add after the spawn's own: the last `--settings`
+/// on the command line is the one Claude Code reads (`Rv` returns
+/// `.at(-1)` in the 2.1.304 bundle), so this is a copy of it with
+/// `otelHeadersHelper` added. `None` when that value is a file path rather
+/// than JSON, which MonoCode never passes; the header variable is used then.
+pub fn settings_with_helper(args: &[String], helper: &str) -> Option<String> {
+    let mut last = None;
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--settings" {
+            last = args.get(i + 1).map(String::as_str);
+            i += 1;
+        } else if let Some(v) = args[i].strip_prefix("--settings=") {
+            last = Some(v);
+        }
+        i += 1;
+    }
+    let mut value = match last {
+        None => serde_json::Map::new(),
+        Some(text) => match serde_json::from_str::<serde_json::Value>(text).ok()? {
+            serde_json::Value::Object(map) => map,
+            _ => return None,
+        },
+    };
+    value.insert(
+        "otelHeadersHelper".to_string(),
+        serde_json::Value::String(helper.to_string()),
+    );
+    serde_json::to_string(&value).ok()
 }
 
 /// Codex's `-c` flags for an export to `endpoint`. Codex takes each signal's
@@ -136,6 +183,61 @@ pub fn codex_env(token: &str) -> Vec<(String, String)> {
     vec![
         ("OTEL_EXPORTER_OTLP_HEADERS".to_string(), header.clone()),
         ("OTEL_EXPORTER_OTLP_LOGS_HEADERS".to_string(), header),
+    ]
+}
+
+/// The token's variables. Codex's shell tools inherit its whole environment
+/// by default (`codex-rs/config/src/shell_environment_policy.rs:135-136`), so
+/// every command the agent ran would see the token without these excludes.
+pub const CODEX_TOKEN_VARS: &[&str] = &[
+    "OTEL_EXPORTER_OTLP_HEADERS",
+    "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+    "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+];
+
+/// Codex's `-c` flags that keep the token out of its shell commands, written
+/// so the user's own shell environment filters survive. A `-c` layer is
+/// merged over `config.toml`: a legacy `exclude` array there replaces a lower
+/// one whole and drops a lower `filters` table, and a `filters` table drops
+/// lower `exclude`/`include_only` arrays (`config/src/merge.rs:160-185`). So
+/// a user with `filters` gets ours as `filters` keys (merged by key), and
+/// anyone else gets one `exclude` array holding theirs and ours. Patterns are
+/// case-insensitive globs (`shell_environment_policy.rs:157-160`).
+pub fn codex_shell_env_args(config_toml: Option<&str>) -> Vec<String> {
+    let policy = config_toml
+        .and_then(|text| toml::from_str::<toml::Table>(text).ok())
+        .and_then(|t| t.get("shell_environment_policy").cloned());
+    let policy = policy.as_ref().and_then(toml::Value::as_table);
+    if policy.is_some_and(|p| p.contains_key("filters")) {
+        return CODEX_TOKEN_VARS
+            .iter()
+            .flat_map(|name| {
+                [
+                    "-c".to_string(),
+                    format!("shell_environment_policy.filters.{name}=\"exclude\""),
+                ]
+            })
+            .collect();
+    }
+    let mut exclude: Vec<String> = policy
+        .and_then(|p| p.get("exclude"))
+        .and_then(toml::Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    for name in CODEX_TOKEN_VARS {
+        if !exclude.iter().any(|e| e.eq_ignore_ascii_case(name)) {
+            exclude.push((*name).to_string());
+        }
+    }
+    let list = toml::Value::Array(exclude.into_iter().map(toml::Value::String).collect());
+    vec![
+        "-c".to_string(),
+        format!("shell_environment_policy.exclude={list}"),
     ]
 }
 
@@ -175,26 +277,29 @@ mod tests {
     }
 
     #[test]
-    fn claude_env_carries_token_only_in_env() {
-        let (set, remove) = claude_env("http://127.0.0.1:4318", "abc", false);
+    fn claude_env_carries_no_token() {
+        let (set, remove) = claude_env("http://127.0.0.1:4318", false);
         let get = |k: &str| set.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         assert_eq!(get("CLAUDE_CODE_ENABLE_TELEMETRY"), Some("1"));
         assert_eq!(
             get("OTEL_EXPORTER_OTLP_ENDPOINT"),
             Some("http://127.0.0.1:4318")
         );
-        assert_eq!(
-            get("OTEL_EXPORTER_OTLP_HEADERS"),
-            Some("x-monocode-token=abc")
-        );
         assert_eq!(get("OTEL_LOG_TOOL_DETAILS"), Some("1"));
         assert_eq!(get("OTEL_LOG_USER_PROMPTS"), None);
         assert_eq!(remove, vec!["OTEL_LOG_USER_PROMPTS".to_string()]);
-        let (set, remove) = claude_env("http://127.0.0.1:1", "t", true);
+        let (set, remove) = claude_env("http://127.0.0.1:1", true);
         assert!(set
             .iter()
             .any(|(k, v)| k == "OTEL_LOG_USER_PROMPTS" && v == "1"));
         assert!(remove.is_empty());
+        assert_eq!(
+            claude_header_var("abc"),
+            (
+                "OTEL_EXPORTER_OTLP_HEADERS".to_string(),
+                "x-monocode-token=abc".to_string()
+            )
+        );
     }
 
     #[test]
@@ -246,5 +351,74 @@ mod tests {
             "[otel]\ntrace_exporter = \"statsig\"\n"
         )));
         assert!(has_own_codex_otel(Some("this is [not toml")));
+    }
+
+    #[test]
+    fn codex_shell_commands_never_see_the_token() {
+        // No policy of the user's: one exclude array with the four names.
+        let args = codex_shell_env_args(None);
+        assert_eq!(
+            args,
+            s(&[
+                "-c",
+                "shell_environment_policy.exclude=[\"OTEL_EXPORTER_OTLP_HEADERS\", \"OTEL_EXPORTER_OTLP_LOGS_HEADERS\", \"OTEL_EXPORTER_OTLP_METRICS_HEADERS\", \"OTEL_EXPORTER_OTLP_TRACES_HEADERS\"]",
+            ])
+        );
+        let (_, value) = args[1].split_once('=').unwrap();
+        let parsed: toml::Table = toml::from_str(&format!("v = {value}")).unwrap();
+        assert_eq!(parsed["v"].as_array().unwrap().len(), 4);
+
+        // The user's own exclude array is kept: ours replaces it whole.
+        let args = codex_shell_env_args(Some(
+            "[shell_environment_policy]\nexclude = [\"AWS_*\", \"otel_exporter_otlp_headers\"]\n",
+        ));
+        let (_, value) = args[1].split_once('=').unwrap();
+        let parsed: toml::Table = toml::from_str(&format!("v = {value}")).unwrap();
+        let list: Vec<&str> = parsed["v"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(list[0], "AWS_*");
+        assert_eq!(list.len(), 5);
+
+        // The user's `filters` table: ours as its keys, never an array that
+        // would drop it.
+        let args = codex_shell_env_args(Some(
+            "[shell_environment_policy.filters]\n\"AWS_*\" = \"exclude\"\n",
+        ));
+        assert_eq!(args.len(), 8);
+        assert!(args.iter().skip(1).step_by(2).all(|a| a
+            .starts_with("shell_environment_policy.filters.OTEL_EXPORTER_OTLP_")
+            && a.ends_with("=\"exclude\"")));
+    }
+
+    #[test]
+    fn claude_token_goes_through_the_headers_helper_not_a_variable() {
+        let (set, _) = claude_env("http://127.0.0.1:4318", false);
+        assert!(set.iter().all(|(k, _)| !k.contains("HEADERS")));
+        let get = |k: &str| set.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        // The helper runs only for the http protocols.
+        assert_eq!(get("OTEL_EXPORTER_OTLP_PROTOCOL"), Some("http/json"));
+        assert_eq!(
+            headers_helper_script("abc"),
+            "#!/bin/sh\nprintf '%s\\n' '{\"x-monocode-token\":\"abc\"}'\n"
+        );
+        let args = s(&[
+            "--settings",
+            r#"{"env":{"A":"1"}}"#,
+            "--model",
+            "m",
+            "--settings",
+            r#"{"env":{"B":"2"},"hooks":{}}"#,
+        ]);
+        let merged = settings_with_helper(&args, "/x y/h.sh").unwrap();
+        let value: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(value["otelHeadersHelper"], "/x y/h.sh");
+        assert_eq!(value["env"]["B"], "2");
+        assert!(value["hooks"].is_object());
+        assert!(settings_with_helper(&s(&["--model", "m"]), "/h").is_some());
+        assert!(settings_with_helper(&s(&["--settings", "/a/file.json"]), "/h").is_none());
     }
 }

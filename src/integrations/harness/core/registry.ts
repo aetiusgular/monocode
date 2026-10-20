@@ -204,6 +204,43 @@ const idleParkTimers = new Map<
 const sessionOperationTails = new Map<string, Promise<void>>();
 const sessionSteerTails = new Map<string, Promise<void>>();
 const activeTurnSessions = new Set<string>();
+/** Sessions whose running turn was stopped, for its `turn.completed`. */
+const stoppedTurnSessions = new Set<string>();
+
+type TurnObserver = (sessionId: string, event: HarnessEvent) => void;
+const turnObservers = new Set<TurnObserver>();
+
+/**
+ * Hears every `turn.completed`, even one the chat drops: after Stop the app
+ * ignores the rest of a turn's events, but the activity log still needs its
+ * end (Mac test 2.2). Returns the stop function.
+ */
+export function observeHarnessTurns(observer: TurnObserver): () => void {
+  turnObservers.add(observer);
+  return () => {
+    turnObservers.delete(observer);
+  };
+}
+
+function completeTurn(
+  sessionId: string,
+  onEvent: (event: HarnessEvent) => void,
+  status: "completed" | "interrupted" | "failed",
+): void {
+  const event: HarnessEvent = { type: "turn.completed", status };
+  try {
+    onEvent(event);
+  } catch {
+    // The chat's handler failing must not hide the end from the log.
+  }
+  for (const observer of turnObservers) {
+    try {
+      observer(sessionId, event);
+    } catch {
+      // One observer failing must not stop the others.
+    }
+  }
+}
 
 function queueSessionOperation<T>(
   sessionId: string,
@@ -369,16 +406,30 @@ export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
       );
     }
     activeTurnSessions.add(input.sessionId);
+    stoppedTurnSessions.delete(input.sessionId);
+    // The one place a turn's end is announced, for every adapter: where the
+    // send settles (Claude's finishActiveTurn, Codex's turn/completed, any
+    // other adapter's return).
+    let status: "completed" | "interrupted" | "failed" = "completed";
     try {
       await adapter.sendTurn({
         ...input,
+        onEvent: (event) => {
+          if (event.type === "session.error") status = "failed";
+          input.onEvent(event);
+        },
         onAccepted: () => {
           input.onEvent({ type: "turn.ready" });
           input.onAccepted?.();
         },
       });
+    } catch (error) {
+      status = "failed";
+      throw error;
     } finally {
       activeTurnSessions.delete(input.sessionId);
+      if (stoppedTurnSessions.delete(input.sessionId)) status = "interrupted";
+      completeTurn(input.sessionId, input.onEvent, status);
       if (controlled) {
         await markPlanTurn(input.sessionId, false);
         await invoke("control_turn_finished", { sessionId: input.sessionId });
@@ -468,6 +519,7 @@ export async function cancelHarnessTurn(
   const adapter = getHarness(harness);
   if (!adapter?.live) return;
   cancelIdlePark(sessionId);
+  if (activeTurnSessions.has(sessionId)) stoppedTurnSessions.add(sessionId);
   await adapter.cancelTurn(sessionId);
   scheduleIdlePark(harness, sessionId);
 }
@@ -518,6 +570,7 @@ export async function stopHarnessSession(
   cancelIdlePark(sessionId);
   const adapter = getHarness(harness);
   if (!adapter?.live) return;
+  if (activeTurnSessions.has(sessionId)) stoppedTurnSessions.add(sessionId);
   await adapter.stopSession(sessionId);
 }
 

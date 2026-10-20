@@ -118,6 +118,10 @@ export type ClaudeCliSettings = {
  */
 export const CLAUDE_SESSION_ENV = {
   CLAUDE_CODE_ENABLE_TODO_TOOLS: "1",
+  // `session_state_changed` lines: `idle` is Claude Code's own "turn-over
+  // signal" (2.1.304 bundle; emitted by 2.1.292 to 2.1.304, contract probe
+  // of 20 Oct). Mac test 2.8.
+  CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
   // [w3-a] session-env
   // [w3-b] session-env
   // [w3-c] session-env
@@ -241,6 +245,11 @@ export function buildClaudeUserMessage(input: {
   text: string;
   attachments?: Attachment[];
   effort?: string | null;
+  /**
+   * The message's own id. Claude Code echoes it in the `result` of the turn
+   * that answers it (`user_message_uuid`, `user_message_uuids`).
+   */
+  uuid?: string;
 }): Record<string, unknown> {
   const text = applyClaudePromptEffortPrefix(
     promptText(input.text, input.attachments ?? []),
@@ -258,6 +267,7 @@ export function buildClaudeUserMessage(input: {
   }
   return {
     type: "user",
+    ...(input.uuid ? { uuid: input.uuid } : {}),
     session_id: "",
     parent_tool_use_id: null,
     message: {
@@ -265,6 +275,39 @@ export function buildClaudeUserMessage(input: {
       content,
     },
   };
+}
+
+/**
+ * The uuids of the user messages a `result` says it answers, or null when
+ * it names none (an older CLI, or a turn no client message started).
+ */
+export function resultUserMessageUuids(
+  rec: Record<string, unknown>,
+): string[] | null {
+  const out = new Set<string>();
+  const one = stringField(rec, "user_message_uuid");
+  if (one) out.add(one);
+  if (Array.isArray(rec.user_message_uuids)) {
+    for (const item of rec.user_message_uuids) {
+      if (typeof item === "string" && item) out.add(item);
+    }
+  }
+  return out.size > 0 ? [...out] : null;
+}
+
+/** A `session_state_changed` line's state, or null for any other line. */
+export function sessionStateFromSystem(
+  rec: Record<string, unknown>,
+): "idle" | "running" | "requires_action" | null {
+  if (
+    stringField(rec, "type") !== "system" ||
+    stringField(rec, "subtype") !== "session_state_changed"
+  )
+    return null;
+  const state = stringField(rec, "state");
+  return state === "idle" || state === "running" || state === "requires_action"
+    ? state
+    : null;
 }
 
 function imageContentBlock(
@@ -1021,7 +1064,9 @@ export function assistantTextBlocks(rec: Record<string, unknown>): string[] {
 }
 
 /** Reasoning a message carries, used to mirror a subagent's thinking. */
-export function assistantThinkingBlocks(rec: Record<string, unknown>): string[] {
+export function assistantThinkingBlocks(
+  rec: Record<string, unknown>,
+): string[] {
   const message = asRecord(rec.message);
   const content = message?.content;
   if (!Array.isArray(content)) return [];

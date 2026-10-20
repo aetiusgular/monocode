@@ -35,6 +35,13 @@ export type TelemetrySettingsParts = {
 export const TELEMETRY_GROUP_DESCRIPTION =
   "Claude Code and Codex report what they do (tool calls, approvals, model requests) to a receiver inside MonoCode on this Mac. Nothing is sent anywhere else. Other harnesses are recorded from MonoCode's own view of their turns. A change applies from each chat's next turn.";
 
+/**
+ * Beside the switch (Mac test 2.10): a change restarts each chat's harness,
+ * and the restarted one connects its MCP servers before its first turn.
+ */
+export const TELEMETRY_SWITCH_DESCRIPTION =
+  "Claude Code and Codex export their own events to MonoCode's receiver on 127.0.0.1. Switching this restarts your Claude Code and Codex chats, so the first turn after it waits while each chat's MCP servers connect again.";
+
 export const TELEMETRY_PROMPTS_DESCRIPTION =
   "Off: the harnesses send a redaction mark in place of your prompt text, and MonoCode drops it. On: your prompts are kept in the activity log on this Mac. Tool details (commands, file paths, arguments) are always kept.";
 
@@ -75,7 +82,7 @@ export function TelemetrySettings({
       <Row
         id="telemetry-enabled"
         label="Record harness telemetry"
-        description="Claude Code and Codex export their own events to MonoCode's receiver on 127.0.0.1."
+        description={TELEMETRY_SWITCH_DESCRIPTION}
       >
         <Toggle
           label="Record harness telemetry"
