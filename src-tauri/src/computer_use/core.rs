@@ -119,8 +119,13 @@ fn note_runtime_end(chat: &str, entry: &RuntimeEntry) {
 
 #[derive(Default)]
 struct Inner {
-    /// Chats computer use is switched on for, with each one's bridge token.
+    /// Each chat's bridge token, made the first time the chat is switched on
+    /// and kept for the app run, so a harness started with it keeps its
+    /// connection through off and on (Mac test 4.7). A token gives nothing
+    /// while its chat is off.
     tokens: HashMap<String, String>,
+    /// Chats computer use is switched on for now.
+    on: std::collections::HashSet<String>,
     grants: GrantTable,
     pending: HashMap<String, Pending>,
     runtimes: HashMap<String, RuntimeEntry>,
@@ -208,36 +213,35 @@ impl Core {
     // --- Chats and tokens ---
 
     /// Switches computer use on or off for a chat. Off ends its grants, its
-    /// cards and its runtime, and its token stops working.
+    /// cards and its runtime; its connections stay, and offer nothing until
+    /// it is on again.
     pub fn set_chat(&self, chat: &str, on: bool) {
         if chat.is_empty() || chat.len() > 200 {
             return;
         }
         if on {
-            self.lock()
+            let mut inner = self.lock();
+            inner
                 .tokens
                 .entry(chat.to_string())
                 .or_insert_with(|| format!("{}{}", new_id(), new_id()));
+            inner.on.insert(chat.to_string());
             return;
         }
-        let had = self.lock().tokens.remove(chat).is_some();
+        let had = self.lock().on.remove(chat);
         if had {
             self.stop(chat);
         }
     }
 
-    /// The bridge token for a chat, when computer use is on for it.
-    pub fn token(&self, chat: &str) -> Option<String> {
-        self.lock().tokens.get(chat).cloned()
+    /// Whether computer use is switched on for a chat now.
+    pub fn is_on(&self, chat: &str) -> bool {
+        self.lock().on.contains(chat)
     }
 
-    /// Whether `token` is still the chat's token. A connection keeps the token
-    /// it opened with, so switching off and on again ends it (review, 10).
-    pub fn token_is(&self, chat: &str, token: &str) -> bool {
-        self.lock()
-            .tokens
-            .get(chat)
-            .is_some_and(|known| constant_eq(known.as_bytes(), token.as_bytes()))
+    /// The bridge token for a chat once it has been switched on in this run.
+    pub fn token(&self, chat: &str) -> Option<String> {
+        self.lock().tokens.get(chat).cloned()
     }
 
     /// The chat a token belongs to. Compared in constant time per token.
@@ -271,7 +275,7 @@ impl Core {
         let now = now_ms();
         let (grant, evicted) = {
             let mut inner = self.lock();
-            if !inner.tokens.contains_key(chat) {
+            if !inner.on.contains(chat) {
                 return Err("Switch computer use on for this chat first.".into());
             }
             inner
@@ -954,6 +958,10 @@ impl Core {
 }
 
 impl Backend for Core {
+    fn enabled(&self, chat: &str) -> bool {
+        self.is_on(chat)
+    }
+
     fn plan_turn(&self, chat: &str) -> bool {
         self.lock().planning.contains(chat)
     }
@@ -1235,7 +1243,7 @@ pub mod tests {
     }
 
     #[test]
-    fn tokens_are_per_chat_and_end_with_the_switch() {
+    fn tokens_are_per_chat_and_last_the_app_run_while_the_switch_is_a_flag() {
         let (core, _, _) = core_with(FakeLauncher::new());
         core.set_chat("c1", true);
         core.set_chat("c2", true);
@@ -1253,9 +1261,21 @@ pub mod tests {
         );
         core.grant("c1", "claude", "com.apple.calculator", None, None)
             .unwrap();
+        assert!(core.is_on("c1"));
         core.set_chat("c1", false);
-        assert_eq!(core.chat_for_token(&t1), None);
+        assert!(!core.is_on("c1"));
         assert!(core.grants("c1").is_empty(), "off ends the grants");
+        assert!(
+            core.grant("c1", "claude", "com.apple.calculator", None, None)
+                .is_err(),
+            "nothing is granted while off"
+        );
+        // 4.7: the token outlives the switch, so a harness started with it
+        // keeps working once the chat is on again.
+        assert_eq!(core.chat_for_token(&t1).as_deref(), Some("c1"));
+        core.set_chat("c1", true);
+        assert_eq!(core.token("c1").unwrap(), t1);
+        assert!(core.is_on("c1"));
     }
 
     #[test]

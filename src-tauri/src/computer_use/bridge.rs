@@ -5,6 +5,8 @@
 //! from the environment MonoCode gave the harness, connects here, sends the
 //! token as its first line, and then relays MCP lines both ways. The token
 //! picks the chat; a wrong token gets one error line and the connection ends.
+//! A chat switched off keeps its connection: the facade offers it nothing
+//! until it is on again, since the harness never restarts the server.
 
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::net::{TcpListener, TcpStream};
@@ -137,9 +139,7 @@ fn serve(core: &Arc<Core>, stream: TcpStream) {
     let token = serde_json::from_slice::<Value>(&hello)
         .ok()
         .and_then(|v| v.get("token").and_then(Value::as_str).map(str::to_string));
-    let Some((chat, token)) =
-        token.and_then(|token| core.chat_for_token(&token).map(|chat| (chat, token)))
-    else {
+    let Some(chat) = token.and_then(|token| core.chat_for_token(&token)) else {
         let _ = write_line(
             &mut writer,
             &json!({"monocode": "refused", "message": "Computer use is not on for this chat."}),
@@ -154,10 +154,6 @@ fn serve(core: &Arc<Core>, stream: TcpStream) {
     loop {
         match next_line(&mut reader, &mut pending, MAX_REQUEST) {
             Line::Text(line) => {
-                // The chat's switch may have gone off since it connected.
-                if !core.token_is(&chat, &token) {
-                    return;
-                }
                 let reply = match serde_json::from_slice::<Value>(&line) {
                     Ok(message) => facade.handle(core.as_ref(), &message),
                     Err(_) => Some(
@@ -177,9 +173,6 @@ fn serve(core: &Arc<Core>, stream: TcpStream) {
                 }
             }
             Line::Idle => {
-                if !core.token_is(&chat, &token) {
-                    return;
-                }
                 if let Some(note) = facade.list_changed(core.as_ref()) {
                     if !write_line(&mut writer, &note) {
                         return;
@@ -265,19 +258,133 @@ mod tests {
         assert_eq!(read(&mut reader)["error"]["code"], -32700);
     }
 
+    fn send(stream: &mut TcpStream, message: Value) {
+        writeln!(stream, "{message}").unwrap();
+    }
+
+    /// The next reply with an id, skipping notifications.
+    fn reply(reader: &mut BufReader<TcpStream>) -> Value {
+        loop {
+            let message = read(reader);
+            if message.get("id").is_some() {
+                return message;
+            }
+        }
+    }
+
+    fn ready(core: &Arc<Core>, chat: &str) -> (TcpStream, BufReader<TcpStream>) {
+        let address = start(core.clone()).unwrap();
+        let (mut stream, mut reader) = connect(address, &core.token(chat).unwrap());
+        assert_eq!(read(&mut reader)["monocode"], "ok");
+        send(
+            &mut stream,
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+        );
+        assert!(read(&mut reader)["result"]["serverInfo"].is_object());
+        (stream, reader)
+    }
+
     #[test]
-    fn switching_the_chat_off_ends_its_connection() {
+    fn switching_off_keeps_the_connection_and_offers_nothing_until_on_again() {
+        // 4.7: the harness never restarts the stdio server, so the
+        // connection outlives the switch; off empties it instead.
         let (core, _, _) = core_with(FakeLauncher::new());
         core.set_chat("c1", true);
-        let address = start(core.clone()).unwrap();
-        let (_stream, mut reader) = connect(address, &core.token("c1").unwrap());
-        assert_eq!(read(&mut reader)["monocode"], "ok");
-        // Off and straight back on: the old connection still ends, since it
-        // holds the old token.
+        let (mut stream, mut reader) = ready(&core, "c1");
+        send(
+            &mut stream,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+        );
+        assert_eq!(
+            read(&mut reader)["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
         core.set_chat("c1", false);
+        assert_eq!(
+            read(&mut reader)["method"],
+            "notifications/tools/list_changed"
+        );
+        send(
+            &mut stream,
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/list"}),
+        );
+        assert_eq!(read(&mut reader)["result"]["tools"], json!([]));
+        send(
+            &mut stream,
+            json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"request_app_access","arguments":{"app":"com.apple.calculator"}}}),
+        );
+        let off = read(&mut reader);
+        assert_eq!(off["result"]["isError"], true);
+        assert_eq!(
+            off["result"]["content"][0]["text"],
+            "Computer use is off for this chat. Ask the user to switch it on in MonoCode."
+        );
         core.set_chat("c1", true);
-        let mut rest = String::new();
-        assert_eq!(reader.read_line(&mut rest).unwrap(), 0);
+        assert_eq!(
+            read(&mut reader)["method"],
+            "notifications/tools/list_changed"
+        );
+        send(
+            &mut stream,
+            json!({"jsonrpc":"2.0","id":5,"method":"tools/list"}),
+        );
+        assert_eq!(
+            read(&mut reader)["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn stop_keeps_the_connection_and_the_next_action_asks_for_access_again() {
+        // 4.7's pass line.
+        let (core, _, _) = core_with(FakeLauncher::new());
+        core.set_chat("c1", true);
+        core.grant("c1", "claude", "com.apple.calculator", None, None)
+            .unwrap();
+        let (mut stream, mut reader) = ready(&core, "c1");
+        core.stop("c1");
+        send(
+            &mut stream,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"click","arguments":{}}}),
+        );
+        let next = reply(&mut reader);
+        assert_eq!(next["result"]["isError"], true);
+        assert_eq!(
+            next["result"]["content"][0]["text"],
+            "No app is approved for this chat. Call request_app_access first."
+        );
+    }
+
+    #[test]
+    fn a_chat_switched_off_still_connects_and_hears_when_it_is_switched_on() {
+        let (core, _, _) = core_with(FakeLauncher::new());
+        core.set_chat("c1", true);
+        let token = core.token("c1").unwrap();
+        core.set_chat("c1", false);
+        let address = start(core.clone()).unwrap();
+        let (mut stream, mut reader) = connect(address, &token);
+        assert_eq!(read(&mut reader)["monocode"], "ok");
+        send(
+            &mut stream,
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+        );
+        read(&mut reader);
+        send(
+            &mut stream,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+        );
+        assert_eq!(read(&mut reader)["result"]["tools"], json!([]));
+        core.set_chat("c1", true);
+        assert_eq!(
+            read(&mut reader)["method"],
+            "notifications/tools/list_changed"
+        );
     }
 
     #[test]

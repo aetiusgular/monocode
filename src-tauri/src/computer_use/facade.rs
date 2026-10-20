@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+pub use super::bridge_cli::OFF_TEXT;
 use super::grants::Grant;
 use super::manifest::tool_allowed;
 
@@ -66,6 +67,11 @@ pub trait Backend {
     fn plan_turn(&self, _chat: &str) -> bool {
         false
     }
+    /// Whether computer use is switched on for the chat. While off, the
+    /// connection stays and offers no tools (Mac test 4.7).
+    fn enabled(&self, _chat: &str) -> bool {
+        true
+    }
 }
 
 const PLAN_REFUSAL: &str =
@@ -75,9 +81,9 @@ const PLAN_REFUSAL: &str =
 pub struct Facade {
     chat: String,
     initialized: bool,
-    /// The grant set the last `tools/list` answered for, to know when to
-    /// tell the harness the list changed.
-    listed_for: Option<BTreeSet<String>>,
+    /// The switch and grant set the last `tools/list` answered for, to know
+    /// when to tell the harness the list changed.
+    listed_for: Option<(bool, BTreeSet<String>)>,
 }
 
 impl Facade {
@@ -93,7 +99,10 @@ impl Facade {
     /// set the harness last listed tools for.
     pub fn list_changed(&mut self, backend: &dyn Backend) -> Option<Value> {
         let listed = self.listed_for.as_ref()?;
-        let now = grant_set(&backend.grants(&self.chat));
+        let now = (
+            backend.enabled(&self.chat),
+            grant_set(&backend.grants(&self.chat)),
+        );
         if &now == listed {
             return None;
         }
@@ -123,10 +132,18 @@ impl Facade {
             }
             "ping" => result(id, json!({})),
             "tools/list" if self.initialized => {
+                let on = backend.enabled(&self.chat);
                 let grants = backend.grants(&self.chat);
-                let tools = self.tools(backend, &grants);
-                self.listed_for = Some(grant_set(&grants));
+                let tools = if on {
+                    self.tools(backend, &grants)
+                } else {
+                    Vec::new()
+                };
+                self.listed_for = Some((on, grant_set(&grants)));
                 result(id, json!({ "tools": tools }))
+            }
+            "tools/call" if self.initialized && !backend.enabled(&self.chat) => {
+                result(id, tool_error(OFF_TEXT))
             }
             "tools/call" if self.initialized => result(id, self.call(backend, &params)),
             "tools/list" | "tools/call" => error(id, -32002, "Server not initialized"),
@@ -369,6 +386,7 @@ mod tests {
         calls: RefCell<Vec<(String, Value)>>,
         runtime_ok: bool,
         plan: RefCell<bool>,
+        on: RefCell<bool>,
     }
 
     impl Fake {
@@ -380,6 +398,7 @@ mod tests {
                 calls: RefCell::new(Vec::new()),
                 runtime_ok: true,
                 plan: RefCell::new(false),
+                on: RefCell::new(true),
             }
         }
         fn grant(&self, bundle: &str) {
@@ -427,6 +446,53 @@ mod tests {
         fn plan_turn(&self, _chat: &str) -> bool {
             *self.plan.borrow()
         }
+        fn enabled(&self, _chat: &str) -> bool {
+            *self.on.borrow()
+        }
+    }
+
+    #[test]
+    fn while_off_nothing_is_listed_and_every_call_is_refused() {
+        let backend = Fake::new();
+        backend.grant("com.apple.calculator");
+        *backend.on.borrow_mut() = false;
+        let mut facade = Facade::new("c1");
+        init(&mut facade, &backend);
+        let reply = facade
+            .handle(
+                &backend,
+                &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+            )
+            .unwrap();
+        assert_eq!(reply["result"]["tools"], json!([]));
+        for name in [REQUEST_TOOL, STATUS_TOOL, "click"] {
+            let reply = facade
+                .handle(&backend, &json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":{"app":"com.apple.calculator"}}}))
+                .unwrap();
+            assert_eq!(reply["result"]["isError"], true, "{name}");
+            assert_eq!(reply["result"]["content"][0]["text"], OFF_TEXT);
+        }
+        assert!(backend.calls.borrow().is_empty());
+        assert!(backend.asked.borrow().is_empty());
+    }
+
+    #[test]
+    fn every_switch_on_or_off_tells_the_harness() {
+        let backend = Fake::new();
+        let mut facade = Facade::new("c1");
+        init(&mut facade, &backend);
+        let list = json!({"jsonrpc":"2.0","id":1,"method":"tools/list"});
+        facade.handle(&backend, &list);
+        assert!(facade.list_changed(&backend).is_none());
+        *backend.on.borrow_mut() = false;
+        assert_eq!(
+            facade.list_changed(&backend).unwrap()["method"],
+            "notifications/tools/list_changed"
+        );
+        assert!(facade.list_changed(&backend).is_none(), "once per change");
+        facade.handle(&backend, &list);
+        *backend.on.borrow_mut() = true;
+        assert!(facade.list_changed(&backend).is_some());
     }
 
     fn init(facade: &mut Facade, backend: &Fake) {
