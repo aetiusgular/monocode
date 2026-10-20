@@ -607,6 +607,27 @@ fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
+/// Docker's own binaries, by where Docker Desktop and Homebrew install
+/// them, never by name alone: a `docker` from any other folder is not the
+/// credential's owner (review X5).
+fn docker_owner(exe: &str) -> bool {
+    // Absolute, with no empty, `.` or `..` part after the leading `/`.
+    let mut parts = exe.split('/');
+    if parts.next() != Some("") || parts.any(|p| p.is_empty() || p == "." || p == "..") {
+        return false;
+    }
+    for dir in ["/usr/local/bin/", "/opt/homebrew/bin/"] {
+        if let Some(name) = exe.strip_prefix(dir) {
+            return name == "docker"
+                || name
+                    .strip_prefix("docker-credential-")
+                    .is_some_and(|rest| !rest.is_empty() && !rest.contains('/'));
+        }
+    }
+    exe.strip_prefix("/Applications/Docker.app/Contents/")
+        .is_some_and(|rest| !rest.is_empty())
+}
+
 /// Files a shell reads at every start; a write to one is never hidden.
 const SHELL_RC: &[&str] = &[
     ".zshrc",
@@ -695,11 +716,7 @@ fn expected_rule(
             // The program that owns a credential reading it (secure-agent's
             // defaults.yaml: `programs: ["docker", "docker-credential-*",
             // "com.docker.*"]` for ~/.docker).
-            let name = basename(exe);
-            let docker_owner = name == "docker"
-                || name.starts_with("docker-credential-")
-                || name.starts_with("com.docker.");
-            if docker_owner
+            if docker_owner(exe)
                 && home
                     .as_deref()
                     .is_some_and(|h| path == format!("{h}/.docker/config.json"))
