@@ -265,6 +265,43 @@ test("the step list follows the running step until scrolled away", async ({
     );
   };
 
+  // Mac retest R0.7: on Chromium 153 (Playwright build 1243) the follow
+  // below fails every time; on 149 (1228) and 141 (1194) it passes. Its cause
+  // is not found yet, so every scroll of the list is logged, and attached
+  // when the follow fails, to show what the list saw.
+  await steps.evaluate((el) => {
+    const log: unknown[] = [];
+    (window as unknown as { __stepScrolls: unknown[] }).__stepScrolls = log;
+    el.addEventListener("scroll", () => {
+      const row = el
+        .querySelector('[aria-label="In progress"]')
+        ?.closest("li")
+        ?.getBoundingClientRect();
+      const area = el.getBoundingClientRect();
+      log.push({
+        at: Math.round(performance.now()),
+        scrollTop: el.scrollTop,
+        max: el.scrollHeight - el.clientHeight,
+        rowTop: row ? row.top - area.top : null,
+        rowBottom: row ? area.bottom - row.bottom : null,
+      });
+    });
+  });
+  const scrollLog = async (label: string) => {
+    const body = JSON.stringify(
+      await page.evaluate(
+        () => (window as unknown as { __stepScrolls: unknown[] }).__stepScrolls,
+      ),
+    );
+    // Printed as well as attached: the list reporter shows a failed test's
+    // output, not the body of its attachments.
+    console.log(`step-list scrolls (${label}): ${body}`);
+    await test.info().attach(`step-list scrolls (${label})`, {
+      contentType: "application/json",
+      body,
+    });
+  };
+
   // With the earlier steps showing, the running one is far down the list.
   await steps.locator("[data-earlier-steps]").click();
   await expect.poll(inArea).toBe(false);
@@ -282,7 +319,12 @@ test("the step list follows the running step until scrolled away", async ({
   // after it.
   await advance(6);
   await expect(running).toContainText("Later step 7");
-  await expect.poll(inArea).toBe(true);
+  try {
+    await expect.poll(inArea).toBe(true);
+  } catch (error) {
+    await scrollLog("after six steps");
+    throw error;
+  }
 
   // Scrolled back to the top, the viewer is reading something else.
   await steps.evaluate((el) => {
