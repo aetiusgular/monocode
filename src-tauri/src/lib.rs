@@ -83,14 +83,43 @@ pub mod computer_use;
 // Phase 1 seam: spawn / kill harness children per MonoCode thread.
 // Adapters own the protocol; this host only supervises processes.
 
-/// Project directory for new sessions — prefer cwd, else home.
+/// Project directory for new sessions — prefer cwd, else home. A debug build
+/// never takes a folder inside the source tree it was built from: `tauri dev`
+/// starts it in `src-tauri`, which is not a choice you made (Mac retest R0.8b).
 #[tauri::command]
 fn default_cwd() -> String {
-    if let Ok(cwd) = std::env::current_dir() {
-        return fs::path_to_js(&cwd);
+    pick_default_cwd(
+        std::env::current_dir().ok().as_deref(),
+        dev_source_root().as_deref(),
+        dirs_home().as_deref(),
+    )
+}
+
+/// The source tree a debug build was compiled from (the parent of
+/// `src-tauri`), or None in a release build.
+fn dev_source_root() -> Option<std::path::PathBuf> {
+    if !cfg!(debug_assertions) {
+        return None;
     }
-    dirs_home()
-        .map(|home| fs::path_to_js(std::path::Path::new(&home)))
+    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = crate_dir.parent().unwrap_or(crate_dir);
+    // Compare real paths, so a symlinked checkout still matches.
+    Some(root.canonicalize().unwrap_or_else(|_| root.to_path_buf()))
+}
+
+fn pick_default_cwd(
+    cwd: Option<&std::path::Path>,
+    source_root: Option<&std::path::Path>,
+    home: Option<&str>,
+) -> String {
+    if let Some(cwd) = cwd {
+        let real = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+        let in_source = source_root.is_some_and(|root| real.starts_with(root));
+        if !in_source {
+            return fs::path_to_js(cwd);
+        }
+    }
+    home.map(|home| fs::path_to_js(std::path::Path::new(home)))
         .unwrap_or_else(|| "~".into())
 }
 
@@ -898,6 +927,76 @@ mod tests {
         assert!(
             wrapper.contains("child.stderr.pipe(new InvokeKeyFilter())"),
             "npm run tauri must filter the invoke key out of the dev log"
+        );
+    }
+
+    /// Mac retest R0.8b: `tauri dev` runs the app from `src-tauri`
+    /// (`tauri-cli-2.11.4/src/dev.rs:148`, `set_current_dir(dirs.tauri)`), so
+    /// an empty dev build took the repository under test as its project. Its
+    /// working folder says nothing about what you want to open, as a Finder
+    /// launch's `/` says nothing either (Apple DTS, developer.apple.com/forums
+    /// /thread/712522), so a debug build never takes a folder inside its own
+    /// source tree; it gets home, which the webview never adopts as a project
+    /// (`looksLikeProject`, `recents.ts:407-416`), the release app's first
+    /// start.
+    #[test]
+    fn a_debug_build_never_takes_its_own_source_tree_as_the_project() {
+        use std::path::Path;
+        let root = Path::new("/Users/me/Desktop/monocode");
+        let home = Some("/Users/me");
+        for cwd in [
+            "/Users/me/Desktop/monocode/src-tauri",
+            "/Users/me/Desktop/monocode",
+            "/Users/me/Desktop/monocode/macos/computer-use-helper",
+        ] {
+            assert_eq!(
+                super::pick_default_cwd(Some(Path::new(cwd)), Some(root), home),
+                "/Users/me",
+                "{cwd}"
+            );
+        }
+        // A folder that only shares the prefix is not inside the tree.
+        assert_eq!(
+            super::pick_default_cwd(
+                Some(Path::new("/Users/me/Desktop/monocode-scratch")),
+                Some(root),
+                home
+            ),
+            "/Users/me/Desktop/monocode-scratch"
+        );
+        // Started from a terminal in a project, outside the tree: kept.
+        assert_eq!(
+            super::pick_default_cwd(Some(Path::new("/Users/me/codex-scratch")), Some(root), home),
+            "/Users/me/codex-scratch"
+        );
+        // A release build has no source tree to refuse.
+        assert_eq!(
+            super::pick_default_cwd(
+                Some(Path::new("/Users/me/Desktop/monocode/src-tauri")),
+                None,
+                home
+            ),
+            "/Users/me/Desktop/monocode/src-tauri"
+        );
+        // No home: the webview's own placeholder.
+        assert_eq!(
+            super::pick_default_cwd(
+                Some(Path::new("/Users/me/Desktop/monocode/src-tauri")),
+                Some(root),
+                None
+            ),
+            "~"
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_debug_build_knows_its_source_tree() {
+        let root = super::dev_source_root().expect("a debug build names its source tree");
+        assert!(
+            root.join("src-tauri").join("Cargo.toml").is_file(),
+            "{}",
+            root.display()
         );
     }
 
