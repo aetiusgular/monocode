@@ -113,6 +113,14 @@ test("terminal escapes a page puts after its key never reach the terminal", () =
   );
 });
 
+test("cargo's colour codes pass, even split across chunks", () => {
+  const text = "\u001b[1m\u001b[92m     Running\u001b[0m `monocode`\n";
+  for (let cut = 1; cut < text.length; cut++) {
+    const { out } = run([text.slice(0, cut), text.slice(cut)]);
+    assert.equal(out, text, `cut ${cut}`);
+  }
+});
+
 test("tabs and carriage returns pass, other control characters do not", () => {
   const { out } = run(["a\tb\r\nc\u0007\u009bd\n"]);
   assert.equal(out, "a\tb\r\ncd\n");
