@@ -1,0 +1,49 @@
+<!doctype html>
+<!--
+  Mac retest R0.8: makes Tauri print its wrong-key line, so the dev log filter
+  in scripts/tauri.mjs can be checked (research note AD; Mac test 0.8).
+
+  Copy this file into a scratch project (codex-scratch), open it in the dev
+  build's file preview, and read the terminal that runs `npm run tauri dev`.
+  Pass: the log shows "[monocode] a page sent a wrong IPC key; ..." once per
+  post, and no line with __TAURI_INVOKE_KEY__ or the expected key.
+
+  The post has the shape Tauri 2.11.5 parses (`tauri/src/ipc/protocol.rs`,
+  `struct Message`, lines 237-245) and a key that cannot be right. Tauri drops
+  it at the key check (`tauri/src/webview/mod.rs:1746-1761`) before any
+  command runs. The command named is a read-only one. The page loads nothing
+  and sends nothing over the network.
+-->
+<meta charset="utf-8" />
+<title>IPC wrong key</title>
+<pre id="o"></pre>
+<script>
+  var o = document.getElementById("o");
+  function p(s) {
+    o.textContent += s + "\n";
+  }
+  var message = JSON.stringify({
+    cmd: "plugin:app|version",
+    callback: 1,
+    error: 2,
+    payload: {},
+    options: null,
+    __TAURI_INVOKE_KEY__: "guessed-key-r08",
+  });
+  var handler =
+    (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ipc) ||
+    window.ipc ||
+    (window.chrome && window.chrome.webview);
+  p("internals:" + typeof window.__TAURI_INTERNALS__);
+  p("handler:" + typeof handler);
+  if (handler) {
+    try {
+      handler.postMessage(message);
+      p("posted a message with a wrong key");
+    } catch (e) {
+      p("post failed: " + e);
+    }
+  } else {
+    p("no IPC handler in this frame: nothing posted, so the log shows no line");
+  }
+</script>

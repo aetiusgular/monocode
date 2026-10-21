@@ -861,28 +861,44 @@ fn scheme_failure() -> tauri::http::Response<Vec<u8>> {
 mod tests {
     use super::should_request_quit;
 
-    /// Tauri 2.11.5 prints the expected invoke key when a page sends a wrong
-    /// one, with `eprintln!` and no debug guard, unless its `tracing` feature
-    /// is on (`tauri/src/webview/mod.rs:1746-1761`). With the feature the
-    /// line goes to `tracing::error!`, and MonoCode installs no subscriber, so
-    /// the key reaches no log (Mac test 0.8; rules section 5, item 1).
+    /// Tauri's `tracing` feature stays off. With it, `eval_script` waits on a
+    /// channel for the main thread (`tauri-runtime-wry-2.11.4/src/lib.rs:1838-1851`,
+    /// `getter!` at `:197-204`), while `emit` holds the webviews lock across
+    /// its JS emit loop (`tauri-2.11.5/src/manager/mod.rs:548`, `:578`), so a
+    /// background `emit` and any main-thread call that takes that lock
+    /// deadlock: the Mac dev build hung at start (retest R0.8, research note
+    /// AD), and a minimal Tauri 2.11.5 app hung 3 of 3 runs on Linux with the
+    /// feature and 0 of 3 without. The lock file shows the feature even when a
+    /// plugin is the one that turns it on: `tracing` is an optional dependency
+    /// of these three crates and nothing else adds it to them.
+    /// The invoke key Tauri then prints on a wrong key is kept out of the dev
+    /// log by `scripts/invoke-key-filter.mjs` (Mac test 0.8).
     #[test]
-    fn tauri_never_prints_the_invoke_key() {
+    fn tauri_tracing_stays_off() {
         let manifest = include_str!("../Cargo.toml");
         let line = manifest
             .lines()
             .find(|line| line.starts_with("tauri = "))
             .expect("tauri dependency");
-        assert!(line.contains("\"tracing\""), "{line}");
-        let sources = [include_str!("lib.rs"), include_str!("main.rs")];
-        for source in sources {
-            for word in ["tracing_subscriber", "set_global_default"] {
-                assert!(
-                    !source.contains(&format!("{word}(")) && !source.contains(&format!("{word}::")),
-                    "a tracing subscriber would print the invoke key again"
-                );
-            }
+        assert!(!line.contains("tracing"), "{line}");
+        let lock = include_str!("../../Cargo.lock");
+        for name in ["tauri", "tauri-runtime-wry", "wry"] {
+            let header = format!("[[package]]\nname = \"{name}\"\n");
+            let at = lock
+                .find(&header)
+                .unwrap_or_else(|| panic!("{name} in Cargo.lock"));
+            let entry = &lock[at + header.len()..];
+            let entry = &entry[..entry.find("\n\n").unwrap_or(entry.len())];
+            assert!(
+                !entry.lines().any(|line| line.trim() == "\"tracing\","),
+                "{name} depends on tracing in Cargo.lock: some crate turned on tauri's tracing feature"
+            );
         }
+        let wrapper = include_str!("../../scripts/tauri.mjs");
+        assert!(
+            wrapper.contains("child.stderr.pipe(new InvokeKeyFilter())"),
+            "npm run tauri must filter the invoke key out of the dev log"
+        );
     }
 
     #[test]

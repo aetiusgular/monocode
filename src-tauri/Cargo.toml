@@ -19,10 +19,11 @@ tauri-build = { version = "2", features = [] }
 serde_json.workspace = true
 
 [dependencies]
-# "tracing": Tauri then logs a wrong invoke key through tracing, not eprintln!, and
-# MonoCode installs no subscriber, so the expected key reaches no log (Mac test 0.8).
-# The tracing crates are already in the lock; nothing new is pulled in.
-tauri = { version = "2", features = ["protocol-asset", "macos-private-api", "tracing"] }
+# Never "tracing": it makes eval_script wait for the main thread, and emit holds
+# the webviews lock while it waits, so the app deadlocks (research note AD, Mac
+# retest R0.8). The invoke key Tauri prints without it is filtered out of the
+# dev log by scripts/invoke-key-filter.mjs. Test: tauri_tracing_stays_off.
+tauri = { version = "2", features = ["protocol-asset", "macos-private-api"] }
 tauri-plugin-opener = "2"
 open = "5.4.1"
 serde.workspace = true
