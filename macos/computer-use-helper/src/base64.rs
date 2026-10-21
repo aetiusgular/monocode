@@ -20,8 +20,12 @@ pub fn decode(text: &str) -> Option<Vec<u8>> {
         return None;
     }
     let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
-    let quads = bytes.len() / 4;
-    for (index, quad) in bytes.chunks_exact(4).enumerate() {
+    // `as_chunks` (stable since Rust 1.88), not `chunks_exact(4)`: clippy 1.98
+    // adds `chunks_exact_to_as_chunks` to `style` (Mac retest R0.6). The length
+    // is a multiple of 4, so the remainder is empty.
+    let (quads_in, _) = bytes.as_chunks::<4>();
+    let quads = quads_in.len();
+    for (index, quad) in quads_in.iter().enumerate() {
         let last = index + 1 == quads;
         let pad = match quad {
             [_, _, b'=', b'='] if last => 2,

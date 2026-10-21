@@ -1,0 +1,21 @@
+# One Rust for the cloud and the Mac, so `clippy -D warnings` is the same gate
+# on both (Mac retest R0.6: clippy 1.98 on the Mac failed a lint that the
+# cloud's 1.97 does not have). rustup reads this file from the repository and
+# every folder under it, `macos/` included
+# (https://rust-lang.github.io/rustup/overrides.html).
+#
+# 1.97.0 is the only release the cloud sessions can use: their rustup cannot
+# download from static.rust-lang.org. A cloud session links its installed
+# stable to this name once:
+#   ln -s stable-x86_64-unknown-linux-gnu ~/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu
+# (only when `rustc --version` under stable reads 1.97.0), or runs with
+# RUSTUP_TOOLCHAIN=stable. The Mac installs it with
+#   rustup toolchain install 1.97.0 --profile minimal --component clippy,rustfmt
+#
+# Move it forward on purpose, in one commit with any lint fixes the new clippy
+# asks for. No `targets`: a target listed here is downloaded too, which the
+# cloud cannot do.
+[toolchain]
+channel = "1.97.0"
+profile = "minimal"
+components = ["clippy", "rustfmt"]
