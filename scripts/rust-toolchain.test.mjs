@@ -5,7 +5,10 @@ import { test } from "node:test";
 
 // Mac retest R0.6: one Rust for the cloud and the Mac, so clippy's
 // `-D warnings` gate is the same on both.
-const file = readFileSync(new URL("../rust-toolchain.toml", import.meta.url), "utf8");
+const file = readFileSync(
+  new URL("../rust-toolchain.toml", import.meta.url),
+  "utf8",
+);
 const setting = (key) => {
   const line = file.split("\n").find((l) => l.startsWith(`${key} = `));
   return line && line.slice(key.length + 3).trim();

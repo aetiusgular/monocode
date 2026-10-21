@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { HIDDEN_LINE, INVOKE_KEY_MARKER, InvokeKeyFilter } from "./invoke-key-filter.mjs";
+import {
+  HIDDEN_LINE,
+  INVOKE_KEY_MARKER,
+  InvokeKeyFilter,
+} from "./invoke-key-filter.mjs";
 
 // Tauri 2.11.5's own line, `tauri/src/webview/mod.rs:1756-1759`.
 const KEY = "a1b2c3d4e5f6a7b8c9d0";
@@ -40,26 +44,42 @@ test("a marker split at every point across two chunks is still hidden", () => {
 });
 
 test("a line fed one byte at a time is still hidden", () => {
-  const { out } = run([...Buffer.from(TAURI_LINE)].map((byte) => Buffer.from([byte])));
+  const { out } = run(
+    [...Buffer.from(TAURI_LINE)].map((byte) => Buffer.from([byte])),
+  );
   assert.ok(!out.includes(KEY));
   assert.equal(out, `${HIDDEN_LINE}\n`);
 });
 
 test("ordinary output passes unchanged, and a partial line is not held back", () => {
-  const { out, seen } = run(["Running `target/debug/monocode`", " ok\nVITE ready\r\n", "? Port 1420 in use, use another one? "]);
+  const { out, seen } = run([
+    "Running `target/debug/monocode`",
+    " ok\nVITE ready\r\n",
+    "? Port 1420 in use, use another one? ",
+  ]);
   assert.equal(seen[0], "Running `target/debug/monocode`");
-  assert.equal(out, "Running `target/debug/monocode` ok\nVITE ready\r\n? Port 1420 in use, use another one? ");
+  assert.equal(
+    out,
+    "Running `target/debug/monocode` ok\nVITE ready\r\n? Port 1420 in use, use another one? ",
+  );
 });
 
 test("only a possible start of the marker waits for the next chunk", () => {
-  const { seen, out } = run(["warn: __TAURI_INV", "OKE_KEY__ expected secret\nnext\n"]);
+  const { seen, out } = run([
+    "warn: __TAURI_INV",
+    "OKE_KEY__ expected secret\nnext\n",
+  ]);
   assert.equal(seen[0], "warn: ");
   assert.equal(out, `warn: \n${HIDDEN_LINE}\nnext\n`);
   assert.ok(!out.includes("secret"));
 });
 
 test("the marker mid-line, after text already passed on, hides the rest of the line", () => {
-  const { out } = run(["prefix text ", `${INVOKE_KEY_MARKER} expected ${KEY}`, " more\nnext line\n"]);
+  const { out } = run([
+    "prefix text ",
+    `${INVOKE_KEY_MARKER} expected ${KEY}`,
+    " more\nnext line\n",
+  ]);
   assert.equal(out, `prefix text \n${HIDDEN_LINE}\nnext line\n`);
   assert.ok(!out.includes(KEY));
 });
@@ -83,9 +103,39 @@ test("a long stream with no newline is passed on, not buffered", () => {
   assert.equal(seen[0].length, big.length);
 });
 
+test("terminal escapes a page puts after its key never reach the terminal", () => {
+  const evil = `${INVOKE_KEY_MARKER} expected ${KEY} but received x\n\u001b]52;c;cHduZWQ=\u0007fake line\n`;
+  const { out } = run([evil]);
+  // The escape bytes are gone; what is left is inert text.
+  assert.equal(out, `${HIDDEN_LINE}\n]52;c;cHduZWQ=fake line\n`);
+  assert.ok(
+    !/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(out.replaceAll("\n", "")),
+  );
+});
+
+test("tabs and carriage returns pass, other control characters do not", () => {
+  const { out } = run(["a\tb\r\nc\u0007\u009bd\n"]);
+  assert.equal(out, "a\tb\r\ncd\n");
+});
+
 test("npm run tauri sends both of the CLI's streams through the filter", () => {
   const source = readFileSync(new URL("./tauri.mjs", import.meta.url), "utf8");
   assert.match(source, /stdio: \["inherit", "pipe", "pipe"\]/);
-  assert.match(source, /child\.stdout\.pipe\(new InvokeKeyFilter\(\)\)\.pipe\(process\.stdout\)/);
-  assert.match(source, /child\.stderr\.pipe\(new InvokeKeyFilter\(\)\)\.pipe\(process\.stderr\)/);
+  assert.match(
+    source,
+    /child\.stdout\.pipe\(new InvokeKeyFilter\(\)\)\.pipe\(process\.stdout\)/,
+  );
+  assert.match(
+    source,
+    /child\.stderr\.pipe\(new InvokeKeyFilter\(\)\)\.pipe\(process\.stderr\)/,
+  );
+});
+
+test("the wrapper does not wait forever on pipes a leftover process holds", () => {
+  const source = readFileSync(new URL("./tauri.mjs", import.meta.url), "utf8");
+  assert.match(
+    source,
+    /child\.on\("exit"[\s\S]*child\.stdout\.destroy\(\)[\s\S]*child\.stderr\.destroy\(\)/,
+  );
+  assert.match(source, /process\.on\(signal,/);
 });

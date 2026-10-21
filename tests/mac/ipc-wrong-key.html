@@ -31,7 +31,9 @@
     __TAURI_INVOKE_KEY__: "guessed-key-r08",
   });
   var handler =
-    (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ipc) ||
+    (window.webkit &&
+      window.webkit.messageHandlers &&
+      window.webkit.messageHandlers.ipc) ||
     window.ipc ||
     (window.chrome && window.chrome.webview);
   p("internals:" + typeof window.__TAURI_INTERNALS__);
